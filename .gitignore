@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environments
+.venv/
+venv/
+env/
+
+# Generated artifacts
+datasets/
+logs/
+outputs/
+demos_output/
+eval_logs/
+rollouts/
+*.hdf5
+*.mp4
+
+# Isaac / USD caches
+.codegraph/
+.libero_usd_cache/
+*.usd.tmp
+
+# Local editor/system files
+.DS_Store
+.idea/
+.vscode/
+
+.docs/*

@@ -1,0 +1,19 @@
+# Planned optional Lightwheel backend configuration.
+# This file declares integration boundaries only. It does not connect a real
+# Lightwheel runtime, import Lightwheel, or download assets.
+
+enabled: false
+backend_enabled: false
+lightwheel_repo_path: ""
+lightwheel_python_package: "lightwheel"
+lightwheel_asset_root: ""
+asset_manifest: "assets/asset_manifest.csv"
+use_lightwheel_assets: false
+require_assets: false
+allow_noncommercial_assets: true
+allow_runtime_import: false
+probe_only: true
+planned_tasks:
+  - PressButton
+task_import_mode: "manifest_only"
+runtime_status: "probe_only_not_connected"

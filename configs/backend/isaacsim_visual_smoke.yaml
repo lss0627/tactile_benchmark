@@ -1,0 +1,24 @@
+# Planned Isaac Sim WebRTC visual smoke configuration.
+# This config is a preparation contract only. It does not launch Isaac Sim,
+# create a SimulationApp, download assets, or produce benchmark results.
+
+backend: isaacsim
+mode: visual_smoke
+task: PressButton
+robot: fr3_tactile
+
+use_lightwheel_assets: false
+allow_lightwheel_assets: false
+
+headless_streaming: true
+webrtc_enabled: true
+webrtc_tcp_port: 49100
+webrtc_udp_port: 47998
+requires_nvenc: true
+
+runtime_status: planned_not_connected
+isaacsim_app_path: null
+isaacsim_python_path: null
+scene_usd_path: null
+auto_create_minimal_scene: true
+output_dir: outputs/isaacsim_visual_smoke

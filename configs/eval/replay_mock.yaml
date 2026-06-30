@@ -1,0 +1,22 @@
+# Phase 2C mock/stub replay evaluation config.
+# ReplayPolicy only replays HDF5 dataset actions; it is not imitation learning.
+
+benchmark_version: "0.1.0"
+mock_stub: true
+split: "test_seen"
+policy: "replay"
+dataset: "outputs/mock_dataset/mock_v0.hdf5"
+max_episodes: 10
+max_steps: 20
+output_dir: "outputs/replay_eval"
+metrics:
+  - success_rate
+  - completion_time
+  - trajectory_length
+  - max_contact_force
+  - mean_contact_force
+  - force_violation_rate
+  - contact_duration
+  - contact_loss_count
+  - jamming_count
+  - insertion_depth

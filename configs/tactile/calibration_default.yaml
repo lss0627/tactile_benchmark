@@ -1,0 +1,150 @@
+# Phase 1.5 mock/stub tactile calibration defaults.
+# These values document the software contract only; they are not real
+# Lightwheel calibration data and are not Isaac Sim contact rendering settings.
+
+sensor_version: "mock-0.1.0"
+schema_version: "0.1.0"
+mock_stub: true
+units:
+  force: "Newton"
+  torque: "Newton-meter"
+  latency: "milliseconds"
+  image: "uint8 RGB"
+  depth: "meters"
+  force_field: "Newton"
+unit_convention:
+  force: "Newton"
+  torque: "Newton-meter"
+  latency: "milliseconds"
+  image: "uint8 RGB"
+  depth: "meters"
+
+normalization:
+  force: {scale: [1.0, 1.0, 1.0], bias: [0.0, 0.0, 0.0]}
+  wrench: {scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0], bias: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}
+  image: {scale: 255.0, bias: 0.0}
+  force_field: {scale: 1.0, bias: 0.0}
+
+history:
+  length: 1
+  force: true
+  wrench: true
+  visuotactile_image: true
+
+latency:
+  latency_ms: 0
+
+dropout:
+  tactile_frame_drop_prob: 0.0
+
+noise:
+  force_std: 0.0
+  torque_std: 0.0
+  image_noise_std: 0.0
+
+threshold:
+  contact_threshold_n: 0.5
+
+modes:
+  none:
+    enabled_modalities: []
+    sensor_version: "mock-0.1.0"
+    schema_version: "0.1.0"
+    contact_threshold_n: 0.5
+    threshold: {contact_threshold_n: 0.5}
+    latency_ms: 0
+    noise:
+      force_std: 0.0
+      torque_std: 0.0
+      image_noise_std: 0.0
+    dropout:
+      tactile_frame_drop_prob: 0.0
+    normalization:
+      force: {scale: [1.0, 1.0, 1.0], bias: [0.0, 0.0, 0.0]}
+      wrench: {scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0], bias: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}
+      image: {scale: 255.0, bias: 0.0}
+      force_field: {scale: 1.0, bias: 0.0}
+    history: {length: 1, force: true, wrench: true, visuotactile_image: true}
+    image_shape: [32, 32, 3]
+    force_field_shape: [32, 32, 3]
+
+  force_wrench:
+    enabled_modalities: ["force", "wrench"]
+    sensor_version: "mock-0.1.0"
+    schema_version: "0.1.0"
+    contact_threshold_n: 0.5
+    threshold: {contact_threshold_n: 0.5}
+    latency_ms: 0
+    sampling_rate_hz: 30
+    noise:
+      force_std: 0.0
+      torque_std: 0.0
+      image_noise_std: 0.0
+    bias:
+      force: [0.0, 0.0, 0.0]
+      torque: [0.0, 0.0, 0.0]
+    saturation:
+      force_norm_max: 100.0
+      torque_norm_max: 20.0
+    dropout:
+      tactile_frame_drop_prob: 0.0
+    normalization:
+      force: {scale: [1.0, 1.0, 1.0], bias: [0.0, 0.0, 0.0]}
+      wrench: {scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0], bias: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}
+      image: {scale: 255.0, bias: 0.0}
+      force_field: {scale: 1.0, bias: 0.0}
+    history: {length: 1, force: true, wrench: true, visuotactile_image: true}
+    image_shape: [32, 32, 3]
+    force_field_shape: [32, 32, 3]
+
+  visuotactile:
+    enabled_modalities: ["vt_rgb", "vt_depth"]
+    sensor_version: "mock-0.1.0"
+    schema_version: "0.1.0"
+    contact_threshold_n: 0.5
+    threshold: {contact_threshold_n: 0.5}
+    latency_ms: 0
+    sampling_rate_hz: 30
+    noise:
+      force_std: 0.0
+      torque_std: 0.0
+      image_noise_std: 0.0
+    dropout:
+      tactile_frame_drop_prob: 0.0
+    normalization:
+      force: {scale: [1.0, 1.0, 1.0], bias: [0.0, 0.0, 0.0]}
+      wrench: {scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0], bias: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}
+      image: {scale: 255.0, bias: 0.0}
+      force_field: {scale: 1.0, bias: 0.0}
+    history: {length: 1, force: true, wrench: true, visuotactile_image: true}
+    image_shape: [32, 32, 3]
+    force_field_shape: [32, 32, 3]
+
+  force_plus_visuotactile:
+    enabled_modalities: ["force", "wrench", "vt_rgb", "vt_depth"]
+    sensor_version: "mock-0.1.0"
+    schema_version: "0.1.0"
+    contact_threshold_n: 0.5
+    threshold: {contact_threshold_n: 0.5}
+    latency_ms: 0
+    sampling_rate_hz: 30
+    noise:
+      force_std: 0.0
+      torque_std: 0.0
+      image_noise_std: 0.0
+    bias:
+      force: [0.0, 0.0, 0.0]
+      torque: [0.0, 0.0, 0.0]
+    saturation:
+      force_norm_max: 100.0
+      torque_norm_max: 20.0
+    dropout:
+      tactile_frame_drop_prob: 0.0
+    normalization:
+      force: {scale: [1.0, 1.0, 1.0], bias: [0.0, 0.0, 0.0]}
+      wrench: {scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0], bias: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}
+      image: {scale: 255.0, bias: 0.0}
+      force_field: {scale: 1.0, bias: 0.0}
+    history: {length: 1, force: true, wrench: true, visuotactile_image: true}
+    image_shape: [32, 32, 3]
+    force_field_shape: [32, 32, 3]

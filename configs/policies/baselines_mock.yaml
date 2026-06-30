@@ -1,0 +1,52 @@
+# Baseline Framework Skeleton config.
+# These policies are untrained mock/stub interfaces only.
+
+benchmark_version: "0.1.0"
+schema_version: "0.1.0"
+mock_stub: true
+training_enabled: false
+baselines:
+  state_bc:
+    class_name: StateBC
+    allowed_modalities: [robot_state]
+    is_trainable: true
+    is_trained: false
+    mock_or_stub: true
+  vision_bc:
+    class_name: VisionBC
+    allowed_modalities: [language, vision]
+    is_trainable: true
+    is_trained: false
+    mock_or_stub: true
+  vision_state_bc:
+    class_name: VisionStateBC
+    allowed_modalities: [language, vision, robot_state]
+    is_trainable: true
+    is_trained: false
+    mock_or_stub: true
+  vision_force_bc:
+    class_name: VisionForceBC
+    allowed_modalities: [language, vision, robot_state, force_wrench]
+    is_trainable: true
+    is_trained: false
+    mock_or_stub: true
+  vision_vt_bc:
+    class_name: VisionVisuoTactileBC
+    allowed_modalities: [language, vision, robot_state, visuotactile]
+    is_trainable: true
+    is_trained: false
+    mock_or_stub: true
+  vision_force_vt_bc:
+    class_name: VisionForceVisuoTactileBC
+    allowed_modalities: [language, vision, robot_state, force_wrench, visuotactile]
+    is_trainable: true
+    is_trained: false
+    mock_or_stub: true
+  oracle_state_bc:
+    class_name: OracleStateBC
+    allowed_modalities: [robot_state, oracle_state]
+    is_trainable: true
+    is_trained: false
+    mock_or_stub: true
+    upper_bound_mock: true
+    exclude_from_fair_main_results: true

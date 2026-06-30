@@ -1,0 +1,27 @@
+# Phase 2B mock/stub dataset collection config.
+# This produces schema-compatible fake demonstrations from the mock env only.
+
+dataset_name: "Isaac-Tactile-LIBERO-Mock-v0"
+dataset_version: "0.1.0"
+benchmark_version: "0.1.0"
+schema_version: "0.1.0"
+mock_stub: true
+split: "train"
+policy: "random"
+tasks:
+  - PressButton
+  - SoftPress
+  - PushSlider
+  - PegInsert
+  - PlugSocketInsert
+tactile_modes:
+  - none
+  - force_wrench
+  - visuotactile
+  - force_plus_visuotactile
+seeds: [0, 1, 2]
+episodes_per_task: 1
+max_steps: 20
+output_dir: "outputs/mock_dataset"
+default_output: "outputs/mock_dataset/mock_v0.hdf5"
+tactile_calibration: "configs/tactile/calibration_default.yaml"

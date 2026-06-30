@@ -1,0 +1,15 @@
+# Dry-run BC training protocol config.
+# This does not run real optimization and does not produce trained weights.
+
+benchmark_version: "0.1.0"
+schema_version: "0.1.0"
+mock_stub: true
+dataset_path: "outputs/mock_dataset/mock_v0.hdf5"
+policy_name: "vision_force_vt_bc"
+batch_size: 8
+num_epochs: 2
+seed: 0
+learning_rate: 0.0001
+output_dir: "outputs/train_mock/vision_force_vt_bc"
+device: "cpu"
+dry_run: true

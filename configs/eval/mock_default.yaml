@@ -1,0 +1,34 @@
+# Phase 1.5 mock/stub evaluation config.
+# This is a CI/smoke contract and is not a paper-results configuration.
+
+benchmark_version: "0.1.0"
+mock_stub: true
+split: "test_seen"
+policy: "random"
+tasks:
+  - PressButton
+  - SoftPress
+  - PushSlider
+  - PegInsert
+  - PlugSocketInsert
+tactile_modes:
+  - none
+  - force_wrench
+  - visuotactile
+  - force_plus_visuotactile
+seeds: [0, 1, 2]
+episodes: 1
+max_steps: 20
+output_dir: "outputs/mock_eval"
+tactile_calibration: "configs/tactile/calibration_default.yaml"
+metrics:
+  - success_rate
+  - completion_time
+  - trajectory_length
+  - max_contact_force
+  - mean_contact_force
+  - force_violation_rate
+  - contact_duration
+  - contact_loss_count
+  - jamming_count
+  - insertion_depth
