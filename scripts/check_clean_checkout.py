@@ -45,7 +45,8 @@ def _run(command: list[str], *, cwd: Path, log: list[str]) -> subprocess.Complet
     log.append(result.stdout)
     log.append(result.stderr)
     if result.returncode:
-        raise RuntimeError(f"command failed ({result.returncode}): {' '.join(command)}")
+        tail = "\n".join([result.stdout, result.stderr])[-4000:]
+        raise RuntimeError(f"command failed ({result.returncode}): {' '.join(command)}\n{tail}")
     return result
 
 
@@ -100,6 +101,9 @@ def run_clean_checkout(*, python: str, output: str) -> dict[str, Any]:
             cwd=temporary_root,
             log=log,
         )
+        # Keep source bytes identical to git archive. This fresh metadata is
+        # used only by tests that exercise git check-ignore semantics.
+        _run(["git", "init"], cwd=export_root, log=log)
         pytest_result = _run([python, "-m", "pytest", "-q"], cwd=export_root, log=log)
         installed_wheel = output_dir / wheels[0].name
         shutil.copy2(wheels[0], installed_wheel)
@@ -115,6 +119,7 @@ def run_clean_checkout(*, python: str, output: str) -> dict[str, Any]:
         "commit": commit,
         "source_clean": True,
         "export_method": "git archive HEAD",
+        "test_git_metadata": "fresh empty git init for ignore-rule tests",
         "original_worktree_used_by_tests": False,
         "wheel": installed_wheel.name,
         "wheel_sha256": _sha256(installed_wheel),
