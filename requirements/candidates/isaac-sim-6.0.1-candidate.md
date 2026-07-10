@@ -1,7 +1,8 @@
 # Isaac Sim 6.0.1 candidate environment
 
-This is the reproducible G0/G-1B candidate input. It is promoted to the
-development lock only after G-1B passes.
+This was the reproducible G0/G-1B candidate input. G-1B passed and this exact
+candidate was promoted through `requirements/lock-py312.txt`; the file remains
+unchanged as migration provenance.
 
 - Runtime: Python 3.12.13
 - pip: 26.1.2

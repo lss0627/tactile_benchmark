@@ -26,6 +26,9 @@ contact_onset_tolerance_steps: 2
 contact_release_timeout_steps: 5
 contact_stable_steps: 3
 force_zero_epsilon: 1.0e-4
+penetration_persistent_threshold_m: 0.001
+penetration_absolute_limit_m: 0.005
+penetration_max_stable_steps: 5
 
 claim_class: runtime_smoke
 benchmark_result: false

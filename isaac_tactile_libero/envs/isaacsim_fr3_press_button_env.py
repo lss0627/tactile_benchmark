@@ -248,6 +248,24 @@ class IsaacSimFR3PressButtonEnv:
         except Exception:
             return pose
 
+    def read_button_penetration_m(self) -> float:
+        """Return observed button/ground overlap; never infer tactile force."""
+
+        if not self.enable_runtime:
+            return 0.0
+        try:
+            import omni.usd  # type: ignore
+            from pxr import Usd, UsdGeom  # type: ignore
+
+            prim = omni.usd.get_context().get_stage().GetPrimAtPath("/World/PressButton")
+            transform = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+            center_z = float(transform.ExtractTranslation()[2])
+            half_size = float(self.cfg.get("button_size_m", 0.08)) * 0.5
+            ground_z = float(self.cfg.get("ground_height_m", 0.0))
+            return max(0.0, ground_z + half_size - center_z)
+        except Exception:
+            return float("nan")
+
     def read_observation(self) -> dict[str, Any]:
         robot = default_robot_state()
         if self.enable_runtime and self.controller is not None:

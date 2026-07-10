@@ -1,7 +1,7 @@
-# Quickstart: Documentation Validation and Future Execution
+# Quickstart: Isaac Sim 6.0.1 Development Baseline
 
-This quickstart validates the Spec Kit package produced by this documentation run. It does **not**
-claim that the reconstruction tasks have been implemented.
+G0 and the Isaac Sim 6.0.1 migration checkpoints are implemented. Commands below reproduce the
+development/runtime-smoke baseline; they do **not** satisfy G1-G6 physical benchmark gates.
 
 ## 1. Select the feature
 
@@ -41,21 +41,32 @@ Read in this order:
 6. [implementation.md](./implementation.md) — execution protocol and stop rules.
 7. [acceptance.md](./acceptance.md) — command/evidence matrix and current status.
 
-## 4. Begin implementation only when authorized
-
-The future implementation session starts at G0 and follows `tasks.md` in order. At minimum, it must
-run the no-simulator regression suite before and after each gate:
+## 4. Verify the promoted Python 3.12 baseline
 
 ```bash
+python -m pip install --extra-index-url https://pypi.nvidia.com \
+  -r requirements/lock-py312.txt
 python -m pip install -e '.[test]'
-pytest -q
+python -m pytest -q
+python scripts/check_isaacsim6_imports.py --deprecated-as-error
 ```
 
-Simulator commands in `acceptance.md` are future target commands. They remain blocked until a
-supported Isaac Sim runtime and licensed FR3 assets are configured. Dry-run success must be recorded
-as `PASS_SMOKE`, never `PASS_BENCHMARK`.
+Set `OMNI_KIT_ACCEPT_EULA=YES` and configure assets as described in `docs/asset_setup.md`.
 
-## 5. Evidence handling
+## 5. Reproduce migration checks
+
+```bash
+python scripts/check_clean_checkout.py --output outputs/evidence/G0/clean-checkout
+python scripts/review_gate.py --gate G0 \
+  --evidence outputs/evidence/G0/clean-checkout/manifest.json
+python scripts/run_isaacsim6_g1b.py --cycles 100 --steps 500 \
+  --output outputs/evidence/G-1B/repository-integration/report.json
+```
+
+The runtime config forces CPU physics for Contact and GPU rendering on `cuda:0`. A request for GPU
+physics fails before native initialization with `GPU_CONTACT_NATIVE_INSTABILITY`.
+
+## 6. Evidence handling
 
 Generated results belong under an immutable run directory such as:
 

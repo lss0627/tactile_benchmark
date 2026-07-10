@@ -1,6 +1,6 @@
 # Current Project State
 
-Date: 2026-07-01
+Date: 2026-07-10
 
 This document summarizes the current progress of Isaac-Tactile-LIBERO. It is a
 working status note, not a benchmark result report.
@@ -11,7 +11,7 @@ The project has progressed from a pure mock benchmark skeleton to a
 single-task Isaac Sim runtime pipeline for `PressButton`, plus FR3 load-only,
 controller smoke, EE controller planning, local differential IK diagnostics,
 and FR3 EE-to-PressButton planning gates. The current next stage is
-**FR3 PressButton Approach-Only Runtime Smoke**.
+the post-migration physical PressButton mechanism and formal G1 safety gate.
 
 Current high-level status:
 
@@ -24,7 +24,11 @@ Current high-level status:
   paths.
 - Runtime-smoke HDF5 datasets: collected and validated for pusher and EE
   placeholder paths.
-- Real force/wrench tactile sensing: not available yet.
+- Development baseline: Isaac Sim 6.0.1 and Python 3.12.
+- Driver 550.144.03: retained and recorded as `UNVALIDATED`.
+- Experimental Contact: scalar force/raw contacts validated on CPU physics; GPU physics blocked.
+- RTX RGB/depth: validated on GPU 0.
+- Real force-vector/wrench tactile sensing: not available; public masks remain false.
 - Real FR3 USD asset binding: complete.
 - FR3 load-only visual smoke: complete.
 - FR3 articulation introspection: complete.
@@ -35,7 +39,31 @@ Current high-level status:
 - FR3 EE controller minimal runtime smoke: complete.
 - FR3 local differential IK / Jacobian diagnostic: complete.
 - FR3 EE-to-PressButton geometry/load-only/waypoint planning: complete.
-- Real FR3 PressButton runtime: not implemented yet.
+- Real FR3 PressButton compatibility backend: implemented through `make_env`.
+- G0 clean repository integrity: `PASS_BENCHMARK`.
+- G-1B integration: `PASS_SMOKE` with 100 resets and 500 steps.
+- Formal G1 physical PressButton mechanism/task truth: not implemented yet.
+
+## Isaac Sim 6.0.1 Migration
+
+The project now uses Python `>=3.12,<3.13` and Isaac Sim 6.0.1 as its sole development simulator
+baseline. Python 3.11/Isaac Sim 5.1 is archived under `requirements/archive/`; assets and historical
+evidence remain unchanged and reference-only.
+
+Verified migration results:
+
+- P0 Kit/headless startup: 100 steps passed.
+- G-1A FR3 asset/API: exact 9-DOF contract, joint limits/frames, micro-motion, 500-step stability.
+- Contact lifecycle: 100/100 ready/onset/release cycles, 0 stale handles, finite scalar/raw data.
+- Camera: RGB/depth dtype, shapes, update, finite values and synchronization passed.
+- G0: clean `git archive` export, wheel, isolated venv and 340 tests passed.
+- G-1B: 100/100 resets, 500/500 bounded steps, 0 invalid/stale handles, maximum observed button
+  penetration `1.54e-7 m` with zero persistent-penetration steps.
+- A/B: DOF order, limits, direction and zero-action drift passed. The corrected zero-drift bound was
+  `min(max(2 * 0.257899 mm, 0.05 mm), 1.0 mm) = 0.515798 mm`; 6.0.1 measured 0.
+
+Native GPU physics Contact is not claimed. The backend rejects it with
+`GPU_CONTACT_NATIVE_INSTABILITY` before initialization and keeps GPU rendering enabled.
 
 ## Completed Milestones
 

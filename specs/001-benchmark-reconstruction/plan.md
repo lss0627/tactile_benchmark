@@ -13,15 +13,15 @@ accept one task before collecting a mini dataset; require physical replay and st
 complete evaluation before baseline or release claims. Existing mock, placeholder, and smoke paths
 remain regression fixtures and never satisfy a physical or benchmark gate.
 
-This plan defines work only. Application-code execution begins only through a separately authorized
-Spec Kit implementation run.
+The G0 repository-integrity work and the Isaac Sim 6.0.1 migration checkpoints have now been
+implemented. G1-G6 remain governed by the original physical/data/evaluation gate order.
 
 ## Technical Context
 
-**Language/Version**: Python `>=3.10`; JSON Schema Draft 2020-12 for evidence contracts
+**Language/Version**: Python `>=3.12,<3.13`; JSON Schema Draft 2020-12 for evidence contracts
 
 **Primary Dependencies**: NumPy `>=1.23`, PyYAML `>=6`, h5py `>=3.10`, pytest `>=7`, optional
-PyTorch `>=2.0`, external Isaac Sim 5.1 runtime and licensed FR3/tactile assets
+PyTorch 2.11.0+cu128, external Isaac Sim 6.0.1 runtime and licensed FR3/tactile assets
 
 **Storage**: Tracked YAML/JSON/Markdown configuration and cards; external HDF5 datasets plus
 JSON/JSONL/CSV evidence, checksums, logs, and optional videos
@@ -31,6 +31,11 @@ Isaac Sim safety/task/replay gates; dataset and evaluation consistency validator
 
 **Target Platform**: Linux workstation with a no-simulator CPU path and an optional supported
 NVIDIA/Isaac Sim GPU path
+
+**Runtime policy**: Development uses driver 550.144.03 as `UNVALIDATED`, GPU 0 for RTX rendering,
+and CPU physics for experimental Contact Sensor. Native GPU Contact is fail-fast blocked by
+`GPU_CONTACT_NATIVE_INSTABILITY`; release physical/data/replay/evaluation evidence must be rerun on
+a currently validated/reference driver.
 
 **Project Type**: Installable Python library with CLI scripts and external simulator integration
 
@@ -74,6 +79,32 @@ required work was spread across 12 modified tracked files and 221 untracked entr
 `datasets/` ignore rule also matched the Python source package, and runtime output/configuration was
 not reproducible from a clean checkout. See [research.md](./research.md) for the evidence and design
 decisions derived from it.
+
+## Isaac Sim 6.0.1 migration checkpoints
+
+The migration did not add formal gates or status enums:
+
+| Checkpoint | Result | Claim boundary |
+|---|---|---|
+| P0 environment | `PASS_SMOKE` | Python 3.12/Kit/100-step startup only |
+| G-1A asset/API | `PASS_SMOKE` | FR3, CPU Contact lifecycle, RTX RGB/depth, 500-step stability |
+| G0 repository integrity | `PASS_BENCHMARK` | Clean export/install/test evidence; no physical benchmark result |
+| G-1B repository integration | `PASS_SMOKE` | 100 resets, 500-step real-FR3 path, A/B compatibility |
+
+The candidate lock was created before G-1B under `requirements/candidates/`. After G0 and G-1B
+passed it was promoted through `requirements/lock-py312.txt` and
+`requirements/isaac-sim-6.0.1.md`; the Python 3.11/Isaac Sim 5.1 environment moved to
+`requirements/archive/` as reference-only.
+
+Zero-action regression uses:
+
+```text
+allowed_drift = min(max(2 * drift_5.1, 0.05 mm), 1.0 mm)
+```
+
+Penetration uses `min(penetration_5.1 + 1 mm, absolute_safety_limit)` when a 5.1 value exists,
+plus the independent 6.0.1 absolute limit. Contact lifecycle uses a 5-step ready window, 2-step
+onset tolerance, 5-step release timeout, and 3-step stable debounce window.
 
 ## Gate Architecture
 

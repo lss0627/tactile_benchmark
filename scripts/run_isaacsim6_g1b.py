@@ -79,6 +79,9 @@ def run_runtime(
     contact_detected = 0
     q_initial = np.zeros(9, dtype=np.float32)
     max_drift = 0.0
+    max_penetration = 0.0
+    penetration_streak = 0
+    max_penetration_streak = 0
     completed_cycles = 0
     completed_steps = 0
     observation_contract: dict[str, Any] = {}
@@ -115,6 +118,16 @@ def run_runtime(
                 errors.append(f"rollout_step_{index}: nonfinite joint state")
                 break
             max_drift = max(max_drift, float(np.max(np.abs(q - q_initial))))
+            penetration = float(env.read_button_penetration_m())
+            if not np.isfinite(penetration):
+                errors.append(f"rollout_step_{index}: nonfinite penetration")
+                break
+            max_penetration = max(max_penetration, penetration)
+            if penetration > float(cfg.get("penetration_persistent_threshold_m", 0.001)):
+                penetration_streak += 1
+                max_penetration_streak = max(max_penetration_streak, penetration_streak)
+            else:
+                penetration_streak = 0
             contact_detected += int(bool(info["contact"]["contact_valid"]))
             if env.last_camera is not None:
                 camera_frames.append(env.last_camera)
@@ -142,6 +155,10 @@ def run_runtime(
                 max_sensor_skew_ticks=int(cfg.get("max_sensor_skew_ticks", 1)),
             ),
         )
+        penetration_ok = bool(
+            max_penetration <= float(cfg.get("penetration_absolute_limit_m", 0.005))
+            and max_penetration_streak <= int(cfg.get("penetration_max_stable_steps", 5))
+        )
         ok = bool(
             not errors
             and completed_cycles == int(cycles)
@@ -149,6 +166,7 @@ def run_runtime(
             and invalid_after_reset == 0
             and stale_handles == 0
             and camera_report["ok"]
+            and penetration_ok
         )
         report = {
         "ok": ok,
@@ -175,6 +193,9 @@ def run_runtime(
         "rollout_steps_completed": completed_steps,
         "contact_valid_steps": contact_detected,
         "max_joint_drift_rad": max_drift,
+        "max_penetration_m": max_penetration,
+        "max_persistent_penetration_steps": max_penetration_streak,
+        "penetration_ok": penetration_ok,
         "action_contract": action_contract,
         "observation_contract": observation_contract,
         "camera": camera_report,

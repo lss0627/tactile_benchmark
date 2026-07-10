@@ -16,11 +16,11 @@ physical, and benchmark evidence are never interchangeable.
 
 **Purpose**: Prepare a reviewable implementation surface without changing public semantics.
 
-- [ ] T001 Write failing repository-audit tests in `tests/test_repository_audit.py` and add the expected JSON schema fixture in `tests/fixtures/repository_audit.schema.json` for tracked, modified, untracked, ignored-required, generated, and external-asset classifications (FR-001, FR-002; red-state evidence: current ignored/untracked required inputs are reported).
-- [ ] T002 [P] Freeze current action/observation/dataset contract fixtures in `tests/fixtures/contracts/v0.1.0/` and add snapshot tests in `tests/test_contract_snapshots.py` (FR-013, FR-014, FR-015; DoD: tests identify every incompatible drift).
-- [ ] T003 [P] Add the Spec Kit evidence and gate schemas to runtime-owned paths `isaac_tactile_libero/schemas/evidence_manifest.schema.json` and `isaac_tactile_libero/schemas/gate_status.schema.json`, preserving the canonical copies in `specs/001-benchmark-reconstruction/contracts/` (FR-005, FR-011; DoD: byte/digest equivalence test passes).
-- [ ] T004 [P] Define pinned no-simulator and optional simulator dependency inputs in `requirements/lock-py310.txt` and `requirements/isaac-sim-5.1.md` (FR-003, FR-004; DoD: every direct dependency in `pyproject.toml` has a resolved version/provenance entry).
-- [ ] T005 Record the pre-implementation regression baseline as raw `pytest -q` output and contract snapshot results in `outputs/evidence/G0/baseline/{pytest.log,summary.json}`; T013 later wraps these inputs in a manifest (FR-011, FR-027; evidence class: `runtime_smoke`, never benchmark).
+- [x] T001 Write failing repository-audit tests in `tests/test_repository_audit.py` and add the expected JSON schema fixture in `tests/fixtures/repository_audit.schema.json` for tracked, modified, untracked, ignored-required, generated, and external-asset classifications (FR-001, FR-002; red-state evidence: current ignored/untracked required inputs are reported).
+- [x] T002 [P] Freeze current action/observation/dataset contract fixtures in `tests/fixtures/contracts/v0.1.0/` and add snapshot tests in `tests/test_contract_snapshots.py` (FR-013, FR-014, FR-015; DoD: tests identify every incompatible drift).
+- [x] T003 [P] Add the Spec Kit evidence and gate schemas to runtime-owned paths `isaac_tactile_libero/schemas/evidence-manifest.schema.json` and `isaac_tactile_libero/schemas/gate-status.schema.json`, preserving the canonical copies in `specs/001-benchmark-reconstruction/contracts/` (FR-005, FR-011; DoD: byte/digest equivalence test passes).
+- [x] T004 [P] Create the reproducible Python 3.12/Isaac Sim 6.0.1 candidate lock under `requirements/candidates/`, use it for G-1B, promote it to `requirements/lock-py312.txt` only after pass, and preserve Python 3.11/Isaac Sim 5.1 under `requirements/archive/` (FR-003, FR-004).
+- [x] T005 Record the pre-implementation regression baseline and the clean-export full-suite result under `outputs/evidence/G0/`; T013 wraps the clean inputs in a manifest (FR-011, FR-027; regression coverage is not physical benchmark evidence).
 
 ---
 
@@ -30,14 +30,14 @@ physical, and benchmark evidence are never interchangeable.
 
 **Critical**: User-story runtime work starts only after this phase passes the no-simulator suite.
 
-- [ ] T006 [P] Write failing manifest validation/freshness tests in `tests/test_evidence_manifest.py` for clean/dirty commits, code/config/asset digests, missing hashes, stale semantic inputs, and invalid benchmark claims (FR-005, FR-011).
-- [ ] T007 Implement immutable manifest construction, validation, hashing, and freshness comparison in `isaac_tactile_libero/evidence/manifest.py` and `isaac_tactile_libero/evidence/__init__.py` (FR-005, FR-011; depends on T003, T006; DoD: `pytest -q tests/test_evidence_manifest.py`).
-- [ ] T008 [P] Write failing gate-transition and predecessor tests in `tests/test_gate_status.py`, including rejection of `PASS_SMOKE` for physical/benchmark predecessors (FR-005, FR-028).
-- [ ] T009 Implement gate state, transition validation, blocker recording, and canonical serialization in `isaac_tactile_libero/evidence/gates.py` (FR-005, FR-028; depends on T008; DoD: `pytest -q tests/test_gate_status.py`).
-- [ ] T010 [P] Write failing configuration/path tests in `tests/test_config_resolution.py` for environment overrides, relative paths, missing assets, license/provenance, and developer-specific absolute paths (FR-003, FR-004).
-- [ ] T011 Implement typed path and external-asset resolution in `isaac_tactile_libero/assets/resolver.py`, update `isaac_tactile_libero/assets/manifest.py`, and version `assets/asset_manifest.csv` (FR-003, FR-004; depends on T010).
-- [ ] T012 [P] Add structured run logging and run-ID tests in `tests/test_run_context.py`, covering command argv, timestamps, dependency lock, platform, Isaac version, and GPU identity (FR-011, FR-021).
-- [ ] T013 Implement the shared run context in `isaac_tactile_libero/evidence/run_context.py` and CLI helpers in `isaac_tactile_libero/evidence/cli.py`, then wrap T005 baseline inputs in `outputs/evidence/G0/baseline/manifest.json` (FR-011, FR-021; depends on T005, T007, T012; DoD: evidence can be emitted without importing Isaac Sim).
+- [x] T006 [P] Write failing manifest validation/freshness tests in `tests/test_evidence_manifest.py` for clean/dirty commits, code/config/asset digests, missing hashes, stale semantic inputs, and invalid benchmark claims (FR-005, FR-011).
+- [x] T007 Implement immutable manifest construction, validation, hashing, and freshness comparison in `isaac_tactile_libero/evidence/manifest.py` and `isaac_tactile_libero/evidence/__init__.py` (FR-005, FR-011; depends on T003, T006; DoD: `pytest -q tests/test_evidence_manifest.py`).
+- [x] T008 [P] Write failing gate-transition and predecessor tests in `tests/test_gate_status.py`, including rejection of `PASS_SMOKE` for physical/benchmark predecessors (FR-005, FR-028).
+- [x] T009 Implement gate state, transition validation, blocker recording, and canonical serialization in `isaac_tactile_libero/evidence/gates.py` (FR-005, FR-028; depends on T008; DoD: `pytest -q tests/test_gate_status.py`).
+- [x] T010 [P] Write failing configuration/path tests in `tests/test_config_resolution.py` for environment overrides, relative paths, missing assets, license/provenance, and developer-specific absolute paths (FR-003, FR-004).
+- [x] T011 Implement typed path and external-asset resolution in `isaac_tactile_libero/assets/resolver.py`, update `isaac_tactile_libero/assets/manifest.py`, and version `assets/asset_manifest.csv` (FR-003, FR-004; depends on T010).
+- [x] T012 [P] Add structured run logging and run-ID tests in `tests/test_run_context.py`, covering command argv, timestamps, dependency lock, platform, Isaac version, and GPU identity (FR-011, FR-021).
+- [x] T013 Implement the shared run context in `isaac_tactile_libero/evidence/run_context.py` and CLI helpers in `isaac_tactile_libero/evidence/cli.py`, then wrap G0 clean inputs in a validated manifest (FR-011, FR-021; depends on T005, T007, T012; DoD: evidence can be emitted without importing Isaac Sim).
 
 **Checkpoint F0**: `pytest -q tests/test_evidence_manifest.py tests/test_gate_status.py tests/test_config_resolution.py tests/test_run_context.py tests/test_contract_snapshots.py` passes.
 
@@ -52,20 +52,20 @@ no-simulator suite, and resolve external assets only through documented configur
 
 ### Tests
 
-- [ ] T014 [P] [US1] Add failing ignore-rule regression tests in `tests/test_repository_ignore_rules.py` proving `isaac_tactile_libero/datasets/*.py` and required configs are not ignored while generated dataset/output files remain ignored (FR-001, FR-002; AS-US1-1).
-- [ ] T015 [P] [US1] Add failing required-file inventory tests in `tests/test_required_repository_files.py` for all public modules, schemas, task/robot/backend configs, scripts, and canonical Spec Kit artifacts (FR-001, FR-026; AS-US1-1).
-- [ ] T016 [P] [US1] Add failing absolute-path and asset-provenance scans in `tests/test_portable_configuration.py` (FR-003, FR-004; SC-002; AS-US1-2).
-- [ ] T017 [US1] Add an isolated install/entry-point test to `tests/test_clean_checkout.py` that builds an sdist/wheel, installs it into a temporary environment, imports all declared modules, and runs the no-simulator smoke (FR-001, FR-003; SC-001).
+- [x] T014 [P] [US1] Add failing ignore-rule regression tests in `tests/test_repository_ignore_rules.py` proving `isaac_tactile_libero/datasets/*.py` and required configs are not ignored while generated dataset/output files remain ignored (FR-001, FR-002; AS-US1-1).
+- [x] T015 [P] [US1] Add failing required-file inventory tests in `tests/test_required_repository_files.py` for all public modules, schemas, task/robot/backend configs, scripts, and canonical Spec Kit artifacts (FR-001, FR-026; AS-US1-1).
+- [x] T016 [P] [US1] Add failing absolute-path and asset-provenance scans in `tests/test_portable_configuration.py` (FR-003, FR-004; SC-002; AS-US1-2).
+- [x] T017 [US1] Add isolated export/install coverage through `tests/test_clean_checkout_cli.py` and `scripts/check_clean_checkout.py`; build a wheel, install it in a temporary venv, import the public factory, and run the full no-simulator suite (FR-001, FR-003; SC-001).
 
 ### Implementation
 
-- [ ] T018 [US1] Correct `.gitignore` with anchored generated-data/output patterns so the `isaac_tactile_libero/datasets/` source package and required configs are visible (FR-001, FR-002; depends on T014).
-- [ ] T019 [US1] Implement `scripts/audit_repository.py`, classify every reported path as required tracked source, generated output, external asset, or disposable cache in `configs/repository/required_files.yaml`, and add required files to the reviewable change set without deleting unrelated user work (FR-001, FR-002; depends on T001, T015).
-- [ ] T020 [P] [US1] Replace developer-specific required paths in `configs/robots/`, `configs/tasks/`, `configs/dataset/`, and `configs/eval/` with resolver keys/environment overrides and document examples in `docs/asset_setup.md` (FR-003, FR-004; depends on T011, T016).
-- [ ] T021 [P] [US1] Update `pyproject.toml`, `README.md`, and `docs/installation.md` with the locked clean-install, no-simulator, and optional Isaac setup paths (FR-003; SC-001, SC-002).
-- [ ] T022 [US1] Implement `scripts/check_clean_checkout.py` to create/export a clean tree, build/install the package, audit required files, and run declared no-simulator checks without reading the original worktree (FR-001, FR-003; depends on T017-T021).
-- [ ] T023 [US1] Generate `outputs/evidence/G0/clean-checkout/report.json`, command log, dependency inventory, and manifest from one clean revision; fail if dirty/untracked required inputs contribute (FR-001-FR-004, FR-011; SC-001, SC-002; AS-US1-1/2/3).
-- [ ] T024 [US1] Review G0 with `scripts/review_gate.py --gate G0 --evidence outputs/evidence/G0/clean-checkout/manifest.json` and update `specs/001-benchmark-reconstruction/acceptance.md` plus `docs/current_project_state.md` from generated status (FR-005, FR-026-FR-028; expected status: `PASS_BENCHMARK` or explicit `BLOCKED`).
+- [x] T018 [US1] Correct `.gitignore` with anchored generated-data/output patterns so the `isaac_tactile_libero/datasets/` source package and required configs are visible (FR-001, FR-002; depends on T014).
+- [x] T019 [US1] Implement `scripts/audit_repository.py`, classify every reported path as required tracked source, generated output, external asset, or disposable cache in `configs/repository/required_files.yaml`, and add required files to the reviewable change set without deleting unrelated user work (FR-001, FR-002; depends on T001, T015).
+- [x] T020 [P] [US1] Replace developer-specific required paths in required configs with resolver keys/environment overrides and document examples in `docs/asset_setup.md` (FR-003, FR-004; depends on T011, T016).
+- [x] T021 [P] [US1] Update `pyproject.toml`, `README.md`, and `docs/installation.md` with the locked clean-install, no-simulator, and optional Isaac setup paths (FR-003; SC-001, SC-002).
+- [x] T022 [US1] Implement `scripts/check_clean_checkout.py` to create/export a clean tree, build/install the package, audit required files, and run declared no-simulator checks without reading the original worktree (FR-001, FR-003; depends on T017-T021).
+- [x] T023 [US1] Generate `outputs/evidence/G0/clean-checkout/report.json`, command log, dependency inventory, checksums, wheel, and manifest from the reviewed clean revision recorded in `repository.commit`; dirty/untracked required inputs are rejected (FR-001-FR-004, FR-011; SC-001, SC-002; AS-US1-1/2/3).
+- [x] T024 [US1] Review G0 with `scripts/review_gate.py --gate G0 --evidence outputs/evidence/G0/clean-checkout/manifest.json` and synchronize canonical status (FR-005, FR-026-FR-028; result: `PASS_BENCHMARK`).
 
 **Gate G0 evidence**: clean-checkout report, full `pytest -q` log, tracked-file audit, portable-config
 scan, asset diagnostics, wheel/sdist hashes, and one valid evidence manifest.

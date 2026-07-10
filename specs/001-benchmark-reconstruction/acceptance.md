@@ -9,7 +9,8 @@
 | Scope | Status | Claim class | Reason |
 |---|---|---|---|
 | Spec Kit documentation package | `PASS_SMOKE` | `dry_run` | 28 FR, 11 SC, 20 scenarios, and 108 tasks passed documentation consistency/format validation; no implementation gate is implied |
-| G0 Repository integrity | `NOT_STARTED` | `dry_run` | Existing worktree is dirty and required inputs are not yet proven from a clean checkout |
+| Isaac Sim 6 P0/G-1A/G-1B migration | `PASS_SMOKE` | `runtime_smoke` | 6.0.1 on Python 3.12; 100 Contact cycles, 100 repository resets, 500-step rollout, RGB/depth and A/B checks passed on unvalidated driver |
+| G0 Repository integrity | `PASS_BENCHMARK` | `benchmark` | Clean revision recorded by the current manifest was exported, wheel-installed, and passed the full no-simulator suite; manifest review/freshness passed |
 | G1 Physical PressButton safety | `NOT_STARTED` | `physical_runtime` | Current geometric/diagnostic path cannot satisfy physical task truth |
 | G2 Unified real backend | `NOT_STARTED` | `physical_runtime` | Accepted real FR3 path is not yet exposed through the public factory |
 | G3 Truthful tactile | `NOT_STARTED` | `physical_runtime` | Stable missing-modality schema exists; accepted real force/VT path does not |
@@ -38,13 +39,13 @@ any physical/data/evaluation item below.
 **Requirements**: FR-001-FR-005, FR-011, FR-026-FR-028; SC-001, SC-002; AS-US1-1/2/3
 **Tasks**: T001-T024
 
-- [ ] G0-01 `isaac_tactile_libero/datasets/` source and all required configs are tracked and not ignored.
-- [ ] G0-02 Generated datasets/outputs remain excluded without hiding code or mandatory runtime inputs.
-- [ ] G0-03 No mandatory configuration or command contains a developer-specific absolute path.
-- [ ] G0-04 External assets have configurable resolution, version, provenance, license, and diagnostics.
-- [ ] G0-05 An isolated checkout builds/installs and passes the complete no-simulator suite.
-- [ ] G0-06 Evidence identifies a clean revision, environment lock, command, hashes, and current configs.
-- [ ] G0-07 Canonical status and documentation match the reviewed manifest.
+- [x] G0-01 `isaac_tactile_libero/datasets/` source and all required configs are tracked and not ignored.
+- [x] G0-02 Generated datasets/outputs remain excluded without hiding code or mandatory runtime inputs.
+- [x] G0-03 No mandatory configuration or command contains a developer-specific absolute path.
+- [x] G0-04 External assets have configurable resolution, version, provenance, license, and diagnostics.
+- [x] G0-05 An isolated checkout builds/installs and passes the complete no-simulator suite.
+- [x] G0-06 Evidence identifies a clean revision, environment lock, command, hashes, and current configs.
+- [x] G0-07 Canonical status and documentation match the reviewed manifest.
 
 **Target command**:
 
