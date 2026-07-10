@@ -66,3 +66,18 @@ def test_repository_audit_schema_fixture_lists_all_classifications() -> None:
         "external_assets",
         "clean_checkout_ready",
     } <= required
+
+
+def test_repository_audit_supports_git_archive_without_dot_git(tmp_path: Path) -> None:
+    (tmp_path / "isaac_tactile_libero").mkdir()
+    (tmp_path / "isaac_tactile_libero" / "__init__.py").write_text("", encoding="utf-8")
+    report = audit_repository(
+        tmp_path,
+        required_patterns=("isaac_tactile_libero/**/*.py",),
+        generated_patterns=(),
+    )
+    assert report["source_kind"] == "archive"
+    assert report["tracked"] == ["isaac_tactile_libero/__init__.py"]
+    assert report["modified"] == []
+    assert report["untracked_required"] == []
+    assert report["clean_checkout_ready"] is True

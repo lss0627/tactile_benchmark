@@ -48,6 +48,16 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _is_git_worktree(root: Path) -> bool:
+    result = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0 and result.stdout.strip() == "true"
+
+
 def audit_repository(
     root: str | Path,
     *,
@@ -56,27 +66,38 @@ def audit_repository(
     external_assets: Iterable[str | Path] = (),
 ) -> dict:
     repository = Path(root).resolve()
-    tracked = {
-        item.decode("utf-8")
-        for item in _run_git(repository, "ls-files", "-z").split(b"\0")
-        if item
-    }
+    git_worktree = _is_git_worktree(repository)
+    if git_worktree:
+        tracked = {
+            item.decode("utf-8")
+            for item in _run_git(repository, "ls-files", "-z").split(b"\0")
+            if item
+        }
+    else:
+        tracked = {
+            path.relative_to(repository).as_posix()
+            for path in repository.rglob("*")
+            if path.is_file() and "__pycache__" not in path.parts
+        }
     required = _expand_files(repository, required_patterns)
     generated = _expand_files(repository, generated_patterns)
     modified: set[str] = set()
     untracked: set[str] = set()
-    entries = _run_git(repository, "status", "--porcelain=v1", "-z", "--untracked-files=all")
-    for raw in entries.split(b"\0"):
-        if not raw:
-            continue
-        text = raw.decode("utf-8")
-        status = text[:2]
-        path = text[3:]
-        if status == "??":
-            untracked.add(path)
-        elif status != "!!":
-            modified.add(path)
-    ignored_required = sorted(path for path in required if _is_ignored(repository, path))
+    if git_worktree:
+        entries = _run_git(repository, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+        for raw in entries.split(b"\0"):
+            if not raw:
+                continue
+            text = raw.decode("utf-8")
+            status = text[:2]
+            path = text[3:]
+            if status == "??":
+                untracked.add(path)
+            elif status != "!!":
+                modified.add(path)
+        ignored_required = sorted(path for path in required if _is_ignored(repository, path))
+    else:
+        ignored_required = []
     untracked_required = sorted((required & untracked) - set(ignored_required))
     asset_records = []
     for value in external_assets:
@@ -90,6 +111,7 @@ def audit_repository(
         )
     return {
         "repository_root": str(repository),
+        "source_kind": "worktree" if git_worktree else "archive",
         "tracked": sorted(tracked),
         "modified": sorted(modified),
         "untracked_required": untracked_required,
