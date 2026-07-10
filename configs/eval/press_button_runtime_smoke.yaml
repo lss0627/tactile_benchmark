@@ -1,0 +1,10 @@
+task: PressButton
+backend: isaacsim_press_button
+policy: scripted
+max_steps: 80
+dry_run_runtime: true
+runtime_config: configs/backend/isaacsim_visual_smoke.yaml
+output_dir: outputs/eval_press_button_runtime_smoke
+benchmark_result: false
+single_task_runtime_smoke: true
+not_for_paper_claims: true

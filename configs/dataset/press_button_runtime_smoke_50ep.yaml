@@ -1,0 +1,72 @@
+# PressButton 50-episode runtime-smoke stability gate.
+# This is not a formal benchmark dataset or paper-results dataset.
+
+task: PressButton
+backend: isaacsim_press_button
+dataset_kind: runtime_smoke
+num_episodes: 50
+seeds:
+  - 0
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  - 6
+  - 7
+  - 8
+  - 9
+  - 10
+  - 11
+  - 12
+  - 13
+  - 14
+  - 15
+  - 16
+  - 17
+  - 18
+  - 19
+  - 20
+  - 21
+  - 22
+  - 23
+  - 24
+  - 25
+  - 26
+  - 27
+  - 28
+  - 29
+  - 30
+  - 31
+  - 32
+  - 33
+  - 34
+  - 35
+  - 36
+  - 37
+  - 38
+  - 39
+  - 40
+  - 41
+  - 42
+  - 43
+  - 44
+  - 45
+  - 46
+  - 47
+  - 48
+  - 49
+policy: scripted
+tactile: force_wrench
+max_steps: 80
+runtime_config: "outputs/isaacsim_visual_smoke/isaac_conda_runtime.yaml"
+output: "outputs/press_button_runtime_dataset_smoke/press_button_runtime_smoke_50ep_gpu1.hdf5"
+headless: true
+webrtc: true
+save_screenshots: false
+benchmark_result: false
+not_for_paper_claims: true
+force_source: unavailable
+contact_force_available: false
+no_fake_force_from_displacement: true
+lightwheel_assets_used: false

@@ -1,0 +1,19 @@
+{
+  "articulation_root_path": "/World/FR3",
+  "controller_api": "core_Articulation",
+  "controller_initialized": true,
+  "dof_count": 9,
+  "joint_names": [
+    "fr3_joint1",
+    "fr3_joint2",
+    "fr3_joint3",
+    "fr3_joint4",
+    "fr3_joint5",
+    "fr3_joint6",
+    "fr3_joint7",
+    "fr3_finger_joint1",
+    "fr3_finger_joint2"
+  ],
+  "joint_state_read": true,
+  "num_joints": 9
+}

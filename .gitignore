@@ -12,12 +12,12 @@ venv/
 env/
 
 # Generated artifacts
-datasets/
-logs/
-outputs/
-demos_output/
-eval_logs/
-rollouts/
+/datasets/
+/logs/
+/outputs/
+/demos_output/
+/eval_logs/
+/rollouts/
 *.hdf5
 *.mp4
 

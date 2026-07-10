@@ -28,11 +28,20 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def batch_summary(batch: dict[str, Any], dataset_path: Path) -> dict[str, Any]:
+def batch_summary(batch: dict[str, Any], dataset_path: Path, dataset_info: dict[str, Any] | None = None) -> dict[str, Any]:
+    dataset_info = dict(dataset_info or {})
     first = batch["observations"][0] if batch["observations"] else {}
     tactile = first.get("tactile", {}) if isinstance(first, dict) else {}
     payload = {
         "dataset_path": str(dataset_path),
+        "dataset_kind": dataset_info.get("dataset_kind", "mock_dataset"),
+        "runtime_smoke": dataset_info.get("dataset_kind") == "runtime_smoke",
+        "robot_mode": dataset_info.get("robot_mode"),
+        "robot_config_path": dataset_info.get("robot_config_path"),
+        "placeholder_robot": dataset_info.get("placeholder_robot"),
+        "real_fr3_articulation": dataset_info.get("real_fr3_articulation"),
+        "benchmark_result": dataset_info.get("benchmark_result", False),
+        "not_for_paper_claims": dataset_info.get("not_for_paper_claims", True),
         "policy_name": batch["policy_name"],
         "policy_type": batch["policy_type"],
         "allowed_modalities": batch["allowed_modalities"],
@@ -57,12 +66,13 @@ def main() -> int:
     args = parse_args()
     dataset_path = Path(args.dataset)
     with HDF5DatasetReader(dataset_path) as reader:
+        dataset_info = reader.dataset_info
         batch = build_mock_baseline_batch(
             reader,
             get_baseline_spec(args.policy),
             max_episodes=args.max_episodes,
         )
-    payload = batch_summary(batch, dataset_path)
+    payload = batch_summary(batch, dataset_path, dataset_info)
     if args.output:
         output_path = Path(args.output)
         output_path.parent.mkdir(parents=True, exist_ok=True)

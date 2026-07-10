@@ -1,0 +1,26 @@
+{
+  "articulation_root_path": "/World/FR3",
+  "dof_count": 9,
+  "ee_frame_candidates": [
+    "/World/FR3/fr3_hand_tcp"
+  ],
+  "finger_link_candidates": [
+    "/World/FR3/fr3_leftfinger",
+    "/World/FR3/fr3_rightfinger"
+  ],
+  "gripper_frame_candidates": [
+    "/World/FR3/fr3_hand"
+  ],
+  "joint_names": [
+    "fr3_joint1",
+    "fr3_joint2",
+    "fr3_joint3",
+    "fr3_joint4",
+    "fr3_joint5",
+    "fr3_joint6",
+    "fr3_joint7",
+    "fr3_finger_joint1",
+    "fr3_finger_joint2"
+  ],
+  "num_joints": 9
+}

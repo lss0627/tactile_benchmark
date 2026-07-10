@@ -1,0 +1,9 @@
+max_delta_xyz_per_step: 0.01
+max_delta_rot_per_step: 0.05
+max_joint_velocity_norm: 1.0
+max_joint_position_drift: 0.05
+abort_on_nan: true
+abort_on_workspace_violation: true
+abort_on_large_joint_motion: true
+benchmark_result: false
+not_for_paper_claims: true

@@ -1,0 +1,18 @@
+# FR3/end-effector placeholder contract for PressButton runtime smoke.
+# This is not a real FR3 articulation, not a Lightwheel asset, and not a
+# benchmark-result robot configuration.
+
+robot_mode: ee_placeholder
+robot_name: fr3_tactile_placeholder
+use_real_fr3_usd: false
+use_lightwheel_assets: false
+ee_prim_path: /World/FR3Placeholder/EE
+gripper_left_prim_path: /World/FR3Placeholder/EE/LeftFinger
+gripper_right_prim_path: /World/FR3Placeholder/EE/RightFinger
+default_ee_pose: [0.0, 0.0, 0.76, 0.0, 0.0, 0.0, 1.0]
+action_schema_version: "0.1.0"
+control_mode: kinematic_delta_ee
+placeholder_robot: true
+real_fr3_articulation: false
+benchmark_result: false
+not_for_paper_claims: true

@@ -27,6 +27,9 @@ from isaac_tactile_libero.envs.isaacsim_backend_status import (
 from isaac_tactile_libero.envs.isaacsim_press_button_env import (
     IsaacSimPressButtonEnv,
     build_press_button_runtime_status,
+    default_robot_runtime_fields,
+    default_press_button_contact_metrics,
+    press_button_contact_status_fields,
     random_press_button_action,
     scripted_press_button_action,
     write_json,
@@ -45,6 +48,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-rollout-json", action="store_true")
     parser.add_argument("--output", default="outputs/press_button_runtime_loop/status.json")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--robot-mode", choices=("pusher", "ee_placeholder"), default="pusher")
+    parser.add_argument("--robot-config", help="Optional robot placeholder config path.")
     return parser.parse_args()
 
 
@@ -75,10 +80,39 @@ def _observation_summary(obs: dict[str, Any]) -> dict[str, Any]:
     return {
         "timestep": int(obs["timestep"]),
         "pusher_pose": runtime["pusher_pose"],
+        "ee_pose": runtime["ee_pose"],
         "button_pose": runtime["button_pose"],
+        "robot_mode": runtime["robot_mode"],
+        "robot_name": runtime["robot_name"],
+        "robot_config_path": runtime["robot_config_path"],
+        "placeholder_robot": bool(runtime["placeholder_robot"]),
+        "placeholder_pusher": bool(runtime["placeholder_pusher"]),
+        "real_fr3_articulation": bool(runtime["real_fr3_articulation"]),
+        "real_fr3_control": bool(runtime["real_fr3_control"]),
+        "gripper_command": float(runtime["gripper_command"]),
+        "action_schema_version": runtime["action_schema_version"],
         "button_pressed": bool(runtime["button_pressed"]),
         "contact_proxy": bool(runtime["contact_proxy"]),
         "geometric_contact_proxy": bool(runtime["geometric_contact_proxy"]),
+        "physics_contact_available": bool(runtime["physics_contact_available"]),
+        "contact_signal_seen": bool(runtime["contact_signal_seen"]),
+        "contact_force_available": bool(runtime["contact_force_available"]),
+        "contact_force_norm": float(runtime["contact_force_norm"]),
+        "max_contact_force_norm": float(runtime["max_contact_force_norm"]),
+        "mean_contact_force_norm": float(runtime["mean_contact_force_norm"]),
+        "contact_force_unit": runtime["contact_force_unit"],
+        "contact_force_source": runtime["contact_force_source"],
+        "contact_force_confirmed": bool(runtime["contact_force_confirmed"]),
+        "contact_probe_method": runtime["contact_probe_method"],
+        "contact_api_error": runtime["contact_api_error"],
+        "pusher_prim_path": runtime["pusher_prim_path"],
+        "button_prim_path": runtime["button_prim_path"],
+        "button_top_prim_path": runtime["button_top_prim_path"],
+        "button_displacement_available": bool(runtime["button_displacement_available"]),
+        "button_press_depth": float(runtime["button_press_depth"]),
+        "max_button_press_depth": float(runtime["max_button_press_depth"]),
+        "using_geometric_fallback": bool(runtime["using_geometric_fallback"]),
+        "success_source": runtime["success_source"],
     }
 
 
@@ -92,6 +126,8 @@ def main() -> int:
 
     if args.dry_run:
         rollout_path = str(_rollout_path_for_status(output)) if args.save_rollout_json else None
+        metrics = default_press_button_contact_metrics()
+        metrics.update(default_robot_runtime_fields(robot_mode=args.robot_mode, robot_config_path=args.robot_config))
         if args.save_rollout_json:
             write_json(
                 rollout_path,
@@ -102,13 +138,14 @@ def main() -> int:
                     "dry_run": True,
                     "runtime_loop_executed": False,
                     "geometric_contact_proxy": True,
-                    "placeholder_pusher": True,
+                    **default_robot_runtime_fields(robot_mode=args.robot_mode, robot_config_path=args.robot_config),
                     "real_fr3_control": False,
                     "real_tactile_contact": False,
                     "success": False,
                     "button_pressed": False,
                     "benchmark_result": False,
                     "visual_smoke_only": False,
+                    **press_button_contact_status_fields(metrics),
                     "steps": [],
                 },
             )
@@ -123,7 +160,7 @@ def main() -> int:
             policy_name=args.policy,
             success=False,
             button_pressed=False,
-            metrics={},
+            metrics=metrics,
             errors=[],
             warnings=list(readiness.get("warnings", [])),
         )
@@ -132,6 +169,7 @@ def main() -> int:
         status["webrtc_enabled"] = bool(webrtc)
         status["max_steps"] = int(args.max_steps)
         status["config_path"] = str(args.config)
+        status["robot_config_path"] = args.robot_config
         status["rollout_path"] = rollout_path
         write_json(output, status)
         print(json.dumps(status, indent=2, sort_keys=True))
@@ -159,6 +197,7 @@ def main() -> int:
         status["webrtc_enabled"] = bool(webrtc)
         status["max_steps"] = int(args.max_steps)
         status["config_path"] = str(args.config)
+        status["robot_config_path"] = args.robot_config
         write_json(output, status)
         print(json.dumps(status, indent=2, sort_keys=True))
         return 1
@@ -171,7 +210,14 @@ def main() -> int:
     final_info: dict[str, Any] = {"success": False, "button_pressed": False, "metrics": {}}
     warnings = list(readiness.get("warnings", []))
     try:
-        env = IsaacSimPressButtonEnv(cfg=cfg, headless=headless, webrtc=webrtc, enable_runtime=True)
+        env = IsaacSimPressButtonEnv(
+            cfg=cfg,
+            headless=headless,
+            webrtc=webrtc,
+            enable_runtime=True,
+            robot_mode=args.robot_mode,
+            robot_config_path=args.robot_config,
+        )
         env.build()
         obs = env.reset(seed=args.seed)
         rng = np.random.default_rng(args.seed)
@@ -187,6 +233,8 @@ def main() -> int:
                     "truncated": bool(truncated),
                     "success": bool(info["success"]),
                     "button_pressed": bool(info["button_pressed"]),
+                    "success_source": info["metrics"].get("success_source", "none"),
+                    **press_button_contact_status_fields(info["metrics"]),
                     "observation": _observation_summary(next_obs),
                     "metrics": info["metrics"],
                 }
@@ -205,8 +253,14 @@ def main() -> int:
                     "policy_name": args.policy,
                     "seed": int(args.seed),
                     "geometric_contact_proxy": True,
-                    "placeholder_pusher": True,
+                    **default_robot_runtime_fields(
+                        robot_mode=args.robot_mode,
+                        robot_config_path=args.robot_config,
+                        ee_pose=dict(final_info.get("metrics", {})).get("ee_pose"),
+                        gripper_command=float(dict(final_info.get("metrics", {})).get("gripper_command", 0.0)),
+                    ),
                     "benchmark_result": False,
+                    **press_button_contact_status_fields(dict(final_info.get("metrics", {}))),
                     "steps": rollout_steps,
                 },
             )
@@ -238,6 +292,7 @@ def main() -> int:
         status["webrtc_enabled"] = bool(webrtc)
         status["max_steps"] = int(args.max_steps)
         status["config_path"] = str(args.config)
+        status["robot_config_path"] = args.robot_config
         write_json(output, status)
         print(json.dumps(status, indent=2, sort_keys=True))
         return 0
@@ -262,6 +317,7 @@ def main() -> int:
         status["webrtc_enabled"] = bool(webrtc)
         status["max_steps"] = int(args.max_steps)
         status["config_path"] = str(args.config)
+        status["robot_config_path"] = args.robot_config
         write_json(output, status)
         print(json.dumps(status, indent=2, sort_keys=True))
         return 1

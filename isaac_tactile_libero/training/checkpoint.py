@@ -65,11 +65,24 @@ def build_mock_checkpoint(
 ) -> dict[str, Any]:
     spec = BASELINE_SPECS[policy_name]
     tactile_snapshot = dataset_info.get("tactile_config_snapshot", {})
+    dataset_kind = dataset_info.get("dataset_kind", "mock_dataset")
+    runtime_smoke = dataset_kind == "runtime_smoke"
+    dataset_episode_count = int(observation_filter_summary.get("dataset_episodes", dataset_info.get("num_episodes", 0)))
     return {
         "policy_name": policy_name,
         "policy_spec": policy_spec_dict(spec),
         "dataset_path": str(dataset_path),
         "dataset_schema_version": str(dataset_schema_version),
+        "dataset_kind": dataset_kind,
+        "runtime_smoke": bool(runtime_smoke),
+        "robot_mode": dataset_info.get("robot_mode"),
+        "robot_config_path": dataset_info.get("robot_config_path"),
+        "placeholder_robot": dataset_info.get("placeholder_robot"),
+        "real_fr3_articulation": dataset_info.get("real_fr3_articulation"),
+        "num_episodes": dataset_episode_count,
+        "insufficient_real_episodes": bool(runtime_smoke),
+        "benchmark_result": False,
+        "not_for_paper_claims": True,
         "tactile_config_snapshot_hash": stable_hash(tactile_snapshot),
         "tactile_config_snapshot_summary": tactile_snapshot_summary(tactile_snapshot),
         "action_schema_version": SCHEMA_VERSION,

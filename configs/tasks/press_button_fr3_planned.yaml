@@ -1,0 +1,27 @@
+task: PressButton
+suite_name: tactile_contact
+instruction: press the red button
+robot_mode: real_fr3_articulation_planned
+controller_connected: false
+scripted_policy_planned: true
+geometry_source: planned_from_press_button_runtime_scene_constants
+geometry_measured_in_runtime: false
+button_frame: /World/PressButton_RedPrimitive
+button_prim_path: /World/PressButton_RedPrimitive
+button_top_prim_path: /World/PressButton_RedPrimitive
+button_position: [0.55, 0.0, 0.47]
+button_normal: [0.0, 0.0, 1.0]
+button_press_axis: [0.0, 0.0, -1.0]
+button_press_depth: 0.03
+pre_press_offset: 0.08
+near_contact_offset: 0.012
+approach_distance: 0.16
+retreat_distance: 0.12
+recommended_max_ee_delta_per_step: 0.00025
+success_source: button_displacement
+contact_force_available: false
+force_source: unavailable
+uses_fake_force: false
+action_schema_version: "0.1.0"
+benchmark_result: false
+not_for_paper_claims: true
