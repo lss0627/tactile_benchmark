@@ -18,6 +18,9 @@ env/
 /demos_output/
 /eval_logs/
 /rollouts/
+/task_plan.md
+/findings.md
+/progress.md
 *.hdf5
 *.mp4
 
