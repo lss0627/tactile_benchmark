@@ -1,5 +1,5 @@
 schema_version: "1.0.0"
-robot_config_version: "1.0.0"
+robot_config_version: "1.0.1"
 robot_name: fr3_tactile
 articulation_config_path: configs/robots/fr3_real_articulation.yaml
 controller_config_path: configs/robots/fr3_ee_controller_contract.yaml
@@ -7,8 +7,18 @@ base_frame: fr3_link0
 ee_frame: fr3_hand_tcp
 
 workspace:
-  min_m: [0.30, -0.30, 0.20]
-  max_m: [0.70, 0.30, 0.80]
+  frame: world
+  source: measured_reset_tcp_and_declared_task_endpoints
+  evidence_run: workspace-diagnostic-8a49351eed9d
+  # Only X-min and Z-max changed. They retain ~20 mm around the measured reset TCP.
+  min_m: [0.20, -0.30, 0.20]
+  max_m: [0.70, 0.30, 0.90]
+  required_points_m:
+    reset: [0.22081154584884644, -0.000030178576707839966, 0.8803614377975464]
+    approach: [0.55, 0.0, 0.50]
+    press: [0.55, 0.0, 0.46]
+    release: [0.55, 0.0, 0.50]
+    retract: [0.55, 0.0, 0.51]
 
 joint_limits:
   names:

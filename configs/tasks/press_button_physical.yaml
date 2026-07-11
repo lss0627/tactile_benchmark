@@ -25,6 +25,7 @@ mechanism:
   joint_name: button_joint
   joint_type: prismatic
   joint_axis: [0.0, 0.0, -1.0]
+  base_position_m: [0.55, 0.0, 0.47]
   rest_position_m: 0.0
   lower_limit_m: 0.0
   travel_limit_m: 0.012
