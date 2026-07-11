@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 import scripts.run_fr3_press_button_press_smoke as runner
+from isaac_tactile_libero.robots.fr3_runtime_safety import FR3SafetySample, SafetyViolation
 
 
 REQUIRED_ARTIFACTS = {
@@ -301,3 +302,56 @@ def test_g1_dry_evidence_identifies_unborn_clean_checkout_repo(
     assert identity["commit"] == "0" * 40
     assert identity["dirty"] is True
     assert len(identity["dirty_patch_sha256"]) == 64
+
+
+def test_workspace_abort_preserves_violation_sample_target_and_scene_context() -> None:
+    sample = FR3SafetySample(
+        tcp_position=(0.1, 0.2, 0.3),
+        previous_tcp_position=(0.1, 0.2, 0.3),
+        reset_tcp_position=(0.1, 0.2, 0.3),
+        joint_positions=(0.0,),
+        joint_velocities=(0.0,),
+        requested_delta=(0.0, 0.0, 0.0005),
+        observed_delta=(0.0, 0.0, 0.0),
+        collision=False,
+        penetration_m=0.0,
+        stop_requested=False,
+        phase="APPROACH",
+    )
+    violation = SafetyViolation(
+        code="WORKSPACE_LIMIT",
+        observed=[0.1, 0.2, 0.3],
+        limit={"min": [0.3, -0.3, 0.2], "max": [0.7, 0.3, 0.8]},
+        phase="APPROACH",
+        message="",
+    )
+    scene_context = {
+        "workspace_frame": "world",
+        "workspace_min": [0.3, -0.3, 0.2],
+        "workspace_max": [0.7, 0.3, 0.8],
+        "robot_base_world_transform": {"translation_m": [0.0, 0.0, 0.0]},
+        "button_base_world_transform": {"translation_m": [0.55, 0.0, 0.47]},
+        "button_world_transform": {"translation_m": [0.55, 0.0, 0.47]},
+        "stage_meters_per_unit": 1.0,
+        "up_axis": "Z",
+    }
+
+    event = runner._structured_safety_event(
+        violation=violation,
+        sample=sample,
+        target_position=(0.55, 0.0, 0.5),
+        scene_context=scene_context,
+    )
+
+    assert event["code"] == "WORKSPACE_LIMIT"
+    assert event["phase"] == "APPROACH"
+    assert event["message"]
+    assert event["observed"] == violation.observed
+    assert event["limit"] == violation.limit
+    assert event["tcp_position"] == list(sample.tcp_position)
+    assert event["previous_tcp_position"] == list(sample.previous_tcp_position)
+    assert event["reset_tcp_position"] == list(sample.reset_tcp_position)
+    assert event["requested_delta"] == list(sample.requested_delta)
+    assert event["target_position"] == [0.55, 0.0, 0.5]
+    for key, value in scene_context.items():
+        assert event[key] == value
