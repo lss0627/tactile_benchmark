@@ -287,3 +287,17 @@ def test_g1_postplay_check_uses_scene_api_captured_before_runtime_wrapper() -> N
     captured_scene_api = object()
 
     assert runner._require_captured_physics_scene_api(captured_scene_api) is captured_scene_api
+
+
+def test_g1_dry_evidence_identifies_unborn_clean_checkout_repo(
+    tmp_path: Path, monkeypatch
+) -> None:
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "tracked-after-export.txt").write_text("exported bytes\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    identity = runner._repository_identity()
+
+    assert identity["commit"] == "0" * 40
+    assert identity["dirty"] is True
+    assert len(identity["dirty_patch_sha256"]) == 64

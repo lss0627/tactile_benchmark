@@ -219,9 +219,11 @@ def _finalize_g1_physical_run(*, emit: Any, runtime: Any, simulation_app: Any) -
 
 
 def _repository_identity() -> dict[str, Any]:
-    commit = subprocess.run(
-        ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
-    ).stdout.strip()
+    revision = subprocess.run(
+        ["git", "rev-parse", "--verify", "HEAD"], check=False, capture_output=True, text=True
+    )
+    null_commit = "0" * 40
+    commit = revision.stdout.strip() if revision.returncode == 0 else null_commit
     status = subprocess.run(
         ["git", "status", "--porcelain=v1", "--untracked-files=all"],
         check=True,
@@ -232,9 +234,13 @@ def _repository_identity() -> dict[str, Any]:
     patch_digest = None
     if dirty:
         digest = hashlib.sha256()
-        diff = subprocess.run(
-            ["git", "diff", "--binary", "HEAD"], check=True, capture_output=True
-        ).stdout
+        diff = (
+            subprocess.run(
+                ["git", "diff", "--binary", "HEAD"], check=True, capture_output=True
+            ).stdout
+            if commit != null_commit
+            else b""
+        )
         digest.update(diff)
         digest.update(status.encode("utf-8"))
         for line in status.splitlines():
