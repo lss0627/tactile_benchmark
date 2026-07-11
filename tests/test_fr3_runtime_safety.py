@@ -157,11 +157,14 @@ def test_fr3_controller_guard_checks_safety_before_actuator_call() -> None:
     assert controller.runtime_guard_events[-1]["code"] == "STOP_CONDITION"
 
 
-def _physical_config_sample(module, limits, position, *, phase="APPROACH"):
-    joint_positions = tuple(
-        (lower + upper) * 0.5
-        for lower, upper in zip(limits.joint_position_lower, limits.joint_position_upper)
-    )
+def _physical_config_sample(
+    module, limits, position, *, phase="APPROACH", joint_positions=None
+):
+    if joint_positions is None:
+        joint_positions = tuple(
+            (lower + upper) * 0.5
+            for lower, upper in zip(limits.joint_position_lower, limits.joint_position_upper)
+        )
     return module.FR3SafetySample(
         tcp_position=tuple(position),
         previous_tcp_position=tuple(position),
@@ -234,3 +237,36 @@ def test_physical_workspace_has_measured_provenance_and_aborts_just_outside_boun
         )
         assert decision.allow_actuation is False
         assert decision.violations[0].code == "WORKSPACE_LIMIT"
+
+
+def test_physical_joint_limits_accept_runtime_float32_boundary_noise_but_not_excursions() -> None:
+    module = _target()
+    limits = module.load_fr3_runtime_safety(
+        ROOT / "configs/robots/fr3_press_button_safe.yaml"
+    )
+    observed = (
+        3.3387350413249806e-05,
+        5.545301519305212e-06,
+        -0.00018208175606559962,
+        -0.15179996192455292,
+        2.5493114662822336e-05,
+        0.5444998741149902,
+        8.92376249339577e-07,
+        1.3583695590568823e-06,
+        1.3170040347176837e-06,
+    )
+    point = (0.22081154584884644, -3.0178576707839966e-05, 0.8803614377975464)
+
+    boundary = module.FR3RuntimeSafety(limits).check(
+        _physical_config_sample(module, limits, point, joint_positions=observed)
+    )
+    assert boundary.allow_actuation is True
+    assert limits.joint_position_tolerance_rad == pytest.approx(1.0e-6)
+
+    excursion = list(observed)
+    excursion[3] = limits.joint_position_upper[3] + 2.0e-6
+    outside = module.FR3RuntimeSafety(limits).check(
+        _physical_config_sample(module, limits, point, joint_positions=tuple(excursion))
+    )
+    assert outside.allow_actuation is False
+    assert outside.violations[0].code == "JOINT_POSITION_LIMIT"
