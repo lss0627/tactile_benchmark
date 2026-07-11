@@ -4,18 +4,72 @@
 
 **Created**: 2026-07-10
 
-**Status**: Implementation Ready (documentation only; G0-G6 remain unimplemented)
+**Status**: Implementation In Progress (Isaac Sim 6.0.1 migration checkpoints and G0 complete;
+G1-G6 remain pending)
 
 **Input**: User description: "Use Spec Kit to inspect the whole project and the previously reviewed documentation, then generate the specification, design, tasks, acceptance, and implementation-handoff artifacts for a complete reconstruction."
 
 ## Scope & Claim Boundary *(mandatory)*
 
-- **In Scope**: Define the dependency-ordered reconstruction of repository integrity, real FR3 safety, a physical PressButton task, the unified runtime contract, tactile sensing, dataset/replay, evaluation, baselines, and release readiness.
-- **Out of Scope**: Executing the generated implementation tasks in this documentation run, a full LIBERO migration, multi-robot support, real-hardware deployment, a leaderboard service, and paper performance claims.
-- **Highest Allowed Claim**: `IMPLEMENTATION_READY_SPEC` after all Spec Kit artifacts pass consistency analysis. Existing code may retain only its already evidenced mock or runtime-smoke claims.
-- **Blocked Follow-on Work**: Formal dataset collection, benchmark evaluation, baseline comparisons, task-suite expansion, and paper claims remain blocked until their preceding implementation gates pass.
+- **In Scope**: Establish Isaac Sim 6.0.1 and Python 3.12 as the development baseline without
+  changing the installed driver; preserve Isaac Sim 5.1 as an archived reference; and define the
+  dependency-ordered reconstruction of repository integrity, real FR3 safety, a physical
+  PressButton task, the unified runtime contract, tactile sensing, dataset/replay, evaluation,
+  baselines, and release readiness.
+- **Out of Scope**: Changing the NVIDIA driver, migrating Isaac Lab, downloading the five-part
+  Complete Assets Pack, validating native GPU-physics Contact, a full LIBERO migration,
+  multi-robot support, real-hardware deployment, a leaderboard service, and paper performance
+  claims.
+- **Highest Allowed Claim**: G0 may report `PASS_BENCHMARK` for repository integrity and the
+  P0/G-1A/G-1B compatibility checkpoints may report `PASS_SMOKE` with claim class
+  `runtime_smoke`. These results do not establish G1-G6, physical, dataset, evaluation, baseline,
+  release, or paper claims.
+- **Blocked Follow-on Work**: Formal physical Contact evidence, dataset collection, benchmark
+  evaluation, baseline comparisons, task-suite expansion, release claims, and paper claims remain
+  blocked until their predecessor gates pass. Release-level simulator evidence additionally
+  requires revalidation on an NVIDIA reference/validated driver.
 
 ## User Scenarios & Testing *(mandatory)*
+
+### User Story 0 - Establish the Isaac Sim 6.0.1 Development Baseline (Priority: P0)
+
+A maintainer can reproduce the layered migration from the archived Isaac Sim 5.1/Python 3.11
+reference to an independent Isaac Sim 6.0.1/Python 3.12 development environment while keeping
+driver `550.144.03` unchanged and preserving truthful runtime-support metadata.
+
+**Why this priority**: Every later simulator-facing task must target one declared API and runtime
+baseline. Performing this migration before G1 avoids implementing new benchmark components on
+removed APIs and then migrating them again.
+
+**Independent Test**: The maintainer uses the frozen candidate environment to reproduce P0,
+G-1A, G0, and G-1B evidence; confirms the public environment chain, Contact and Camera contracts,
+100 reset lifecycles, and a 500-step rendered rollout; and verifies that the formal Python 3.12
+lock is exactly the promoted candidate lock.
+
+**Acceptance Scenarios**:
+
+1. **AS-US0-1**: **Given** the existing 5.1 reference installation and driver `550.144.03`,
+   **When** P0 creates the independent 6.0.1 environment and runs compatibility and 100-step
+   startup checks, **Then** the driver and 5.1 installation remain unchanged and the report marks
+   the observed driver `UNVALIDATED` rather than unsupported or validated.
+2. **AS-US0-2**: **Given** the licensed 5.1 FR3 and scene assets, **When** G-1A loads them under
+   6.0.1, **Then** every reference, payload, mesh, texture, articulation joint, limit, default pose,
+   and required frame resolves, and a 500-step physics-plus-rendering check completes without NaN,
+   crash, or persistent penetration.
+3. **AS-US0-3**: **Given** a Contact Sensor created when the timeline starts, **When** each of 100
+   stop/reset/play cycles runs, **Then** it becomes ready within the configured window, detects the
+   scripted press within the onset tolerance, clears contact within the release timeout and
+   debounce window, and never exposes an invalid three-dimensional force or wrench mask.
+4. **AS-US0-4**: **Given** the repository environment factory, **When** G-1B executes `make_env`,
+   reset, a bounded 7D action, observation/info, Contact, Camera, release/reset, and close, **Then**
+   public contract snapshots remain stable and no fake force, stale sensor handle, invalid reading,
+   NaN, or persistent penetration is accepted.
+5. **AS-US0-5**: **Given** G0 and G-1B passing evidence, **When** the candidate environment is
+   promoted, **Then** Python 3.12 and Isaac Sim 6.0.1 become the development baseline, the 5.1
+   inputs move to archived/reference status, and release-level gates remain blocked pending
+   reference-driver revalidation.
+
+---
 
 ### User Story 1 - Reproduce the Audited Repository (Priority: P1)
 
@@ -102,6 +156,21 @@ A research maintainer can train and compare declared baselines only on frozen va
 
 ### Edge Cases
 
+- Isaac Sim 6.0.1 starts on driver `550.144.03`, which is usable for migration development but is
+  not in the declared reference-driver set.
+- Contact is queried immediately after `play()` before the dynamically created sensor becomes
+  live, or release state oscillates for one or more physics steps.
+- CPU-physics Contact passes while native GPU-physics Contact crashes, hangs, or produces unstable
+  readings; the runtime must fail fast instead of silently changing evidence class.
+- A sensor reading is valid and reports scalar force magnitude, but no validated force vector or
+  wrench exists for the public observation contract.
+- RGB or depth buffers are allocated but remain constant, stale, non-finite, outside the clipping
+  range, or unsynchronized with the physics step.
+- A 5.1 asset root opens but contains unresolved nested references, payloads, meshes, or textures
+  under 6.0.1.
+- The Python 3.12 G-1B environment differs from the candidate lock that was reviewed at G0.
+- A first-party source file reintroduces removed `omni.isaac.*`, dynamic-control, or deprecated
+  core imports after cutover.
 - Required source is present locally but excluded by ignore rules or absent from version control.
 - A runtime artifact was generated before the safety code or configuration it purports to validate.
 - Simulator modules are unavailable and only a dry-run can execute.
@@ -147,6 +216,45 @@ A research maintainer can train and compare declared baselines only on frozen va
 - **FR-026**: Canonical project status and acceptance documents MUST be generated from or synchronized with Spec Kit artifacts and MUST not contradict current gate evidence.
 - **FR-027**: Every requirement and acceptance scenario MUST map to dependency-ordered tasks, tests, exact verification commands, and expected evidence artifacts.
 - **FR-028**: Gate ordering MUST block formal collection, evaluation, baseline comparison, suite expansion, and paper claims until all predecessor gates pass.
+- **FR-029**: The development baseline MUST be Isaac Sim `6.0.1`, Python `3.12`, and the promoted
+  Python 3.12 dependency lock; Isaac Sim 5.1/Python 3.11 MUST remain reproducible only as an
+  archived/reference baseline after cutover.
+- **FR-030**: P0, G-1A, and G-1B MUST remain compatibility checkpoints rather than new formal
+  Gates, and their reports MUST use the existing `PASS_SMOKE` or `BLOCKED` status and
+  `runtime_smoke` claim class with a separate compatibility scope, runtime-support record,
+  compatibility result, and blocker codes.
+- **FR-031**: Runtime-support metadata MUST record simulator and Python versions, observed driver,
+  reference driver, and driver validation. Driver `550.144.03` MUST remain unchanged and MUST be
+  labeled `UNVALIDATED`; release-level physical, dataset, replay, evaluation, and baseline evidence
+  MUST be rerun on a currently reference/validated driver.
+- **FR-032**: The reproducible Python 3.12 candidate lock MUST exist before G-1B and pin the Python
+  patch version, package tooling, simulator package, PyTorch/CUDA distribution, and all direct and
+  transitive dependencies. Promotion MUST preserve its content in the formal lock and archive the
+  prior 5.1 inputs without erasing them.
+- **FR-033**: First-party Python MUST contain no `omni.isaac.*` or dynamic-control imports. Imports
+  from deprecated `isaacsim.core.api`, `isaacsim.core.prims`, or `isaacsim.core.utils` MAY only be
+  warnings during G-1A and MUST be errors at cutover; third-party environments, logs, historical
+  documents, and copied examples are outside the scan.
+- **FR-034**: Contact acceptance MUST distinguish sensor readiness, contact state, scalar force
+  magnitude, raw position/normal/impulse, force vector, and wrench validity. Scalar magnitude or
+  raw impulse MUST NOT populate public force-vector or wrench fields, and no impulse-to-force or
+  wrench derivation is accepted in this migration.
+- **FR-035**: Contact lifecycle acceptance MUST allow at most 5 physics steps for readiness, 2
+  physics steps for contact onset, and 5 physics steps for release; released state MUST remain
+  stable for 3 steps, and no-contact scalar magnitude MUST remain at or below `1.0e-4`. All valid
+  force magnitudes and raw impulses MUST be finite.
+- **FR-036**: RGB/depth acceptance MUST validate contract shapes, RGB `uint8`, depth `float32`,
+  finite and non-constant updating frames, configured valid-depth ratio and clipping behavior,
+  real rendering ticks, timestamps, and sensor skew no greater than one camera tick.
+- **FR-037**: The 5.1/6.0.1 A/B comparison MUST hash the common assets, trajectory, and physics and
+  rendering configuration. Allowed zero-action drift MUST equal
+  `min(max(2 * drift_5.1, 0.05 mm), 1.0 mm)`; first-contact timing may differ by at most two
+  physics steps; and penetration MUST remain below both the absolute safety limit and the 5.1
+  result plus 1 mm when a 5.1 result exists.
+- **FR-038**: The accepted development runtime MUST use CPU physics for Contact while retaining GPU
+  rendering. A request for native GPU-physics Contact MUST stop with an explicit
+  `GPU_CONTACT_NATIVE_INSTABILITY` blocker until that path passes the same lifecycle and truthfulness
+  checks on a reference-driver environment.
 
 ### Key Entities
 
@@ -158,6 +266,14 @@ A research maintainer can train and compare declared baselines only on frozen va
 - **Dataset Release**: A versioned collection of episodes with frozen splits, validation, replay evidence, cards, checksums, and provenance.
 - **Evaluation Run**: A frozen policy/task/sensor/split configuration with per-episode results, aggregates, uncertainty, failures, and hashes.
 - **Baseline Run**: A training and evaluation record with modality contract, data split, normalization, budget, checkpoint, and compute metadata.
+- **Compatibility Report**: A non-Gate evidence artifact for P0, G-1A, or G-1B containing scope,
+  existing status and claim class, runtime-support metadata, compatibility result, blocker codes,
+  artifact hashes, and producing revision.
+- **Runtime Support Record**: Simulator, Python, observed-driver, reference-driver, and validation
+  metadata that separates a passing development run from a reference-driver release claim.
+- **Sensor Truth Record**: Per-reading readiness, contact, scalar magnitude, raw-contact, vector,
+  wrench, mask, physics-step, rendering-tick, and timestamp validity without cross-populating
+  unsupported modalities.
 
 ## Success Criteria *(mandatory)*
 
@@ -174,19 +290,53 @@ A research maintainer can train and compare declared baselines only on frozen va
 - **SC-009**: The five original core tasks do not advance to accepted status until each has a complete card and physical/scripted-oracle evidence; no 20-30 task expansion starts earlier.
 - **SC-010**: Main baseline and paper-result gates remain blocked until dataset and evaluation gates pass, with no skeleton or runtime-smoke output labeled as a benchmark result.
 - **SC-011**: A release reviewer can install, validate a sample dataset, replay one physical episode, run one evaluation, and regenerate one mini result table using the published instructions and artifacts.
+- **SC-012**: P0 reproduces a 6.0.1/Python 3.12 startup, Compatibility Checker result, minimal stage,
+  and 100 simulation steps while preserving driver `550.144.03` and the complete 5.1 reference
+  inventory.
+- **SC-013**: G-1A resolves 100% of required FR3/scene asset dependencies, validates all declared
+  articulation names, limits, poses, and frames, and completes 500 physics-plus-rendering steps
+  with zero NaN, crash, or persistent penetration.
+- **SC-014**: Contact passes 100 stop/reset/play cycles with zero invalid-after-ready or stale
+  handles, 100% scripted contact detection inside the onset tolerance, 100% stable release inside
+  the release window, and zero false public force-vector or wrench masks.
+- **SC-015**: G-1B completes 100 repository lifecycle resets and a bounded 500-step rollout through
+  the public environment chain with stable contract snapshots, finite observations, updating RGB
+  and depth, zero persistent penetration, and a passing fixed-trajectory A/B report.
+- **SC-016**: The cutover import scan covers every first-party Python file and reports zero removed,
+  dynamic-control, or deprecated core imports; every original Python 3.12 regression node ID is
+  present and passing or has a one-to-one migration-manifest replacement.
+- **SC-017**: Every release-level physical, dataset, replay, evaluation, and baseline artifact
+  produced only on the unvalidated development driver remains mechanically ineligible for a
+  release claim until equivalent evidence passes on a reference/validated driver.
 
 ## Assumptions
 
 - The existing mock, pusher, and EE-placeholder paths remain useful regression fixtures but cannot satisfy physical or benchmark gates.
-- Isaac Sim and the licensed FR3 asset remain external dependencies rather than files redistributed by this repository.
+- Isaac Sim 6.0.1 and the licensed FR3/tactile assets remain external dependencies rather than
+  files redistributed by this repository; 5.1 assets are treated as versioned inputs requiring
+  resolution checks, not relabeled as native 6.0.1 assets.
+- Driver `550.144.03` is retained because it is required by the installed 4090 48 GB configuration;
+  it is suitable for development evidence only and is not declared reference-validated.
+- The NVIDIA EULA is accepted for the already authorized installation workflow. This migration
+  does not change the driver, migrate Isaac Lab, or download the Complete Assets Pack.
+- Contact uses CPU physics and RTX rendering may use the GPU. Native GPU-physics Contact remains a
+  declared blocker rather than an automatic fallback or successful capability.
+- The archived Isaac Sim 5.1/Python 3.11 environment and historical evidence remain immutable
+  references; new implementation work is required to target only 6.0.1/Python 3.12 after cutover.
 - The stable public action and observation schemas remain version `0.1.0` until an explicitly planned incompatible change is approved.
 - The reconstruction starts with one accepted PressButton task; task-suite scaling is deliberately deferred.
 - Existing runtime-smoke HDF5 files remain diagnostic evidence and will not be promoted into the formal dataset.
-- This Spec Kit feature produces implementation-ready documents only; application-code changes require a later explicit `/speckit-implement` run.
+- G0 and the Isaac Sim 6.0.1 migration implementation are complete in the current development
+  branch; G1-G6 application work still requires their dependency-ordered implementation tasks.
 
 ## Evidence & Traceability *(mandatory)*
 
-- **Required Evidence Classes**: Requirement-quality checklist, unit/schema tests, clean-room install checks, runtime safety tests, physical task runs, dataset validation/replay, evaluation reproduction, and release audit.
-- **Required Artifacts**: Versioned JSON/JSONL/CSV/YAML reports, logs, screenshots or videos where relevant, HDF5 plus checksums, task/dataset/model cards, and an evidence manifest with code/config digests.
+- **Required Evidence Classes**: Requirement-quality checklist, compatibility/runtime-smoke,
+  unit/schema tests, clean-room install checks, runtime safety tests, physical task runs, dataset
+  validation/replay, evaluation reproduction, reference-driver revalidation, and release audit.
+- **Required Artifacts**: Versioned compatibility reports, runtime-support records,
+  JSON/JSONL/CSV/YAML reports, dependency locks, import scans, lifecycle/A/B/Camera/Contact reports,
+  logs, screenshots or videos where relevant, HDF5 plus checksums, task/dataset/model cards, and an
+  evidence manifest with code/config/asset digests.
 - **Requirement Mapping Rule**: Every FR/SC and acceptance scenario MUST map to tasks and evidence.
 - **Freshness Rule**: Runtime artifacts MUST identify the code/config version that produced them and MUST be regenerated after meaning-affecting changes.
