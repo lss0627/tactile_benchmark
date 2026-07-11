@@ -34,6 +34,8 @@ joint_limits:
   lower_rad: [-2.7437, -1.7837, -2.9007, -3.0421, -2.8065, 0.5445, -3.0159, 0.0, 0.0]
   upper_rad: [2.7437, 1.7837, 2.9007, -0.1518, 2.8065, 4.5169, 3.0159, 0.04, 0.04]
   max_abs_velocity_rad_s: [2.62, 2.62, 2.62, 2.62, 5.26, 4.18, 5.26, 0.20, 0.20]
+  # Covers float32/PhysX representation noise only; physical limits above are unchanged.
+  comparison_tolerance_rad: 0.000001
 
 direction:
   press_axis: [0.0, 0.0, -1.0]

@@ -23,6 +23,7 @@ class FR3SafetyLimits:
     max_persistent_penetration_steps: int
     max_step_motion_m: float
     max_cumulative_drift_m: float
+    joint_position_tolerance_rad: float = 0.0
 
     def __post_init__(self) -> None:
         arrays = (
@@ -61,6 +62,10 @@ class FR3SafetyLimits:
             raise ValueError("motion/penetration limits are invalid")
         if self.max_persistent_penetration_steps < 0:
             raise ValueError("max_persistent_penetration_steps must be non-negative")
+        if not np.isfinite(self.joint_position_tolerance_rad) or not (
+            0.0 <= self.joint_position_tolerance_rad <= 1.0e-4
+        ):
+            raise ValueError("joint_position_tolerance_rad must be in [0, 1e-4]")
 
     @classmethod
     def from_mapping(cls, payload: Mapping[str, Any]) -> "FR3SafetyLimits":
@@ -81,6 +86,7 @@ class FR3SafetyLimits:
             max_persistent_penetration_steps=int(collision["penetration_max_persistent_steps"]),
             max_step_motion_m=float(motion["max_translation_per_step_m"]),
             max_cumulative_drift_m=float(motion["max_cumulative_tcp_drift_m"]),
+            joint_position_tolerance_rad=float(joints.get("comparison_tolerance_rad", 0.0)),
         )
 
 
@@ -187,12 +193,19 @@ class FR3RuntimeSafety:
         q = np.asarray(sample.joint_positions, dtype=float)
         q_lower = np.asarray(self.limits.joint_position_lower, dtype=float)
         q_upper = np.asarray(self.limits.joint_position_upper, dtype=float)
-        if q.shape != q_lower.shape or np.any(q < q_lower) or np.any(q > q_upper):
+        q_tolerance = self.limits.joint_position_tolerance_rad
+        if q.shape != q_lower.shape or np.any(q < q_lower - q_tolerance) or np.any(
+            q > q_upper + q_tolerance
+        ):
             return self._abort(
                 SafetyViolation(
                     "JOINT_POSITION_LIMIT",
                     q.tolist(),
-                    {"lower": q_lower.tolist(), "upper": q_upper.tolist()},
+                    {
+                        "lower": q_lower.tolist(),
+                        "upper": q_upper.tolist(),
+                        "comparison_tolerance_rad": q_tolerance,
+                    },
                     sample.phase,
                 )
             )
