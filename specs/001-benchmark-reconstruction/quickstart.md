@@ -19,8 +19,10 @@ under `specs/001-benchmark-reconstruction/`.
 
 ```bash
 rg -n "NEEDS CLARIFICATION|\[FEATURE\]|\[###-feature|TODO|TBD" \
-  specs/001-benchmark-reconstruction
+  --glob '!quickstart.md' specs/001-benchmark-reconstruction
 git diff --check -- .specify specs/001-benchmark-reconstruction
+python -m json.tool \
+  specs/001-benchmark-reconstruction/contracts/compatibility-report.schema.json >/dev/null
 python -m json.tool \
   specs/001-benchmark-reconstruction/contracts/evidence-manifest.schema.json >/dev/null
 python -m json.tool \
@@ -52,6 +54,8 @@ python scripts/check_isaacsim6_imports.py --deprecated-as-error
 ```
 
 Set `OMNI_KIT_ACCEPT_EULA=YES` and configure assets as described in `docs/asset_setup.md`.
+The promoted `requirements/lock-py312.txt` must remain content-equivalent to the reviewed candidate
+lock except for documented path/comment normalization; the archived 5.1 files are reference-only.
 
 ## 5. Reproduce migration checks
 
@@ -61,10 +65,36 @@ python scripts/review_gate.py --gate G0 \
   --evidence outputs/evidence/G0/clean-checkout/manifest.json
 python scripts/run_isaacsim6_g1b.py --cycles 100 --steps 500 \
   --output outputs/evidence/G-1B/repository-integration/report.json
+python scripts/build_isaacsim6_ab_report.py \
+  --output outputs/evidence/G-1B/repository-integration/ab-report.json
 ```
 
 The runtime config forces CPU physics for Contact and GPU rendering on `cuda:0`. A request for GPU
 physics fails before native initialization with `GPU_CONTACT_NATIVE_INSTABILITY`.
+
+Expected G-1B artifacts:
+
+```text
+outputs/evidence/G-1B/repository-integration/
+├── report.json
+├── ab-report.json
+├── nodeid-regression.json
+└── penetration-supplement.json
+```
+
+The P0 and G-1A raw reports remain in the repository-external migration evidence root. Their
+reviewed runtime, asset, Contact, Camera, and stability summaries are referenced by G-1B; they are
+not promoted into formal Gate evidence.
+
+Set the root explicitly when reproducing those checkpoints:
+
+```bash
+export ISAACSIM6_MIGRATION_EVIDENCE_ROOT="$HOME/.local/share/isaac-tactile-libero/isaacsim6-migration"
+```
+
+Normative report locations are
+`$ISAACSIM6_MIGRATION_EVIDENCE_ROOT/P0/environment/report.json` and
+`$ISAACSIM6_MIGRATION_EVIDENCE_ROOT/G-1A/asset-api/report.json`.
 
 ## 6. Evidence handling
 
@@ -81,3 +111,7 @@ outputs/evidence/<gate-id>/<run-id>/
 Validate `manifest.json` against `contracts/evidence-manifest.schema.json`, store artifact hashes,
 and update the canonical gate status only after review. Changing semantic code/config/assets makes
 older evidence stale and returns the gate to `IN_PROGRESS`.
+
+Compatibility reports instead validate against `contracts/compatibility-report.schema.json` and
+may only report `PASS_SMOKE` or `BLOCKED` with claim class `runtime_smoke`; they never mutate the
+seven-Gate array.

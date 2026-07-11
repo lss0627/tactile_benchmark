@@ -4,6 +4,7 @@
 reviewable before implementation. This checklist evaluates the wording of requirements, not the
 implemented system.
 **Created**: 2026-07-10
+**Last Revalidated**: 2026-07-11 for the 6.0.1 migration/cutover requirements
 **Feature**: [spec.md](../spec.md)
 **Acceptance source**: [acceptance.md](../acceptance.md)
 
@@ -29,6 +30,15 @@ implemented system.
 - [x] CHK012 Are operator step and wall-time budgets unambiguously hard limits? [FR-010; G1-05]
 - [x] CHK013 Does every unsafe or stale condition block downstream collection/evaluation? [FR-011, FR-028; Implementation §Stop rules]
 - [x] CHK014 Are force/wrench provenance and absence semantics explicit enough to prevent geometric fabrication? [FR-006; G1-07; G3]
+
+## Migration and runtime-support quality
+
+- [x] CHK035 Are P0, G-1A, and G-1B explicitly compatibility checkpoints rather than new Gates or claim classes? [FR-030; Compatibility Report Contract]
+- [x] CHK036 Is the candidate-lock-before-G-1B and promote-after-G0/G-1B sequence reproducible? [FR-032; Tasks T002/T016/T020/T052]
+- [x] CHK037 Is driver 550.144.03 retained and labeled `UNVALIDATED`, with reference-driver release reruns required? [FR-031; MIG-01/MIG-10]
+- [x] CHK038 Do Contact requirements distinguish ready, contact, scalar magnitude, raw contact, vector, wrench, masks, and debounce windows? [FR-034, FR-035; MIG-04]
+- [x] CHK039 Do Camera requirements cover data quality, render ticks, clipping/background, timestamps, and skew? [FR-036; MIG-05]
+- [x] CHK040 Does native GPU Contact fail explicitly while CPU Contact/GPU rendering remains the accepted development path? [FR-038; MIG-10]
 
 ## Contract and tactile quality
 
@@ -57,13 +67,14 @@ implemented system.
 
 - [x] CHK029 Does every FR group have primary tasks and a gate-level verification command? [Tasks §Coverage; Acceptance G0-G6]
 - [x] CHK030 Are acceptance scenarios assigned stable AS identifiers used by tasks and gates? [Spec §User Stories; Tasks]
-- [x] CHK031 Are current implementation statuses truthful and all implementation items initially unchecked? [Acceptance §Current status]
+- [x] CHK031 Are current statuses truthful, with completed migration/G0 items checked and G1-G6 items left unchecked? [Acceptance §Current status]
 - [x] CHK032 Are external runtime/asset gaps treated as blockers rather than unresolved specification ambiguity? [Research §External Dependencies]
-- [x] CHK033 Are historical documents subordinate to the canonical Spec Kit artifacts without erasing prior evidence? [FR-026; Tasks T102]
+- [x] CHK033 Are historical documents subordinate to the canonical Spec Kit artifacts without erasing prior evidence? [FR-026; Tasks T132]
 - [x] CHK034 Are the final analysis, placeholder, JSON, diff, and task-format checks named before documentation acceptance? [DA-07/DA-08; Quickstart]
 
 ## Review result
 
-All 34 acceptance-requirement quality questions are answered by a normative requirement, contract,
-task, or gate row. Implementation checkboxes in `acceptance.md` remain unchecked until their target
-commands produce current evidence.
+All 40 acceptance-requirement quality questions are answered by a normative requirement, contract,
+task, checkpoint, or gate row. Completed migration/G0 checkboxes resolve to current evidence;
+G1-G6 implementation checkboxes remain unchecked until their target commands produce current
+evidence.

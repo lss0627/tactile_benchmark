@@ -3,6 +3,46 @@
 **Feature**: `001-benchmark-reconstruction`
 **Schema family**: `benchmark-reconstruction/1.0.0`
 
+## 0. CompatibilityCheckpoint and CompatibilityReport
+
+P0, G-1A, and G-1B are migration checkpoints, not formal Gates. Their normative report shape is
+[`compatibility-report.schema.json`](./contracts/compatibility-report.schema.json).
+
+| Field | Type | Rules |
+|---|---|---|
+| `status` | enum | `PASS_SMOKE` or `BLOCKED` only |
+| `claim_class` | const | `runtime_smoke` |
+| `compatibility_scope` | enum | `ENVIRONMENT`, `ASSET_API`, `REPOSITORY_INTEGRATION` |
+| `runtime_support` | RuntimeSupportRecord | Simulator, Python, observed/reference driver, validation |
+| `compatibility_result` | enum | Pass on validated/unvalidated driver or `FAILED` |
+| `blocker_codes` | list[string] | Non-empty when blocked/failed |
+
+Lifecycle:
+
+```text
+NOT_STARTED -> IN_PROGRESS -> BLOCKED | PASS_SMOKE
+```
+
+A compatibility pass cannot satisfy G1-G6. G-1B promotion additionally requires G0
+`PASS_BENCHMARK` and content-equivalent candidate/formal dependency locks.
+
+### RuntimeSupportRecord
+
+| Field | Rule |
+|---|---|
+| `simulator` | Exact runtime version, `6.0.1` for this cutover |
+| `python` | Exact major/minor, `3.12` |
+| `observed_driver` | Actual unchanged development driver |
+| `reference_driver` | Driver used as the declared release reference |
+| `driver_validation` | `UNVALIDATED` or `VALIDATED` without implying a minimum version |
+
+### SensorTruthRecord
+
+Contact separately records sensor readiness, `in_contact`, scalar force magnitude, raw contact
+position/normal/impulse, vector validity, wrench validity, physics step, time, and masks. Camera
+records RGB/depth shape and dtype, valid-depth ratio, clipping/background rule, physics/render tick,
+capture timestamp, frame update, and skew. Unsupported vector/wrench fields remain masked false.
+
 ## 1. Gate
 
 Represents one reviewable capability transition.

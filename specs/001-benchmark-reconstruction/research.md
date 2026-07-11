@@ -2,6 +2,8 @@
 
 **Feature**: `001-benchmark-reconstruction`
 **Date**: 2026-07-10
+
+**Last updated**: 2026-07-11 for the Isaac Sim 6.0.1 cutover
 **Purpose**: Convert the repository/document audit into decisions that constrain implementation.
 
 ## Audited Baseline
@@ -22,6 +24,61 @@
 
 The passing tests are valuable, but they mainly validate contracts and negative claims. They are not
 evidence for a complete benchmark.
+
+## Completed Migration Baseline
+
+| Area | Observed evidence | Supported claim | Remaining boundary |
+|---|---|---|---|
+| P0 | Isaac Sim 6.0.1/Python 3.12 startup and 100 steps | `PASS_SMOKE/runtime_smoke` | Driver 550.144.03 is `UNVALIDATED` |
+| G-1A | FR3/assets, CPU Contact lifecycle, RTX RGB/depth, 500 rendered steps | Asset/API compatibility smoke | Native GPU Contact not accepted |
+| G0 | Clean export, wheel install, 346 tests | `PASS_BENCHMARK` repository integrity | No physical benchmark claim |
+| G-1B | Public factory path, 100 resets, 500 steps, A/B and node-ID reports | Repository integration smoke | G1-G6 still pending |
+
+The development cutover preserves the prior 5.1/Python 3.11 inputs under `requirements/archive/`.
+It does not relabel 5.1 assets as 6.0.1-native assets or upgrade historical evidence.
+
+## Decision 0A — Migrate before new physical implementation
+
+**Decision**: Use P0 and G-1A as repository-external compatibility checkpoints, complete G0, then
+run G-1B through the public API before promoting Isaac Sim 6.0.1/Python 3.12.
+
+**Rationale**: G1-G3 were not yet implemented, so migration before those tasks avoids building new
+components on APIs removed by 6.0 while still preserving a reproducible 5.1 reference.
+
+**Rejected alternatives**:
+
+- Overwrite 5.1 in place: destroys fallback and historical reproducibility.
+- Change the formal package baseline after P0/G-1A only: bypasses repository integration.
+- Maintain two active benchmark implementations: doubles contract and evidence drift.
+
+## Decision 0B — Keep the driver and narrow the claim
+
+**Decision**: Keep driver 550.144.03, label it `UNVALIDATED`, allow development/runtime-smoke
+evidence, and require release-level physical/data/replay/evaluation reruns on a reference driver.
+
+**Rationale**: The installed driver is required by the local 4090 48 GB configuration and starts
+6.0.1, but it is not the declared reference driver for release evidence.
+
+**Rejected alternatives**:
+
+- Upgrade the driver during migration: outside authorization and risks the working GPU setup.
+- Call the driver unsupported: stronger than the available tested/validated distinction.
+- Treat passing smoke as release validation: inflates the evidence claim.
+
+## Decision 0C — CPU Contact is the accepted migration path
+
+**Decision**: Use CPU physics for Contact and GPU RTX rendering. Treat scalar force magnitude and
+raw position/normal/impulse as distinct from force vectors and wrenches, enforce ready/onset/release
+windows, and fail fast on native GPU Contact requests.
+
+**Rationale**: This path passes lifecycle and truthfulness checks; native GPU Contact remains
+unstable on the current development runtime.
+
+**Rejected alternatives**:
+
+- Silently fall back from requested GPU Contact: makes reports ambiguous.
+- Convert raw impulse to a vector force during migration: requires an unvalidated derivation.
+- Put scalar magnitude into a three-dimensional force or wrench field: violates the contract.
 
 ## Decision 1 — Repository integrity is Gate G0
 
@@ -167,13 +224,15 @@ environment lock, CI, cards, checksums, known issues, and reproduction commands.
   non-result claim class.
 - Select on test split: introduces leakage.
 
-## Unresolved External Dependencies
+## Remaining External Dependencies
 
 These are implementation blockers, not specification ambiguities:
 
-- Access to a supported Isaac Sim 5.1 installation and compatible GPU runtime.
-- Licensed FR3 asset version and its introspected joint/frame contract.
+- Access to an NVIDIA reference/validated driver machine for release-level reruns.
+- Licensed FR3 and scene assets remain external; their 6.0.1 resolution/introspection snapshots are
+  recorded but redistribution remains prohibited.
 - Selected physical/simulator tactile backend, calibration procedure, and asset license.
+- Native GPU-physics Contact stability and equivalent lifecycle evidence.
 - Reviewer-approved release destination and any redistribution restrictions.
 
 When absent, the relevant gate remains `BLOCKED`; dry-run evidence may still be recorded as

@@ -2,18 +2,20 @@
 
 **Feature**: `001-benchmark-reconstruction`
 **Prepared**: 2026-07-10
-**Current authorization**: Documentation generation only; application-code tasks have not been run.
+
+**Last synchronized**: 2026-07-11
+**Current state**: P0, G-1A, G0, G-1B, and the 6.0.1 development cutover are implemented; G1-G6
+remain the active implementation backlog.
 
 ## Outcome and boundary
 
-This handoff is the execution contract for a later `/speckit-implement` session. It converts the
-108 tasks into a gate-by-gate workflow while protecting the current dirty worktree and preventing
-diagnostic evidence from becoming a benchmark claim. Completing this document does not complete any
-application task or gate.
+This handoff is the execution contract for the migration history and later G1-G6 implementation.
+It converts 138 tasks into a checkpoint/gate workflow while protecting the repository and
+preventing compatibility or diagnostic evidence from becoming a physical benchmark claim.
 
 ## Entry conditions
 
-Before selecting T001:
+Before selecting the first unchecked task (currently T055):
 
 1. Read `spec.md`, `plan.md`, `research.md`, `data-model.md`, `contracts/`, and `tasks.md`.
 2. Run the documentation commands in `quickstart.md` and resolve any CRITICAL consistency issue.
@@ -21,7 +23,8 @@ Before selecting T001:
    and whether Isaac Sim/FR3/tactile assets are available.
 4. Treat every existing modified/untracked file as user work. Do not reset, overwrite, delete, or
    reclassify it without first inventorying ownership and intended gate.
-5. Start from G0. Simulator availability does not permit skipping repository integrity.
+5. Verify P0/G-1A/G0/G-1B evidence and the promoted lock before G1. Simulator availability does not
+   permit skipping repository integrity or upgrading a compatibility report into a formal Gate.
 
 ## Per-task execution loop
 
@@ -48,16 +51,19 @@ cover the specific requirement and failure mode named by the task.
 
 | Gate | Task range | Required predecessor | Completion decision |
 |---|---:|---|---|
-| Foundation | T001-T013 | Documentation package valid | Focused foundation suite passes |
-| G0 | T014-T024 | Foundation | Clean revision reproduces from isolated checkout |
-| G1 | T025-T040 | G0 | Ten safe physical PressButton cycles and fresh manifest |
-| G2 | T041-T056 | G1 | Unified real backend, frame/action contract, stability |
-| G3 | T045, T052-T057 | G2 where runtime-bound | Truthful tactile capability/calibration/synchronization |
-| G4 | T058-T071 | G2 + G3 | Accepted task, valid mini dataset, >=90% physical replay |
-| G5 | T072-T079 | G4 | Complete/recomputable evaluation artifacts |
-| Core expansion | T080-T087 | G4 | Five task cards/oracles accepted; no larger expansion |
-| G6 | T088-T101 | G5; accepted data/tasks for claimed scope | Real training, fair evaluation, release review |
-| Final sync | T102-T108 | Desired gates complete or explicitly blocked | 100% traceability, truthful final claim |
+| P0 | T001-T006 | Archived 5.1 inventory | 6.0.1 startup/100-step compatibility smoke |
+| G-1A | T007-T016 | P0 | Assets/APIs/Contact/Camera/500-step compatibility smoke |
+| G0 foundation | T017-T029 | G-1A inputs frozen | Focused evidence/config suite passes |
+| G0 | T030-T040 | Foundation | Clean revision reproduces from isolated checkout |
+| G-1B/cutover | T041-T054 | G0 | Public path, 100 resets, 500 steps, A/B, lock promotion |
+| G1 | T055-T070 | G-1B/cutover | Ten safe physical PressButton cycles and fresh manifest |
+| G2 | T071-T086 | G1 | Unified real backend, frame/action contract, stability |
+| G3 | T075, T082-T087 | G2 where runtime-bound | Truthful tactile capability/calibration/synchronization |
+| G4 | T088-T101 | G2 + G3 | Accepted task, valid mini dataset, >=90% physical replay |
+| G5 | T102-T109 | G4 | Complete/recomputable evaluation artifacts |
+| Core expansion | T110-T117 | G4 | Five task cards/oracles accepted; no larger expansion |
+| G6 | T118-T131 | G5; accepted data/tasks for claimed scope | Real training, fair evaluation, release review |
+| Final sync | T132-T138 | Desired gates complete or explicitly blocked | 100% traceability, truthful final claim |
 
 G3 contract/unit work may begin after foundation, but a physical tactile pass requires the accepted
 G2 backend. Core-suite card drafting may be parallel after G4, but physical acceptance still needs
@@ -82,7 +88,7 @@ python -m pip install -e '.[test]'
 pytest -q
 ```
 
-### Future G0 command
+### Completed G0/G-1B commands
 
 ```bash
 python scripts/check_clean_checkout.py \
@@ -90,6 +96,9 @@ python scripts/check_clean_checkout.py \
 python scripts/review_gate.py \
   --gate G0 \
   --evidence outputs/evidence/G0/clean-checkout/manifest.json
+python scripts/run_isaacsim6_g1b.py --cycles 100 --steps 500 \
+  --output outputs/evidence/G-1B/repository-integration/report.json
+python scripts/check_isaacsim6_imports.py --deprecated-as-error
 ```
 
 ### Future G1 command
@@ -157,6 +166,10 @@ Stop the active gate immediately when any of these occurs:
   unsafely, exceeds step/wall-time budget, or continues after abort;
 - button success lacks movable task-state evidence or release/reset fails;
 - force/wrench lacks physical/simulator provenance, frame, units, calibration, or valid timestamp;
+- Contact is not ready within 5 steps, misses onset by 2 steps, fails stable release within the
+  5-step/3-stable-step window, or a native GPU Contact request bypasses its explicit blocker;
+- runtime-support metadata calls driver 550.144.03 validated, or release evidence was not rerun on
+  a current reference/validated driver;
 - dataset IDs collide, validation fails, split leakage exists, or physical replay is below threshold;
 - evaluation aggregates cannot be reproduced from episode records;
 - training does not update parameters, selects on test data, or uses undeclared privileged inputs;

@@ -1,19 +1,19 @@
 # Acceptance Gates and Evidence Matrix
 
 **Feature**: `001-benchmark-reconstruction`
-**Snapshot date**: 2026-07-10
+**Snapshot date**: 2026-07-11
 **Canonical status source**: Validated gate manifests; this file is a human-readable projection.
 
 ## Current status
 
 | Scope | Status | Claim class | Reason |
 |---|---|---|---|
-| Spec Kit documentation package | `PASS_SMOKE` | `dry_run` | 28 FR, 11 SC, 20 scenarios, and 108 tasks passed documentation consistency/format validation; no implementation gate is implied |
+| Spec Kit documentation package | `PASS_SMOKE` | `dry_run` | 38 FR, 17 SC, 25 scenarios, and 138 tasks pass documentation consistency/format validation; no implementation gate is implied |
 | Isaac Sim 6 P0/G-1A/G-1B migration | `PASS_SMOKE` | `runtime_smoke` | 6.0.1 on Python 3.12; 100 Contact cycles, 100 repository resets, 500-step rollout, RGB/depth and A/B checks passed on unvalidated driver |
 | G0 Repository integrity | `PASS_BENCHMARK` | `benchmark` | Clean revision recorded by the current manifest was exported, wheel-installed, and passed the full no-simulator suite; manifest review/freshness passed |
 | G1 Physical PressButton safety | `NOT_STARTED` | `physical_runtime` | Current geometric/diagnostic path cannot satisfy physical task truth |
-| G2 Unified real backend | `NOT_STARTED` | `physical_runtime` | Accepted real FR3 path is not yet exposed through the public factory |
-| G3 Truthful tactile | `NOT_STARTED` | `physical_runtime` | Stable missing-modality schema exists; accepted real force/VT path does not |
+| G2 Unified real backend | `NOT_STARTED` | `physical_runtime` | The 6.0.1 compatibility path exists, but the accepted G1 task/controller/safety path is not yet integrated as G2 evidence |
+| G3 Truthful tactile | `NOT_STARTED` | `physical_runtime` | CPU Contact migration smoke exists; accepted calibrated force-vector/wrench or visuotactile evidence does not |
 | G4 Task/data/replay | `NOT_STARTED` | `dataset` | No accepted physical task/data/replay chain |
 | G5 Evaluation | `NOT_STARTED` | `evaluation` | Depends on G4 |
 | G6 Baselines/release | `NOT_STARTED` | `benchmark`/`release` | Depends on G5 and scope-appropriate accepted data/tasks |
@@ -23,8 +23,8 @@ any physical/data/evaluation item below.
 
 ## Documentation package acceptance
 
-- [x] DA-01 `spec.md` defines scope, five prioritized stories, edge cases, FR-001-FR-028, entities,
-  SC-001-SC-011, assumptions, and claim boundary.
+- [x] DA-01 `spec.md` defines scope, US0-US5, edge cases, FR-001-FR-038, entities,
+  SC-001-SC-017, assumptions, and claim boundary.
 - [x] DA-02 `research.md` separates audited evidence from missing physical/benchmark proof and records
   alternatives for every major design decision.
 - [x] DA-03 `plan.md` passes both constitution checks and defines G0-G6 ordering.
@@ -34,10 +34,40 @@ any physical/data/evaluation item below.
 - [x] DA-07 Spec Kit analysis reports 100% FR/task coverage and zero CRITICAL inconsistency.
 - [x] DA-08 Placeholder, JSON, prerequisite, Markdown diff, and task-format checks all pass.
 
+## P0/G-1A/G-1B — Isaac Sim 6.0.1 compatibility and cutover
+
+**Requirements**: FR-029-FR-038; SC-012-SC-017; AS-US0-1/2/3/4/5
+
+**Tasks**: T001-T016, T041-T054
+
+- [x] MIG-01 The 5.1/Python 3.11/reference inventory is preserved and driver 550.144.03 is unchanged.
+- [x] MIG-02 P0 starts 6.0.1/Python 3.12 and completes the minimal 100-step check.
+- [x] MIG-03 G-1A resolves required assets and validates FR3 joints, limits, pose, and frames.
+- [x] MIG-04 CPU Contact passes 100 lifecycle cycles with ready/onset/release/debounce truth checks.
+- [x] MIG-05 RTX RGB/depth passes dtype, shape, update, clipping, render-tick, and skew checks.
+- [x] MIG-06 G-1A/G-1B complete bounded 500-step stability without persistent penetration.
+- [x] MIG-07 G-1B passes 100 public repository resets and preserves action/observation contracts.
+- [x] MIG-08 First-party import scan reports zero removed, dynamic-control, or deprecated imports.
+- [x] MIG-09 Candidate lock is promoted only after G0/G-1B; prior 5.1 inputs are archived.
+- [x] MIG-10 Reports remain `PASS_SMOKE/runtime_smoke` on `UNVALIDATED` driver; native GPU Contact
+  and release claims remain blocked pending their required revalidation.
+
+**Target commands**:
+
+```bash
+python scripts/run_isaacsim6_g1b.py --cycles 100 --steps 500 \
+  --output outputs/evidence/G-1B/repository-integration/report.json
+python scripts/check_isaacsim6_imports.py --deprecated-as-error
+```
+
+**Required evidence**: repository-external P0/G-1A raw reports plus
+`outputs/evidence/G-1B/repository-integration/{report.json,ab-report.json,nodeid-regression.json,penetration-supplement.json}`
+and the promoted/archive dependency inputs.
+
 ## G0 — Repository integrity
 
 **Requirements**: FR-001-FR-005, FR-011, FR-026-FR-028; SC-001, SC-002; AS-US1-1/2/3
-**Tasks**: T001-T024
+**Tasks**: T017-T040
 
 - [x] G0-01 `isaac_tactile_libero/datasets/` source and all required configs are tracked and not ignored.
 - [x] G0-02 Generated datasets/outputs remain excluded without hiding code or mandatory runtime inputs.
@@ -60,7 +90,7 @@ python scripts/review_gate.py --gate G0 \
 ## G1 — Safe physical PressButton
 
 **Requirements**: FR-006-FR-011, FR-017, FR-028; SC-003, SC-004; AS-US2-1/2/3/4
-**Tasks**: T025-T040
+**Tasks**: T055-T070
 
 - [ ] G1-01 Button has physical travel/limits and observable rest, pressed, released, and reset states.
 - [ ] G1-02 Success uses observed button state held for the declared duration, never TCP/command/steps alone.
@@ -86,7 +116,7 @@ records, contact/force provenance, command log, and reviewable video/screenshots
 ## G2 — Unified real backend
 
 **Requirements**: FR-012-FR-014, FR-028; SC-005; AS-US3-1/2/3
-**Tasks**: T041-T051, T054-T056
+**Tasks**: T071-T081, T084-T086
 
 - [ ] G2-01 Public factory selects the real FR3 backend explicitly and never silently falls back.
 - [ ] G2-02 Reset/step/close, termination, observation, info, seeding, and clipping follow one contract.
@@ -110,7 +140,7 @@ safety report, manifest, logs, and hashes.
 ## G3 — Truthful tactile capability
 
 **Requirements**: FR-006, FR-015, FR-028; AS-US2-3, AS-US3-4
-**Tasks**: T030, T038, T045, T052-T053, T057
+**Tasks**: T060, T068, T075, T082-T083, T087
 
 - [ ] G3-01 Stable shapes and capability/validity masks cover absent, delayed, dropped, saturated, and invalid states.
 - [ ] G3-02 Valid force/wrench has an accepted source, units, frame, transform, calibration version, and timestamp.
@@ -126,7 +156,7 @@ tests, sampled sensor records, manifest, logs, and hashes.
 ## G4 — Accepted task, dataset, and replay
 
 **Requirements**: FR-016-FR-020, FR-028; SC-006, SC-009; AS-US4-1/2/3/5
-**Tasks**: T058-T071 and, for core-suite acceptance, T080-T087
+**Tasks**: T088-T101 and, for core-suite acceptance, T110-T117
 
 - [ ] G4-01 PressButton TaskCard is complete, versioned, and linked to physical task/safety evidence.
 - [ ] G4-02 Formal reward/success/termination use task state/actions, not deterministic step count.
@@ -153,7 +183,7 @@ validation report, per-episode replay report, task/robot/sensor/config hashes, a
 ## G5 — Evaluation protocol
 
 **Requirements**: FR-021, FR-022, FR-028; SC-007; AS-US4-4
-**Tasks**: T072-T079
+**Tasks**: T102-T109
 
 - [ ] G5-01 Config, dataset, task, sensor, policy/checkpoint, seeds, and hashes are frozen.
 - [ ] G5-02 Per-episode JSONL and per-task/per-suite/aggregate/failure artifacts are complete.
@@ -178,7 +208,7 @@ recomputed comparison, uncertainty, manifest, logs, hashes, and optional media i
 ## G6 — Baselines and release
 
 **Requirements**: FR-023-FR-025, FR-028; SC-010, SC-011; AS-US5-1/2/3/4
-**Tasks**: T088-T101
+**Tasks**: T118-T131
 
 - [ ] G6-01 Trainable baselines perform real parameter updates for declared modalities.
 - [ ] G6-02 Normalization uses train only; checkpoint selection uses train/validation only.
@@ -214,6 +244,7 @@ Detailed task mappings live in `tasks.md`.
 | FR-021, FR-022 | G5 |
 | FR-023, FR-024, FR-025 | G6 |
 | FR-028 | G0-G6 predecessor enforcement and Final claim review |
+| FR-029, FR-030, FR-031, FR-032, FR-033, FR-034, FR-035, FR-036, FR-037, FR-038 | P0/G-1A/G-1B compatibility and cutover |
 | SC-001, SC-002 | G0 |
 | SC-003, SC-004 | G1 |
 | SC-005 | G2 |
@@ -221,6 +252,8 @@ Detailed task mappings live in `tasks.md`.
 | SC-007 | G5 |
 | SC-008 | Documentation package and Final claim review |
 | SC-010, SC-011 | G6 and Final claim review |
+| SC-012, SC-013, SC-014, SC-015, SC-016, SC-017 | P0/G-1A/G-1B compatibility and cutover |
+| AS-US0-1, AS-US0-2, AS-US0-3, AS-US0-4, AS-US0-5 | P0/G-1A/G-1B compatibility and cutover |
 | AS-US1-1, AS-US1-2, AS-US1-3 | G0 |
 | AS-US2-1, AS-US2-2, AS-US2-3, AS-US2-4 | G1/G3 |
 | AS-US3-1, AS-US3-2, AS-US3-3, AS-US3-4 | G2/G3 |

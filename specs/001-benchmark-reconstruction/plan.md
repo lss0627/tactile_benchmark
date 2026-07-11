@@ -1,13 +1,30 @@
-# Implementation Plan: Benchmark Reconstruction Program
+# Benchmark Reconstruction Program Implementation Plan
 
-**Branch**: `001-benchmark-reconstruction` | **Date**: 2026-07-10 | **Spec**: [spec.md](./spec.md)
+> **For agentic workers:** REQUIRED SUB-SKILL: Use `subagent-driven-development` (recommended) or
+> `executing-plans` to implement this plan task-by-task. Steps use checkbox syntax in `tasks.md`.
+
+**Goal:** Complete a truthful, reproducible tactile benchmark on the Isaac Sim 6.0.1/Python 3.12
+development baseline while preserving the 5.1 reference and gating all physical/release claims.
+
+**Architecture:** One public environment contract fronts mock, diagnostic, and accepted real FR3
+backends. Independent compatibility reports establish the simulator cutover without modifying the
+seven formal Gates; immutable evidence and predecessor checks then advance G0-G6 in order.
+
+**Tech Stack:** Python 3.12, Isaac Sim 6.0.1 experimental APIs, NumPy, PyYAML, h5py, JSON Schema,
+pytest, optional PyTorch 2.11.0+cu128, external licensed FR3/tactile assets.
+
+---
+
+**Branch**: `001-benchmark-reconstruction` | **Date**: 2026-07-11 | **Spec**: [spec.md](./spec.md)
 
 **Input**: Feature specification from `/specs/001-benchmark-reconstruction/spec.md`
 
 ## Summary
 
-Reconstruct the repository in strict evidence order: first make a fresh checkout complete and
-reproducible; then replace the geometric PressButton proxy with a safe physical mechanism; expose
+Reconstruct the repository in strict evidence order: first establish the layered Isaac Sim 6.0.1
+compatibility baseline without changing the driver, then make a fresh checkout complete and
+reproducible, integrate the public repository path, and only then replace the geometric PressButton
+proxy with a safe physical mechanism; expose
 the accepted FR3 path through the public environment contract; add truthful tactile capability;
 accept one task before collecting a mini dataset; require physical replay and statistically
 complete evaluation before baseline or release claims. Existing mock, placeholder, and smoke paths
@@ -29,8 +46,9 @@ JSON/JSONL/CSV evidence, checksums, logs, and optional videos
 **Testing**: pytest unit/contract/integration tests; dry-run CLIs; clean-checkout checks; bounded
 Isaac Sim safety/task/replay gates; dataset and evaluation consistency validators
 
-**Target Platform**: Linux workstation with a no-simulator CPU path and an optional supported
-NVIDIA/Isaac Sim GPU path
+**Target Platform**: Linux workstation with a no-simulator CPU path and an Isaac Sim 6.0.1
+development path on driver 550.144.03 (`UNVALIDATED`); release evidence is rerun on a current
+NVIDIA reference/validated driver
 
 **Runtime policy**: Development uses driver 550.144.03 as `UNVALIDATED`, GPU 0 for RTX rendering,
 and CPU physics for experimental Contact Sensor. Native GPU Contact is fail-fast blocked by
@@ -72,13 +90,15 @@ implementation tasks; they are not accepted as design exceptions.
 
 ## Current-State Baseline
 
-The audited baseline is a contract/mock skeleton with a single-task FR3 diagnostic path, not a
-completed benchmark. The no-simulator suite passed 281 tests with one warning, and the generic smoke
-script completed 60 mock runs; those results demonstrate regression coverage only. At audit time,
+The historical audited baseline was a contract/mock skeleton with a single-task FR3 diagnostic
+path, not a completed benchmark. Its no-simulator suite passed 281 tests with one warning, and the
+generic smoke script completed 60 mock runs; those results demonstrate regression coverage only.
+At audit time,
 required work was spread across 12 modified tracked files and 221 untracked entries, the root
 `datasets/` ignore rule also matched the Python source package, and runtime output/configuration was
-not reproducible from a clean checkout. See [research.md](./research.md) for the evidence and design
-decisions derived from it.
+not reproducible from a clean checkout. The completed cutover baseline now passes 346 tests from a
+clean exported revision and keeps the historical node-ID inventory for comparison. See
+[research.md](./research.md) for the evidence and design decisions derived from both snapshots.
 
 ## Isaac Sim 6.0.1 migration checkpoints
 
@@ -105,6 +125,12 @@ allowed_drift = min(max(2 * drift_5.1, 0.05 mm), 1.0 mm)
 Penetration uses `min(penetration_5.1 + 1 mm, absolute_safety_limit)` when a 5.1 value exists,
 plus the independent 6.0.1 absolute limit. Contact lifecycle uses a 5-step ready window, 2-step
 onset tolerance, 5-step release timeout, and 3-step stable debounce window.
+
+The compatibility report is governed by
+[`contracts/compatibility-report.schema.json`](./contracts/compatibility-report.schema.json). It is
+an evidence artifact, not an eighth Gate. Contact reports scalar magnitude and raw contact fields
+only; public force-vector and wrench masks remain false. RTX Camera acceptance requires real render
+ticks, updating RGB/depth, declared clipping behavior, and at most one camera-tick skew.
 
 ## Gate Architecture
 
@@ -136,6 +162,7 @@ specs/001-benchmark-reconstruction/
 ├── acceptance.md
 ├── contracts/
 │   ├── benchmark-runtime.md
+│   ├── compatibility-report.schema.json
 │   ├── evidence-manifest.schema.json
 │   └── gate-status.schema.json
 ├── checklists/
@@ -183,6 +210,16 @@ gate order, task status, and acceptance.
 
 ## Design Phases
 
+### Phase -1 — Layered Isaac Sim migration checkpoints
+
+- Run P0 and G-1A outside repository integration using the candidate Python 3.12 lock.
+- Complete G0 before changing the formal package baseline or first-party runtime API.
+- Run G-1B through the public factory, then promote the candidate lock and archive 5.1 inputs.
+- Keep CPU Contact/GPU rendering and reference-driver release revalidation as explicit boundaries.
+
+**Outputs**: P0/G-1A/G-1B compatibility reports, import scan, node-ID manifest, A/B report, promoted
+lock, archived 5.1 inputs, and G0 clean-checkout evidence.
+
 ### Phase 0 — Research and boundary decisions
 
 - Record the audited capability baseline and distinguish existing proof from missing proof.
@@ -223,6 +260,8 @@ gate order, task status, and acceptance.
 | Task/data expansion hides a broken oracle | One physical task, task-card acceptance, and replay precede all expansion |
 | Large dirty worktree obscures deliverables | G0 inventory and clean-checkout proof precede runtime changes |
 | Baseline skeleton is reported as a result | Training gate verifies parameter updates, data splits, checkpoint selection, and claim class |
+| Unvalidated development driver is mistaken for a release baseline | Runtime-support metadata and release gates require reference-driver reruns |
+| GPU Contact instability is hidden by fallback | Native GPU Contact fails fast with `GPU_CONTACT_NATIVE_INSTABILITY`; CPU Contact is explicit |
 
 ## Post-Design Constitution Re-check
 

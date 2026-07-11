@@ -7,7 +7,11 @@ RUNTIME = Path("isaac_tactile_libero/schemas")
 
 
 def test_gate_and_manifest_runtime_schemas_match_canonical_contracts() -> None:
-    for name in ("evidence-manifest.schema.json", "gate-status.schema.json"):
+    for name in (
+        "compatibility-report.schema.json",
+        "evidence-manifest.schema.json",
+        "gate-status.schema.json",
+    ):
         assert (RUNTIME / name).read_bytes() == (CONTRACTS / name).read_bytes()
 
 
