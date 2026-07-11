@@ -5,7 +5,7 @@
 
 **Last synchronized**: 2026-07-11
 **Current state**: P0, G-1A, G0, G-1B, and the 6.0.1 development cutover are implemented. G1
-T055-T069 are implemented; T070 is `BLOCKED` by the retained episode-0 `WORKSPACE_LIMIT` result.
+T055-T069 are implemented; T070 is `BLOCKED` by the retained episode-0 `PER_STEP_MOTION_LIMIT` result.
 G2-G6 remain blocked by G1.
 
 ## Outcome and boundary
@@ -16,7 +16,7 @@ preventing compatibility or diagnostic evidence from becoming a physical benchma
 
 ## Entry conditions
 
-Before selecting the first unchecked task (currently T055):
+Before selecting the first unchecked task (currently T070):
 
 1. Read `spec.md`, `plan.md`, `research.md`, `data-model.md`, `contracts/`, and `tasks.md`.
 2. Run the documentation commands in `quickstart.md` and resolve any CRITICAL consistency issue.
@@ -114,12 +114,15 @@ python scripts/review_gate.py \
   --evidence outputs/evidence/G1/physical-press-button/manifest.json
 ```
 
-The current immutable result is
-`outputs/evidence/G1/physical-press-button-attempt-05-1af514f/manifest.json`. It is
-`BLOCKED/physical_runtime`: the button was observed released/reset, then the initial `APPROACH`
-safety check raised `WORKSPACE_LIMIT` before any requested or executed action. The evidence records
-CPU PhysX with MBP broadphase and GPU dynamics disabled, zero post-abort actuation, invalid
-force-vector/wrench masks, and the required reference-driver revalidation blocker. Do not begin G2.
+The current immutable physical result is
+`outputs/evidence/G1/single-cadence-fix-4151837a15c1/manifest.json`. It is
+`BLOCKED/physical_runtime`: after 182 requested and executed `APPROACH` actions at the declared
+20 Hz action / 60 Hz physics cadence, the observed TCP step was `0.0005005338 m` against the hard
+`0.0005 m` per-step limit. `PER_STEP_MOTION_LIMIT` aborted immediately and no post-abort actuation
+occurred. The evidence records successful button release/reset, CPU PhysX with MBP broadphase and
+GPU dynamics disabled, invalid force-vector/wrench masks, and the required reference-driver
+revalidation blocker. The three-fix investigation stop rule was reached; do not tune limits or begin
+G2 without a new reviewed control/safety design.
 
 ### Future G2-G3 commands
 

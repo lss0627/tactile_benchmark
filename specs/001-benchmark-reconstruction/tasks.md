@@ -173,9 +173,11 @@ success from observed task state and immediate abort on unsafe behavior.
 failed release/reset, or exceeded budget blocks G1 and every later physical-data task.
 
 **Current blocker**: T070 is `BLOCKED` at immutable run
-`outputs/evidence/G1/physical-press-button-attempt-05-1af514f/`. Episode 0 observed a reset/released
-button but aborted before actuation with `WORKSPACE_LIMIT`; the runner retained the failed episode,
-reported zero post-abort actuation, and did not execute later episodes. G2-G6 remain blocked.
+`outputs/evidence/G1/single-cadence-fix-4151837a15c1/`. Episode 0 observed a reset/released button
+and executed 182 actions before the measured Cartesian step (`0.0005005338 m`) exceeded the hard
+`0.0005 m` bound and raised `PER_STEP_MOTION_LIMIT`. The runner retained the failed episode,
+reported zero post-abort actuation, and did not execute the 3- or 10-episode stages. The configured
+driver remains `UNVALIDATED`; G2-G6 remain blocked.
 
 ---
 

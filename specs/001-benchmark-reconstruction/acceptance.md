@@ -11,7 +11,7 @@
 | Spec Kit documentation package | `PASS_SMOKE` | `dry_run` | 38 FR, 17 SC, 25 scenarios, and 138 tasks pass documentation consistency/format validation; no implementation gate is implied |
 | Isaac Sim 6 P0/G-1A/G-1B migration | `PASS_SMOKE` | `runtime_smoke` | 6.0.1 on Python 3.12; 100 Contact cycles, 100 repository resets, 500-step rollout, RGB/depth and A/B checks passed on unvalidated driver |
 | G0 Repository integrity | `PASS_BENCHMARK` | `benchmark` | Clean revision recorded by the current manifest was exported, wheel-installed, and passed the full no-simulator suite; manifest review/freshness passed |
-| G1 Physical PressButton safety | `BLOCKED` | `physical_runtime` | Fresh run `physical-press-button-attempt-05-1af514f` aborted episode 0 before actuation on `WORKSPACE_LIMIT`; 10 consecutive cycles were not completed |
+| G1 Physical PressButton safety | `BLOCKED` | `physical_runtime` | Fresh runtime run `single-cadence-fix-4151837a15c1` aborted episode 0 after 182 actions on `PER_STEP_MOTION_LIMIT`; 10 consecutive cycles were not started |
 | G2 Unified real backend | `NOT_STARTED` | `physical_runtime` | The 6.0.1 compatibility path exists, but the accepted G1 task/controller/safety path is not yet integrated as G2 evidence |
 | G3 Truthful tactile | `NOT_STARTED` | `physical_runtime` | CPU Contact migration smoke exists; accepted calibrated force-vector/wrench or visuotactile evidence does not |
 | G4 Task/data/replay | `NOT_STARTED` | `dataset` | No accepted physical task/data/replay chain |
@@ -114,13 +114,13 @@ python scripts/run_fr3_press_button_press_smoke.py \
 records, contact/force provenance, command log, and reviewable video/screenshots.
 
 **Current evidence**:
-`outputs/evidence/G1/physical-press-button-attempt-05-1af514f/manifest.json` is a fresh
-`BLOCKED/physical_runtime` manifest for its clean evidence-producing commit. Episode 0 recorded
-button release/reset, CPU PhysX (`MBP`, GPU dynamics disabled), false force-vector/wrench validity,
-zero requested/executed actions, and zero post-abort actuation. Blockers are
+`outputs/evidence/G1/single-cadence-fix-4151837a15c1/manifest.json` is a fresh
+`BLOCKED/physical_runtime` manifest for its clean evidence-producing runtime commit. Episode 0
+recorded 182 requested/executed actions, button release/reset, CPU PhysX (`MBP`, GPU dynamics
+disabled), false force-vector/wrench validity, and zero post-abort actuation. The structured safety
+event is `PER_STEP_MOTION_LIMIT`, observed `0.0005005338 m` versus limit `0.0005 m`. Blockers are
 `G1_REQUIRES_10_CONSECUTIVE_EPISODES`, `G1_EPISODE_0_OBSERVED_PRESS_FAILED`,
 `G1_EPISODE_0_SAFE_RETRACT_FAILED`, `G1_EPISODE_0_SAFETY_EVENT`,
-`G1_EPISODE_0_COLLISION_MONITOR_INVALID`, `G1_EPISODE_0_PENETRATION_PROVENANCE_INVALID`, and
 `REFERENCE_DRIVER_REVALIDATION_REQUIRED`. G1-01, G1-08, and final-HEAD G1-09 remain unaccepted.
 
 ## G2 — Unified real backend
