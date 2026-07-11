@@ -36,6 +36,12 @@ RUNTIME_TACTILE_METADATA_KEYS = (
     "physics_contact_available",
     "button_displacement_available",
     "using_geometric_fallback",
+    "force_vector_validated",
+    "force_units",
+    "force_frame",
+    "force_calibration_version",
+    "force_timestamp",
+    "force_clock",
 )
 
 
@@ -74,7 +80,8 @@ def adapt_press_button_runtime_tactile(
         tactile["contact_flag_right"] = contact_flag
 
     force_source = "unavailable"
-    if active_force_wrench_mode and contact_force_available:
+    force_provenance_valid = _force_provenance_valid(status)
+    if active_force_wrench_mode and contact_force_available and force_provenance_valid:
         force_vector = _force_vector_from_status(status)
         if force_vector is not None:
             force_source = _force_source_from_status(status)
@@ -84,6 +91,8 @@ def adapt_press_button_runtime_tactile(
             contact_flag_source = force_source
             tactile["contact_flag_left"] = True
             tactile["contact_flag_right"] = True
+
+    has_force = bool(tactile["mask"]["has_force"])
 
     tactile.update(
         {
@@ -95,6 +104,12 @@ def adapt_press_button_runtime_tactile(
             "physics_contact_available": physics_contact_available,
             "button_displacement_available": button_displacement_available,
             "using_geometric_fallback": using_geometric_fallback,
+            "force_vector_validated": has_force,
+            "force_units": str(status.get("force_units")) if has_force else None,
+            "force_frame": str(status.get("force_frame")) if has_force else None,
+            "force_calibration_version": str(status.get("force_calibration_version")) if has_force else None,
+            "force_timestamp": float(status["force_timestamp"]) if has_force else None,
+            "force_clock": str(status.get("force_clock")) if has_force else None,
         }
     )
     assert_runtime_tactile_schema(tactile)
@@ -123,6 +138,7 @@ def assert_runtime_tactile_schema(tactile: dict[str, Any]) -> None:
     assert isinstance(tactile["physics_contact_available"], bool)
     assert isinstance(tactile["button_displacement_available"], bool)
     assert isinstance(tactile["using_geometric_fallback"], bool)
+    assert isinstance(tactile["force_vector_validated"], bool)
 
     has_force = bool(tactile["mask"]["has_force"])
     has_wrench = bool(tactile["mask"]["has_wrench"])
@@ -136,6 +152,13 @@ def assert_runtime_tactile_schema(tactile: dict[str, Any]) -> None:
         assert np.allclose(tactile["wrench_right"], 0.0)
     if has_wrench:
         assert has_force is True
+    if has_force:
+        assert tactile["force_vector_validated"] is True
+        assert tactile["force_units"] == "N"
+        assert isinstance(tactile["force_frame"], str) and tactile["force_frame"]
+        assert isinstance(tactile["force_calibration_version"], str) and tactile["force_calibration_version"]
+        assert np.isfinite(float(tactile["force_timestamp"]))
+        assert isinstance(tactile["force_clock"], str) and tactile["force_clock"]
 
 
 def runtime_tactile_status_fields(tactile: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -152,6 +175,12 @@ def runtime_tactile_status_fields(tactile: dict[str, Any] | None = None) -> dict
         "physics_contact_available": bool(tactile["physics_contact_available"]),
         "button_displacement_available": bool(tactile["button_displacement_available"]),
         "using_geometric_fallback": bool(tactile["using_geometric_fallback"]),
+        "force_vector_validated": bool(tactile["force_vector_validated"]),
+        "force_units": tactile["force_units"],
+        "force_frame": tactile["force_frame"],
+        "force_calibration_version": tactile["force_calibration_version"],
+        "force_timestamp": tactile["force_timestamp"],
+        "force_clock": tactile["force_clock"],
         "mask": {
             "has_force": bool(tactile["mask"]["has_force"]),
             "has_wrench": bool(tactile["mask"]["has_wrench"]),
@@ -181,7 +210,26 @@ def _force_vector_from_status(status: dict[str, Any]) -> np.ndarray | None:
     vector = np.asarray(raw_vector, dtype=np.float32)
     if vector.shape != (3,):
         return None
+    if not np.all(np.isfinite(vector)):
+        return None
     return vector
+
+
+def _force_provenance_valid(status: dict[str, Any]) -> bool:
+    source = str(status.get("contact_force_source") or "")
+    try:
+        timestamp = float(status.get("force_timestamp"))
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        status.get("force_vector_validated") is True
+        and source in RUNTIME_FORCE_SOURCES
+        and status.get("force_units") == "N"
+        and str(status.get("force_frame") or "")
+        and str(status.get("force_calibration_version") or "")
+        and np.isfinite(timestamp)
+        and str(status.get("force_clock") or "")
+    )
 
 
 def _force_source_from_status(status: dict[str, Any]) -> str:

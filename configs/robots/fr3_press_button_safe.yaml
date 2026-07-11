@@ -1,0 +1,62 @@
+schema_version: "1.0.0"
+robot_config_version: "1.0.0"
+robot_name: fr3_tactile
+articulation_config_path: configs/robots/fr3_real_articulation.yaml
+controller_config_path: configs/robots/fr3_ee_controller_contract.yaml
+base_frame: fr3_link0
+ee_frame: fr3_hand_tcp
+
+workspace:
+  min_m: [0.30, -0.30, 0.20]
+  max_m: [0.70, 0.30, 0.80]
+
+joint_limits:
+  names:
+    - fr3_joint1
+    - fr3_joint2
+    - fr3_joint3
+    - fr3_joint4
+    - fr3_joint5
+    - fr3_joint6
+    - fr3_joint7
+    - fr3_finger_joint1
+    - fr3_finger_joint2
+  lower_rad: [-2.7437, -1.7837, -2.9007, -3.0421, -2.8065, 0.5445, -3.0159, 0.0, 0.0]
+  upper_rad: [2.7437, 1.7837, 2.9007, -0.1518, 2.8065, 4.5169, 3.0159, 0.04, 0.04]
+  max_abs_velocity_rad_s: [2.62, 2.62, 2.62, 2.62, 5.26, 4.18, 5.26, 0.20, 0.20]
+
+direction:
+  press_axis: [0.0, 0.0, -1.0]
+  minimum_alignment: 0.0
+  enforce_during_states: [PRESS]
+
+collision:
+  abort_on_unsafe_collision: true
+  allowed_contact_pairs:
+    - [/World/FR3/fr3_hand, /World/PressButton/Button]
+  penetration_absolute_limit_m: 0.005
+  penetration_persistent_threshold_m: 0.001
+  penetration_max_persistent_steps: 5
+
+motion:
+  max_translation_per_step_m: 0.0005
+  max_rotation_per_step_rad: 0.02
+  max_cumulative_tcp_drift_m: 0.40
+
+budgets:
+  total_step_limit: 2500
+  wall_time_limit_s: 180.0
+
+abort:
+  latch: true
+  block_post_abort_actuation: true
+  abort_on_nan_or_inf: true
+  stop_conditions:
+    - operator_abort
+    - sensor_invalid
+    - controller_failure
+
+deterministic_reset_seed: 1701
+benchmark_result: false
+not_for_paper_claims: true
+

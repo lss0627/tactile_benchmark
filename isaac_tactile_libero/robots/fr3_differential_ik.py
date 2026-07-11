@@ -298,12 +298,14 @@ class FR3DifferentialIKRuntime:
         fr3_usd_path: str,
         ee_frame: str = DEFAULT_EE_FRAME,
         articulation_root_path: str = FR3_PRIM_PATH,
+        stage_builder: Any | None = None,
     ):
         self.ik_runtime = FR3IKControllerRuntime(
             simulation_app=simulation_app,
             fr3_usd_path=fr3_usd_path,
             ee_frame=ee_frame,
             articulation_root_path=articulation_root_path,
+            stage_builder=stage_builder,
         )
         self.articulation_root_path = articulation_root_path
         self._warnings: list[str] = []

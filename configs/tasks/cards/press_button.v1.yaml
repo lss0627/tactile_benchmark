@@ -1,0 +1,95 @@
+schema_version: "1.0.0"
+task_id: PressButton
+task_version: "1.0.1"
+name: Safe physical PressButton
+language_instruction: press the red button
+suite: tactile_contact
+status: candidate
+
+scene:
+  task_config_path: configs/tasks/press_button_physical.yaml
+  mechanism_version: "1.0.1"
+  assets:
+    - asset_id: isaacsim_franka_fr3_asset
+      manifest: assets/asset_manifest.csv
+      redistributed: false
+  initial_state_distribution:
+    deterministic_reset_seed: 1701
+    button_reset_noise_m: [0.0, 0.0002]
+  reset_oracle:
+    source: observed_button_joint_travel
+    maximum_travel_m: 0.0005
+
+robot:
+  robot_id: fr3_tactile
+  robot_config_path: configs/robots/fr3_press_button_safe.yaml
+  permitted_controller: differential_ik_with_g1_guards
+  action_schema_version: "0.1.0"
+  action_semantics: [dx, dy, dz, dRx, dRy, dRz, gripper]
+  base_frame: fr3_link0
+  ee_frame: fr3_hand_tcp
+
+task_truth:
+  state_source: observed_button_joint_travel
+  observed_variable: button_travel_m
+  pressed_threshold_m: 0.009
+  success_duration_steps: 3
+  release_threshold_m: 0.001
+  reset_tolerance_m: 0.0005
+  success_requires_observed_state: true
+  forbidden_success_sources: [tcp_pose, commanded_depth, elapsed_steps, contact, force]
+
+termination:
+  success_requires: [task_success, button_released, button_reset, robot_safe, retract_complete]
+  failure_reasons:
+    - safety_abort
+    - step_budget
+    - wall_time_budget
+    - sensor_invalid
+    - controller_failure
+    - release_or_reset_failure
+
+safety:
+  config_path: configs/robots/fr3_press_button_safe.yaml
+  rules:
+    - finite_state
+    - workspace
+    - joint_position
+    - joint_velocity
+    - direction
+    - collision_penetration
+    - per_step_motion
+    - cumulative_drift
+    - step_budget
+    - wall_time_budget
+    - stop_conditions
+
+metrics:
+  success:
+    unit: boolean
+    direction: maximize
+    missing: failure
+  maximum_button_travel_m:
+    unit: m
+    direction: diagnostic
+    missing: invalid_episode
+  safety_event_count:
+    unit: count
+    direction: minimize
+    missing: invalid_episode
+
+evidence:
+  gate: G1
+  required_episodes: 10
+  required_release_reset_rate: 1.0
+  required_safe_retract_rate: 1.0
+  required_safety_events: 0
+  physical_manifest: outputs/evidence/G1/physical-press-button/manifest.json
+  claim_boundary: PASS_SMOKE_ON_UNVALIDATED_DRIVER
+  release_blocker: REFERENCE_DRIVER_REVALIDATION_REQUIRED
+
+splits:
+  policy: not_applicable_until_G4
+  leakage_risks:
+    - deterministic reset seed must not be reused as a formal evaluation split policy
+    - G1 runtime traces are evidence, not a formal dataset
