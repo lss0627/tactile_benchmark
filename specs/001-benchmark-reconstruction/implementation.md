@@ -4,8 +4,9 @@
 **Prepared**: 2026-07-10
 
 **Last synchronized**: 2026-07-11
-**Current state**: P0, G-1A, G0, G-1B, and the 6.0.1 development cutover are implemented; G1-G6
-remain the active implementation backlog.
+**Current state**: P0, G-1A, G0, G-1B, and the 6.0.1 development cutover are implemented. G1
+T055-T069 are implemented; T070 is `BLOCKED` by the retained episode-0 `WORKSPACE_LIMIT` result.
+G2-G6 remain blocked by G1.
 
 ## Outcome and boundary
 
@@ -101,7 +102,7 @@ python scripts/run_isaacsim6_g1b.py --cycles 100 --steps 500 \
 python scripts/check_isaacsim6_imports.py --deprecated-as-error
 ```
 
-### Future G1 command
+### G1 command and current blocker
 
 ```bash
 python scripts/run_fr3_press_button_press_smoke.py \
@@ -112,6 +113,13 @@ python scripts/review_gate.py \
   --gate G1 \
   --evidence outputs/evidence/G1/physical-press-button/manifest.json
 ```
+
+The current immutable result is
+`outputs/evidence/G1/physical-press-button-attempt-05-1af514f/manifest.json`. It is
+`BLOCKED/physical_runtime`: the button was observed released/reset, then the initial `APPROACH`
+safety check raised `WORKSPACE_LIMIT` before any requested or executed action. The evidence records
+CPU PhysX with MBP broadphase and GPU dynamics disabled, zero post-abort actuation, invalid
+force-vector/wrench masks, and the required reference-driver revalidation blocker. Do not begin G2.
 
 ### Future G2-G3 commands
 

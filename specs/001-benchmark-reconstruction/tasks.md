@@ -149,28 +149,33 @@ success from observed task state and immediate abort on unsafe behavior.
 
 ### Tests
 
-- [ ] T055 [P] [US2] Write failing physical-mechanism tests in `tests/test_press_button_mechanism.py` for joint travel, limits, rest/reset/release state, collision, and deterministic seeded reset (FR-007; AS-US2-1).
-- [ ] T056 [P] [US2] Write failing success-oracle tests in `tests/test_press_button_state_oracle.py` proving TCP pose, command depth, elapsed steps, and force alone cannot produce success and that observed travel must persist for the configured duration (FR-008, FR-017; AS-US2-1).
-- [ ] T057 [P] [US2] Write parametrized failing safety tests in `tests/test_fr3_runtime_safety.py` for finite values, workspace, joint position/velocity, direction, collision/penetration, per-step motion, cumulative drift, and stop conditions (FR-009; SC-004; AS-US2-2).
-- [ ] T058 [P] [US2] Write failing hard-budget tests in `tests/test_runtime_budgets.py` for exact step/wall-time boundaries and proof that ignored or exceeded budgets terminate actuation (FR-010; SC-004).
-- [ ] T059 [P] [US2] Write failing runtime state-machine tests in `tests/test_press_button_runtime_state_machine.py` for legal transitions, release/retract completion, abort from every active state, and idempotent stop (FR-007-FR-010).
-- [ ] T060 [P] [US2] Extend negative force tests in `tests/test_press_button_no_fake_force.py` so button travel/contact/proximity/success never set force/wrench validity (FR-006; AS-US2-3).
-- [ ] T061 [P] [US2] Write failing evidence-freshness tests in `tests/test_runtime_evidence_freshness.py` that invalidate artifacts after controller, safety, task, robot, sensor, config, or asset changes (FR-011; AS-US2-4).
+- [x] T055 [P] [US2] Write failing physical-mechanism tests in `tests/test_press_button_mechanism.py` for joint travel, limits, rest/reset/release state, collision, and deterministic seeded reset (FR-007; AS-US2-1).
+- [x] T056 [P] [US2] Write failing success-oracle tests in `tests/test_press_button_state_oracle.py` proving TCP pose, command depth, elapsed steps, and force alone cannot produce success and that observed travel must persist for the configured duration (FR-008, FR-017; AS-US2-1).
+- [x] T057 [P] [US2] Write parametrized failing safety tests in `tests/test_fr3_runtime_safety.py` for finite values, workspace, joint position/velocity, direction, collision/penetration, per-step motion, cumulative drift, and stop conditions (FR-009; SC-004; AS-US2-2).
+- [x] T058 [P] [US2] Write failing hard-budget tests in `tests/test_runtime_budgets.py` for exact step/wall-time boundaries and proof that ignored or exceeded budgets terminate actuation (FR-010; SC-004).
+- [x] T059 [P] [US2] Write failing runtime state-machine tests in `tests/test_press_button_runtime_state_machine.py` for legal transitions, release/retract completion, abort from every active state, and idempotent stop (FR-007-FR-010).
+- [x] T060 [P] [US2] Extend negative force tests in `tests/test_press_button_no_fake_force.py` so button travel/contact/proximity/success never set force/wrench validity (FR-006; AS-US2-3).
+- [x] T061 [P] [US2] Write failing evidence-freshness tests in `tests/test_runtime_evidence_freshness.py` that invalidate artifacts after controller, safety, task, robot, sensor, config, or asset changes (FR-011; AS-US2-4).
 
 ### Implementation
 
-- [ ] T062 [P] [US2] Add versioned physical button parameters and safety bounds in `configs/tasks/press_button_physical.yaml` and `configs/robots/fr3_press_button_safe.yaml` (FR-007, FR-009, FR-010; depends on G0 asset resolution).
-- [ ] T063 [US2] Implement the movable jointed button scene and state reader in `isaac_tactile_libero/tasks/press_button_mechanism.py`, replacing the cylinder-only oracle path for physical mode while retaining diagnostic mode labels (FR-007; depends on T055, T062).
-- [ ] T064 [US2] Implement reset/release and duration-based task truth in `isaac_tactile_libero/tasks/press_button.py` and register task-card version `configs/tasks/cards/press_button.v1.yaml` (FR-008, FR-017; depends on T056, T063).
-- [ ] T065 [US2] Implement all runtime safety checks and structured violations in `isaac_tactile_libero/robots/fr3_runtime_safety.py` (FR-009; depends on T057, T062).
-- [ ] T066 [US2] Implement hard monotonic step/wall-time budgets in `isaac_tactile_libero/robots/runtime_budget.py` and integrate them into `isaac_tactile_libero/robots/fr3_ee_runtime_controller.py` (FR-010; depends on T058, T065).
-- [ ] T067 [US2] Refactor approach/press/hold/release/retract control into `isaac_tactile_libero/tasks/press_button_runtime.py` with safe stop/abort from every state and no post-abort actuation (FR-007-FR-010; depends on T059, T063-T066).
-- [ ] T068 [P] [US2] Bind physical contact/force capability to the actual PressButton scene in `isaac_tactile_libero/envs/isaacsim_contact_force.py` and `isaac_tactile_libero/sensors/runtime_tactile_adapter.py`, leaving masks false unless a valid force source is read (FR-006; depends on T060).
-- [ ] T069 [US2] Replace `scripts/run_fr3_press_button_press_smoke.py` with the state-machine runner, enforce CLI budgets, and emit current-code evidence through `isaac_tactile_libero/evidence/` (FR-007-FR-011; depends on T061, T067, T068).
+- [x] T062 [P] [US2] Add versioned physical button parameters and safety bounds in `configs/tasks/press_button_physical.yaml` and `configs/robots/fr3_press_button_safe.yaml` (FR-007, FR-009, FR-010; depends on G0 asset resolution).
+- [x] T063 [US2] Implement the movable jointed button scene and state reader in `isaac_tactile_libero/tasks/press_button_mechanism.py`, replacing the cylinder-only oracle path for physical mode while retaining diagnostic mode labels (FR-007; depends on T055, T062).
+- [x] T064 [US2] Implement reset/release and duration-based task truth in `isaac_tactile_libero/tasks/press_button.py` and register task-card version `configs/tasks/cards/press_button.v1.yaml` (FR-008, FR-017; depends on T056, T063).
+- [x] T065 [US2] Implement all runtime safety checks and structured violations in `isaac_tactile_libero/robots/fr3_runtime_safety.py` (FR-009; depends on T057, T062).
+- [x] T066 [US2] Implement hard monotonic step/wall-time budgets in `isaac_tactile_libero/robots/runtime_budget.py` and integrate them into `isaac_tactile_libero/robots/fr3_ee_runtime_controller.py` (FR-010; depends on T058, T065).
+- [x] T067 [US2] Refactor approach/press/hold/release/retract control into `isaac_tactile_libero/tasks/press_button_runtime.py` with safe stop/abort from every state and no post-abort actuation (FR-007-FR-010; depends on T059, T063-T066).
+- [x] T068 [P] [US2] Bind physical contact/force capability to the actual PressButton scene in `isaac_tactile_libero/envs/isaacsim_contact_force.py` and `isaac_tactile_libero/sensors/runtime_tactile_adapter.py`, leaving masks false unless a valid force source is read (FR-006; depends on T060).
+- [x] T069 [US2] Replace `scripts/run_fr3_press_button_press_smoke.py` with the state-machine runner, enforce CLI budgets, and emit current-code evidence through `isaac_tactile_libero/evidence/` (FR-007-FR-011; depends on T061, T067, T068).
 - [ ] T070 [US2] Execute 10 consecutive physical press/release/retract episodes with `scripts/run_fr3_press_button_press_smoke.py --config configs/tasks/press_button_physical.yaml --episodes 10 --output outputs/evidence/G1/physical-press-button`; review `manifest.json`, episode JSONL, safety report, task-state trace, and video/screenshots, then update gate status (SC-003, SC-004; all US2 scenarios; expected `PASS_BENCHMARK` or `BLOCKED`).
 
 **Stop rule**: Any stale manifest, missing task-state signal, force provenance error, safety event,
 failed release/reset, or exceeded budget blocks G1 and every later physical-data task.
+
+**Current blocker**: T070 is `BLOCKED` at immutable run
+`outputs/evidence/G1/physical-press-button-attempt-05-1af514f/`. Episode 0 observed a reset/released
+button but aborted before actuation with `WORKSPACE_LIMIT`; the runner retained the failed episode,
+reported zero post-abort actuation, and did not execute later episodes. G2-G6 remain blocked.
 
 ---
 

@@ -11,7 +11,7 @@
 | Spec Kit documentation package | `PASS_SMOKE` | `dry_run` | 38 FR, 17 SC, 25 scenarios, and 138 tasks pass documentation consistency/format validation; no implementation gate is implied |
 | Isaac Sim 6 P0/G-1A/G-1B migration | `PASS_SMOKE` | `runtime_smoke` | 6.0.1 on Python 3.12; 100 Contact cycles, 100 repository resets, 500-step rollout, RGB/depth and A/B checks passed on unvalidated driver |
 | G0 Repository integrity | `PASS_BENCHMARK` | `benchmark` | Clean revision recorded by the current manifest was exported, wheel-installed, and passed the full no-simulator suite; manifest review/freshness passed |
-| G1 Physical PressButton safety | `NOT_STARTED` | `physical_runtime` | Current geometric/diagnostic path cannot satisfy physical task truth |
+| G1 Physical PressButton safety | `BLOCKED` | `physical_runtime` | Fresh run `physical-press-button-attempt-05-1af514f` aborted episode 0 before actuation on `WORKSPACE_LIMIT`; 10 consecutive cycles were not completed |
 | G2 Unified real backend | `NOT_STARTED` | `physical_runtime` | The 6.0.1 compatibility path exists, but the accepted G1 task/controller/safety path is not yet integrated as G2 evidence |
 | G3 Truthful tactile | `NOT_STARTED` | `physical_runtime` | CPU Contact migration smoke exists; accepted calibrated force-vector/wrench or visuotactile evidence does not |
 | G4 Task/data/replay | `NOT_STARTED` | `dataset` | No accepted physical task/data/replay chain |
@@ -93,12 +93,12 @@ python scripts/review_gate.py --gate G0 \
 **Tasks**: T055-T070
 
 - [ ] G1-01 Button has physical travel/limits and observable rest, pressed, released, and reset states.
-- [ ] G1-02 Success uses observed button state held for the declared duration, never TCP/command/steps alone.
-- [ ] G1-03 Approach, press, hold, release, and retract transitions are explicit and bounded.
-- [ ] G1-04 Every workspace/joint/velocity/direction/penetration/step/drift/finite rule has pass and abort tests.
-- [ ] G1-05 Step and wall-time budgets are hard termination conditions.
-- [ ] G1-06 Aborts stop actuation; completion requires safe release/retract and reset evidence.
-- [ ] G1-07 Missing force leaves force/wrench invalid; geometry never fabricates tactile values.
+- [x] G1-02 Success uses observed button state held for the declared duration, never TCP/command/steps alone.
+- [x] G1-03 Approach, press, hold, release, and retract transitions are explicit and bounded.
+- [x] G1-04 Every workspace/joint/velocity/direction/penetration/step/drift/finite rule has pass and abort tests.
+- [x] G1-05 Step and wall-time budgets are hard termination conditions.
+- [x] G1-06 Aborts stop actuation; completion requires safe release/retract and reset evidence.
+- [x] G1-07 Missing force leaves force/wrench invalid; geometry never fabricates tactile values.
 - [ ] G1-08 Ten consecutive physical episodes have 100% release/reset and zero safety violations.
 - [ ] G1-09 Evidence is fresh for current controller, safety config, task, robot, sensor, and asset versions.
 
@@ -112,6 +112,16 @@ python scripts/run_fr3_press_button_press_smoke.py \
 
 **Required evidence**: manifest, task-state traces, requested/executed actions, safety report, episode
 records, contact/force provenance, command log, and reviewable video/screenshots.
+
+**Current evidence**:
+`outputs/evidence/G1/physical-press-button-attempt-05-1af514f/manifest.json` is a fresh
+`BLOCKED/physical_runtime` manifest for its clean evidence-producing commit. Episode 0 recorded
+button release/reset, CPU PhysX (`MBP`, GPU dynamics disabled), false force-vector/wrench validity,
+zero requested/executed actions, and zero post-abort actuation. Blockers are
+`G1_REQUIRES_10_CONSECUTIVE_EPISODES`, `G1_EPISODE_0_OBSERVED_PRESS_FAILED`,
+`G1_EPISODE_0_SAFE_RETRACT_FAILED`, `G1_EPISODE_0_SAFETY_EVENT`,
+`G1_EPISODE_0_COLLISION_MONITOR_INVALID`, `G1_EPISODE_0_PENETRATION_PROVENANCE_INVALID`, and
+`REFERENCE_DRIVER_REVALIDATION_REQUIRED`. G1-01, G1-08, and final-HEAD G1-09 remain unaccepted.
 
 ## G2 — Unified real backend
 
