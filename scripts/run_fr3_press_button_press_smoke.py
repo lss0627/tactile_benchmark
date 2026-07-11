@@ -440,16 +440,47 @@ def _abort_machine(
     code: str,
     detail: str,
     events: list[dict[str, Any]],
+    event: Mapping[str, Any] | None = None,
 ) -> None:
     if machine.can_actuate:
         machine.abort(code=code, detail=detail)
-    events.append(
+    payload = dict(event or {})
+    payload.update(
         {
             "code": str(code),
             "detail": str(detail),
             "state": machine.abort_record.state if machine.abort_record is not None else machine.state.value,
         }
     )
+    events.append(payload)
+
+
+def _structured_safety_event(
+    *,
+    violation: Any,
+    sample: FR3SafetySample,
+    target_position: Sequence[float],
+    scene_context: Mapping[str, Any],
+) -> dict[str, Any]:
+    violation_payload = violation.as_dict()
+    message = str(violation_payload.get("message") or "")
+    if not message:
+        message = (
+            f"{violation_payload['code']}: observed={violation_payload.get('observed')!r}; "
+            f"limit={violation_payload.get('limit')!r}"
+        )
+    return {
+        **violation_payload,
+        "phase": str(violation_payload.get("phase") or sample.phase),
+        "message": message,
+        "detail": message,
+        "tcp_position": [float(item) for item in sample.tcp_position],
+        "previous_tcp_position": [float(item) for item in sample.previous_tcp_position],
+        "reset_tcp_position": [float(item) for item in sample.reset_tcp_position],
+        "requested_delta": [float(item) for item in sample.requested_delta],
+        "target_position": [float(item) for item in target_position],
+        **dict(scene_context),
+    }
 
 
 def _g1_execute_episode(
@@ -510,6 +541,34 @@ def _g1_execute_episode(
     release_observation_index: int | None = None
     reset_tcp = np.asarray(runtime.read_current_ee_transform().position, dtype=float)
     previous_tcp = reset_tcp.copy()
+    stage = runtime.ik_runtime.ee_controller.controller.stage
+    from pxr import Usd, UsdGeom  # type: ignore
+
+    def world_transform(path: str) -> dict[str, Any]:
+        prim = stage.GetPrimAtPath(path)
+        if prim is None or not prim.IsValid():
+            return {"prim_path": path, "valid": False}
+        matrix = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        translation = matrix.ExtractTranslation()
+        return {
+            "prim_path": path,
+            "valid": True,
+            "translation_m": [float(translation[index]) for index in range(3)],
+            "matrix": [
+                [float(matrix[row][column]) for column in range(4)] for row in range(4)
+            ],
+        }
+
+    scene_context = {
+        "workspace_frame": "world",
+        "workspace_min": [float(item) for item in safety.limits.workspace_min],
+        "workspace_max": [float(item) for item in safety.limits.workspace_max],
+        "robot_base_world_transform": world_transform("/World/FR3"),
+        "button_base_world_transform": world_transform(mechanism.config.root_prim_path),
+        "button_world_transform": world_transform(mechanism.config.button_prim_path),
+        "stage_meters_per_unit": float(UsdGeom.GetStageMetersPerUnit(stage)),
+        "up_axis": str(UsdGeom.GetStageUpAxis(stage)),
+    }
 
     try:
         reset_state = mechanism.read_stage(runtime.ik_runtime.ee_controller.controller.stage)
@@ -585,7 +644,19 @@ def _g1_execute_episode(
         previous_tcp = tcp
         if not decision.allow_actuation:
             violation = decision.violations[0]
-            _abort_machine(machine, code=violation.code, detail=violation.message, events=events)
+            event = _structured_safety_event(
+                violation=violation,
+                sample=sample,
+                target_position=targets[phase],
+                scene_context=scene_context,
+            )
+            _abort_machine(
+                machine,
+                code=violation.code,
+                detail=event["message"],
+                events=events,
+                event=event,
+            )
         return button, outcome, contact
 
     def send_toward(phase: str, target: np.ndarray, stop: Any) -> bool:
@@ -632,7 +703,19 @@ def _g1_execute_episode(
             pre_decision = safety.check(pre_sample)
             if not pre_decision.allow_actuation:
                 violation = pre_decision.violations[0]
-                _abort_machine(machine, code=violation.code, detail=violation.message, events=events)
+                event = _structured_safety_event(
+                    violation=violation,
+                    sample=pre_sample,
+                    target_position=target,
+                    scene_context=scene_context,
+                )
+                _abort_machine(
+                    machine,
+                    code=violation.code,
+                    detail=event["message"],
+                    events=events,
+                    event=event,
+                )
                 return False
             action = [float(delta[0]), float(delta[1]), float(delta[2]), 0.0, 0.0, 0.0, 0.0]
             diffik, _q, _jacobian = runtime.compute_action_delta(
