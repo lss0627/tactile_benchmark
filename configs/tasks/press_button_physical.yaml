@@ -1,6 +1,6 @@
 schema_version: "1.0.0"
 task_id: PressButton
-task_version: "1.0.1"
+task_version: "1.0.2"
 instruction: press the red button
 claim_class: physical_runtime
 
@@ -14,6 +14,8 @@ runtime:
   dependency_lock_path: requirements/lock-py312.txt
   deterministic_reset_seed: 1701
   episodes: 10
+  control_frequency_hz: 20.0
+  physics_dt_s: 0.016666666666666666
 
 mechanism:
   mechanism_version: "1.0.1"

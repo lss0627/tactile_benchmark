@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 import hashlib
 import importlib.util
 import json
-from math import ceil
+from math import ceil, isclose
 from pathlib import Path
 import platform
 import shlex
@@ -143,7 +143,21 @@ def _load_g1_config(path: str | Path) -> dict[str, Any]:
         raise ValueError("G1 config requires a positive hard total_step_limit")
     if float(payload.get("budgets", {}).get("wall_time_limit_s", 0.0)) <= 0.0:
         raise ValueError("G1 config requires a positive hard wall_time_limit_s")
+    _g1_physics_substeps_per_action(payload)
     return payload
+
+
+def _g1_physics_substeps_per_action(config: Mapping[str, Any]) -> int:
+    runtime = config.get("runtime", {})
+    control_frequency_hz = float(runtime.get("control_frequency_hz", 0.0))
+    physics_dt_s = float(runtime.get("physics_dt_s", 0.0))
+    if control_frequency_hz <= 0.0 or physics_dt_s <= 0.0:
+        raise ValueError("G1 config requires positive control_frequency_hz and physics_dt_s")
+    control_period_s = 1.0 / control_frequency_hz
+    substeps = max(1, int(round(control_period_s / physics_dt_s)))
+    if not isclose(substeps * physics_dt_s, control_period_s, rel_tol=0.0, abs_tol=1.0e-12):
+        raise ValueError("G1 control period must be an integer multiple of physics_dt_s")
+    return substeps
 
 
 def _configure_g1_cpu_physics(simulation_manager: Any) -> str:
@@ -566,6 +580,9 @@ def _g1_execute_episode(
     state_limits = {str(key): int(value) for key, value in config["budgets"]["state_step_limits"].items()}
     motion = config["motion"]
     max_step = float(motion["max_translation_per_step_m"])
+    control_frequency_hz = float(config["runtime"]["control_frequency_hz"])
+    physics_dt_s = float(config["runtime"]["physics_dt_s"])
+    physics_substeps = _g1_physics_substeps_per_action(config)
     base = np.asarray(mechanism.config.base_position_m, dtype=float)
     axis = np.asarray(mechanism.config.joint_axis, dtype=float)
     normal = -axis
@@ -642,7 +659,7 @@ def _g1_execute_episode(
         state_step: int,
     ) -> tuple[Any, Any, Any]:
         nonlocal step_index, previous_tcp, penetration_samples_available, raw_contact_samples, collision_samples_valid
-        runtime.update(1)
+        runtime.update(physics_substeps)
         step_index += 1
         joint = runtime.read_joint_state()
         ee = runtime.read_current_ee_transform()
@@ -708,6 +725,11 @@ def _g1_execute_episode(
                 "safety": decision.as_dict(),
                 "collision": collision_report,
                 "motion": progress,
+                "runtime_cadence": {
+                    "control_frequency_hz": control_frequency_hz,
+                    "physics_dt_s": physics_dt_s,
+                    "physics_substeps_per_action": physics_substeps,
+                },
             }
         )
         previous_tcp = tcp
@@ -799,6 +821,7 @@ def _g1_execute_episode(
                     "step": step_index + 1,
                     "runtime_state": phase,
                     "action": action,
+                    "physics_substeps": physics_substeps,
                 }
             )
             if not diffik.dq_safety_pass:
@@ -836,6 +859,7 @@ def _g1_execute_episode(
                     "joint_position_targets": [float(item) for item in target_joints],
                     "button_travel_m": button.travel_m,
                     "task_success": outcome.success,
+                    "physics_substeps": physics_substeps,
                 }
             )
             if not machine.can_actuate:
@@ -906,6 +930,7 @@ def _g1_execute_episode(
                     "step": step_index + 1,
                     "runtime_state": "HOLD",
                     "action": [0.0] * 7,
+                    "physics_substeps": physics_substeps,
                 }
             )
             before_tcp = np.asarray(runtime.read_current_ee_transform().position, dtype=float)
@@ -934,6 +959,7 @@ def _g1_execute_episode(
                     "joint_position_targets": list(joint.joint_positions),
                     "button_travel_m": button.travel_m,
                     "task_success": outcome.success,
+                    "physics_substeps": physics_substeps,
                 }
             )
         if machine.can_actuate and oracle._success:
@@ -1031,6 +1057,9 @@ def _g1_execute_episode(
         "step_budget_exceeded": any(item["code"] == "STEP_BUDGET_EXCEEDED" for item in events),
         "wall_time_budget_exceeded": any(item["code"] == "WALL_TIME_BUDGET_EXCEEDED" for item in events),
         "steps_executed": budget.steps_executed,
+        "control_frequency_hz": control_frequency_hz,
+        "physics_dt_s": physics_dt_s,
+        "physics_substeps_per_action": physics_substeps,
         "force_vector_valid": False,
         "wrench_valid": False,
         "force_magnitude_valid": any(item.is_valid and item.in_contact for item in contact_trace),
