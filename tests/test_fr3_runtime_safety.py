@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 
 import pytest
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -154,3 +155,82 @@ def test_fr3_controller_guard_checks_safety_before_actuator_call() -> None:
     assert controller._send_joint_position_targets([0.0, 0.0]) is False
     assert actuator.calls == 0
     assert controller.runtime_guard_events[-1]["code"] == "STOP_CONDITION"
+
+
+def _physical_config_sample(module, limits, position, *, phase="APPROACH"):
+    joint_positions = tuple(
+        (lower + upper) * 0.5
+        for lower, upper in zip(limits.joint_position_lower, limits.joint_position_upper)
+    )
+    return module.FR3SafetySample(
+        tcp_position=tuple(position),
+        previous_tcp_position=tuple(position),
+        reset_tcp_position=tuple(position),
+        joint_positions=joint_positions,
+        joint_velocities=tuple(0.0 for _ in joint_positions),
+        requested_delta=(0.0, 0.0, -0.0005),
+        observed_delta=(0.0, 0.0, 0.0),
+        collision=False,
+        penetration_m=0.0,
+        stop_requested=False,
+        phase=phase,
+    )
+
+
+def test_verified_reset_and_task_endpoints_are_inside_physical_world_workspace() -> None:
+    module = _target()
+    safety_path = ROOT / "configs/robots/fr3_press_button_safe.yaml"
+    task_path = ROOT / "configs/tasks/press_button_physical.yaml"
+    limits = module.load_fr3_runtime_safety(safety_path)
+    task = yaml.safe_load(task_path.read_text(encoding="utf-8"))
+    mechanism = task["mechanism"]
+    motion = task["motion"]
+    base = mechanism.get("base_position_m", [0.55, 0.0, 0.47])
+    reset_tcp = [0.22081154584884644, -3.0178576707839966e-05, 0.8803614377975464]
+    endpoints = {
+        "RESET": reset_tcp,
+        "APPROACH": [base[0], base[1], base[2] + motion["approach_offset_m"]],
+        "PRESS": [
+            base[0],
+            base[1],
+            base[2] - min(
+                mechanism["travel_limit_m"], mechanism["pressed_threshold_m"] + 0.001
+            ),
+        ],
+        "RELEASE": [base[0], base[1], base[2] + motion["approach_offset_m"]],
+        "RETRACT": [base[0], base[1], base[2] + motion["retract_offset_m"]],
+    }
+
+    for phase, point in endpoints.items():
+        decision = module.FR3RuntimeSafety(limits).check(
+            _physical_config_sample(module, limits, point, phase=phase)
+        )
+        assert decision.allow_actuation, (phase, decision.as_dict())
+
+
+def test_physical_workspace_has_measured_provenance_and_aborts_just_outside_boundaries() -> None:
+    module = _target()
+    safety_path = ROOT / "configs/robots/fr3_press_button_safe.yaml"
+    payload = yaml.safe_load(safety_path.read_text(encoding="utf-8"))
+    workspace = payload["workspace"]
+    limits = module.load_fr3_runtime_safety(safety_path)
+
+    assert workspace["frame"] == "world"
+    assert workspace["source"] == "measured_reset_tcp_and_declared_task_endpoints"
+    assert workspace["evidence_run"] == "workspace-diagnostic-8a49351eed9d"
+    for point in workspace["required_points_m"].values():
+        decision = module.FR3RuntimeSafety(limits).check(
+            _physical_config_sample(module, limits, point)
+        )
+        assert decision.allow_actuation
+
+    outside_min = list(limits.workspace_min)
+    outside_min[0] -= 1.0e-6
+    outside_max = list(limits.workspace_max)
+    outside_max[2] += 1.0e-6
+    for point in (outside_min, outside_max):
+        decision = module.FR3RuntimeSafety(limits).check(
+            _physical_config_sample(module, limits, point)
+        )
+        assert decision.allow_actuation is False
+        assert decision.violations[0].code == "WORKSPACE_LIMIT"
