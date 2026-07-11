@@ -398,3 +398,11 @@ def test_motion_progress_diagnostic_records_actual_motion_and_budget_context() -
     assert event["requested_action_count"] == 1200
     assert event["executed_action_count"] == 1200
     assert event["motion"] == progress
+
+
+def test_g1_runner_uses_benchmark_action_cadence() -> None:
+    config = runner._load_g1_config("configs/tasks/press_button_physical.yaml")
+
+    assert config["runtime"]["control_frequency_hz"] == 20.0
+    assert config["runtime"]["physics_dt_s"] == 1.0 / 60.0
+    assert runner._g1_physics_substeps_per_action(config) == 3
