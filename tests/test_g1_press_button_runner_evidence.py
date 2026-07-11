@@ -355,3 +355,46 @@ def test_workspace_abort_preserves_violation_sample_target_and_scene_context() -
     assert event["target_position"] == [0.55, 0.0, 0.5]
     for key, value in scene_context.items():
         assert event[key] == value
+
+
+def test_motion_progress_diagnostic_records_actual_motion_and_budget_context() -> None:
+    progress = runner._motion_progress_record(
+        tcp_position=(0.0, 0.0, 0.0),
+        previous_tcp_position=(-0.001, 0.0, 0.0),
+        reset_tcp_position=(-0.2, 0.0, 0.0),
+        target_position=(0.3, 0.4, 0.0),
+        requested_delta=(0.0003, 0.0004, 0.0),
+        observed_delta=(0.001, 0.0, 0.0),
+        joint_positions=(0.1, 0.2),
+        joint_velocities=(0.01, 0.02),
+        state_step=1200,
+    )
+
+    assert progress == {
+        "tcp_position": [0.0, 0.0, 0.0],
+        "previous_tcp_position": [-0.001, 0.0, 0.0],
+        "reset_tcp_position": [-0.2, 0.0, 0.0],
+        "target_position": [0.3, 0.4, 0.0],
+        "distance_to_target_m": 0.5,
+        "distance_from_reset_m": 0.2,
+        "requested_delta": [0.0003, 0.0004, 0.0],
+        "observed_delta": [0.001, 0.0, 0.0],
+        "joint_positions": [0.1, 0.2],
+        "joint_velocities": [0.01, 0.02],
+        "state_step": 1200,
+    }
+
+    event = runner._state_step_budget_event(
+        phase="APPROACH",
+        state_step_limit=1200,
+        progress=progress,
+        requested_action_count=1200,
+        executed_action_count=1200,
+    )
+
+    assert event["code"] == "STATE_STEP_BUDGET_EXCEEDED"
+    assert event["phase"] == "APPROACH"
+    assert event["state_step_limit"] == 1200
+    assert event["requested_action_count"] == 1200
+    assert event["executed_action_count"] == 1200
+    assert event["motion"] == progress
