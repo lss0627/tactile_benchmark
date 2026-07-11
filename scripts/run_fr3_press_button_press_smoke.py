@@ -483,6 +483,57 @@ def _structured_safety_event(
     }
 
 
+def _motion_progress_record(
+    *,
+    tcp_position: Sequence[float],
+    previous_tcp_position: Sequence[float],
+    reset_tcp_position: Sequence[float],
+    target_position: Sequence[float],
+    requested_delta: Sequence[float],
+    observed_delta: Sequence[float],
+    joint_positions: Sequence[float],
+    joint_velocities: Sequence[float],
+    state_step: int,
+) -> dict[str, Any]:
+    tcp = np.asarray(tcp_position, dtype=float)
+    reset = np.asarray(reset_tcp_position, dtype=float)
+    target = np.asarray(target_position, dtype=float)
+    return {
+        "tcp_position": [float(item) for item in tcp],
+        "previous_tcp_position": [float(item) for item in previous_tcp_position],
+        "reset_tcp_position": [float(item) for item in reset],
+        "target_position": [float(item) for item in target],
+        "distance_to_target_m": float(np.linalg.norm(target - tcp)),
+        "distance_from_reset_m": float(np.linalg.norm(tcp - reset)),
+        "requested_delta": [float(item) for item in requested_delta],
+        "observed_delta": [float(item) for item in observed_delta],
+        "joint_positions": [float(item) for item in joint_positions],
+        "joint_velocities": [float(item) for item in joint_velocities],
+        "state_step": int(state_step),
+    }
+
+
+def _state_step_budget_event(
+    *,
+    phase: str,
+    state_step_limit: int,
+    progress: Mapping[str, Any],
+    requested_action_count: int,
+    executed_action_count: int,
+) -> dict[str, Any]:
+    detail = f"{phase} exceeded {state_step_limit} steps"
+    return {
+        "code": "STATE_STEP_BUDGET_EXCEEDED",
+        "phase": str(phase),
+        "detail": detail,
+        "message": detail,
+        "state_step_limit": int(state_step_limit),
+        "requested_action_count": int(requested_action_count),
+        "executed_action_count": int(executed_action_count),
+        "motion": dict(progress),
+    }
+
+
 def _g1_execute_episode(
     *,
     episode_index: int,
@@ -583,7 +634,13 @@ def _g1_execute_episode(
             events=events,
         )
 
-    def observe_and_record(phase: str, requested: np.ndarray, before_tcp: np.ndarray) -> tuple[Any, Any, Any]:
+    def observe_and_record(
+        phase: str,
+        requested: np.ndarray,
+        before_tcp: np.ndarray,
+        target: np.ndarray,
+        state_step: int,
+    ) -> tuple[Any, Any, Any]:
         nonlocal step_index, previous_tcp, penetration_samples_available, raw_contact_samples, collision_samples_valid
         runtime.update(1)
         step_index += 1
@@ -623,6 +680,17 @@ def _g1_execute_episode(
             contact=contact.in_contact,
             force_magnitude=contact.force_magnitude,
         )
+        progress = _motion_progress_record(
+            tcp_position=tcp,
+            previous_tcp_position=before_tcp,
+            reset_tcp_position=reset_tcp,
+            target_position=target,
+            requested_delta=requested,
+            observed_delta=observed_delta,
+            joint_positions=joint.joint_positions,
+            joint_velocities=joint.joint_velocities,
+            state_step=state_step,
+        )
         task_states.append(
             {
                 "episode_id": episode_id,
@@ -639,6 +707,7 @@ def _g1_execute_episode(
                 },
                 "safety": decision.as_dict(),
                 "collision": collision_report,
+                "motion": progress,
             }
         )
         previous_tcp = tcp
@@ -751,7 +820,13 @@ def _g1_execute_episode(
                 )
                 return False
             budget.finish_step()
-            button, outcome, _contact = observe_and_record(phase, delta, before_tcp)
+            button, outcome, _contact = observe_and_record(
+                phase,
+                delta,
+                before_tcp,
+                target,
+                state_step + 1,
+            )
             executed_actions.append(
                 {
                     "episode_id": episode_id,
@@ -765,11 +840,34 @@ def _g1_execute_episode(
             )
             if not machine.can_actuate:
                 return False
+        progress = (
+            dict(task_states[-1]["motion"])
+            if task_states and task_states[-1]["runtime_state"] == phase
+            else _motion_progress_record(
+                tcp_position=runtime.read_current_ee_transform().position,
+                previous_tcp_position=previous_tcp,
+                reset_tcp_position=reset_tcp,
+                target_position=target,
+                requested_delta=(0.0, 0.0, 0.0),
+                observed_delta=(0.0, 0.0, 0.0),
+                joint_positions=runtime.read_joint_state().joint_positions,
+                joint_velocities=runtime.read_joint_state().joint_velocities,
+                state_step=limit,
+            )
+        )
+        event = _state_step_budget_event(
+            phase=phase,
+            state_step_limit=limit,
+            progress=progress,
+            requested_action_count=len(requested_actions),
+            executed_action_count=len(executed_actions),
+        )
         _abort_machine(
             machine,
             code="STATE_STEP_BUDGET_EXCEEDED",
-            detail=f"{phase} exceeded {limit} steps",
+            detail=event["detail"],
             events=events,
+            event=event,
         )
         return False
 
@@ -820,7 +918,13 @@ def _g1_execute_episode(
                 )
                 break
             budget.finish_step()
-            button, outcome, _contact = observe_and_record("HOLD", np.zeros(3), before_tcp)
+            button, outcome, _contact = observe_and_record(
+                "HOLD",
+                np.zeros(3),
+                before_tcp,
+                before_tcp,
+                hold_step + 1,
+            )
             executed_actions.append(
                 {
                     "episode_id": episode_id,
