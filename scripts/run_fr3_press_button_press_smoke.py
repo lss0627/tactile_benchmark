@@ -188,6 +188,15 @@ def _configure_g1_cpu_physics_scene(scene_api: Any, simulation_manager: Any) -> 
     return _observe_g1_cpu_physics_scene(scene_api, simulation_manager)
 
 
+def _require_captured_physics_scene_api(scene_api: Any | None) -> Any:
+    if scene_api is None:
+        raise G1PhysicalBlocker(
+            "CPU_PHYSICS_POLICY_NOT_ENFORCED",
+            "the CPU PhysX scene API was not captured before timeline playback",
+        )
+    return scene_api
+
+
 def _g1_simulation_app_config(*, headless: bool) -> dict[str, Any]:
     return {
         "headless": bool(headless),
@@ -859,14 +868,18 @@ def _run_g1_physical(
     mechanism = PressButtonMechanism(load_press_button_mechanism_config(config["_config_path"]))
 
     physics_policy: dict[str, Any] = {}
+    physics_scene_api: Any | None = None
 
     def stage_builder(stage: Any) -> None:
+        nonlocal physics_scene_api
         from isaacsim.core.simulation_manager import SimulationManager  # type: ignore
         from pxr import PhysxSchema, UsdPhysics  # type: ignore
 
         physics_scene = UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
-        scene_api = PhysxSchema.PhysxSceneAPI.Apply(physics_scene.GetPrim())
-        physics_policy.update(_configure_g1_cpu_physics_scene(scene_api, SimulationManager))
+        physics_scene_api = PhysxSchema.PhysxSceneAPI.Apply(physics_scene.GetPrim())
+        physics_policy.update(
+            _configure_g1_cpu_physics_scene(physics_scene_api, SimulationManager)
+        )
         mechanism.build_stage(stage)
         for prim in stage.Traverse():
             path = str(prim.GetPath())
@@ -897,11 +910,8 @@ def _run_g1_physical(
         if not runtime.build(robot.frames.ee_frame):
             raise G1PhysicalBlocker("FR3_CONTROLLER_INITIALIZATION_FAILED", "; ".join(runtime.warnings))
         from isaacsim.core.simulation_manager import SimulationManager  # type: ignore
-        from pxr import PhysxSchema  # type: ignore
-
-        scene_prim = runtime.stage.GetPrimAtPath("/World/PhysicsScene")
         post_play_policy = _observe_g1_cpu_physics_scene(
-            PhysxSchema.PhysxSceneAPI(scene_prim), SimulationManager
+            _require_captured_physics_scene_api(physics_scene_api), SimulationManager
         )
         physics_policy.update(
             {

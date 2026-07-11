@@ -281,3 +281,9 @@ def test_g1_cpu_physics_scene_authors_and_verifies_non_gpu_physx() -> None:
         "broadphase_type": "MBP",
         "gpu_dynamics_enabled": False,
     }
+
+
+def test_g1_postplay_check_uses_scene_api_captured_before_runtime_wrapper() -> None:
+    captured_scene_api = object()
+
+    assert runner._require_captured_physics_scene_api(captured_scene_api) is captured_scene_api
