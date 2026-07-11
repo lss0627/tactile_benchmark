@@ -130,4 +130,3 @@ class BudgetedActuationGuard:
             return decision, None
         result = command()
         return self.budget.finish_step(), result
-

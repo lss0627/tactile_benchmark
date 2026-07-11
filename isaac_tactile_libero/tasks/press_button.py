@@ -104,4 +104,3 @@ class PressButtonStateOracle:
             pressed_hold_steps=self._pressed_hold_steps,
             required_hold_steps=self.required_hold_steps,
         )
-

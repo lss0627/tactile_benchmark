@@ -53,4 +53,3 @@ def test_geometry_contact_success_and_tcp_never_validate_force_or_wrench(proxy_f
     assert tactile["force_source"] == "unavailable"
     np.testing.assert_array_equal(tactile["force_left"], np.zeros(3, dtype=np.float32))
     np.testing.assert_array_equal(tactile["wrench_left"], np.zeros(6, dtype=np.float32))
-

@@ -111,4 +111,3 @@ class PressButtonRuntimeStateMachine:
             "transitions": list(self.transitions),
             "abort": self.abort_record.as_dict() if self.abort_record is not None else None,
         }
-
