@@ -172,7 +172,12 @@ def validate_evidence_manifest(manifest: Mapping[str, Any]) -> list[str]:
     return errors
 
 
-def validate_manifest_freshness(manifest: Mapping[str, Any]) -> dict[str, Any]:
+def validate_manifest_freshness(
+    manifest: Mapping[str, Any],
+    *,
+    current_repository_commit: str | None = None,
+    semantic_inputs: Mapping[str, str | Path] | None = None,
+) -> dict[str, Any]:
     changed: list[str] = []
     missing: list[str] = []
     checked = 0
@@ -186,9 +191,33 @@ def validate_manifest_freshness(manifest: Mapping[str, Any]) -> dict[str, Any]:
                 continue
             if sha256_file(path) != reference.get("sha256"):
                 changed.append(uri)
+    stale_semantic_roles: list[str] = []
+    if current_repository_commit is not None:
+        recorded_commit = str(manifest.get("repository", {}).get("commit", ""))
+        if recorded_commit != str(current_repository_commit):
+            stale_semantic_roles.append("repository")
+    if semantic_inputs is not None:
+        references = {
+            str(reference.get("name")): reference
+            for collection in ("configuration", "assets")
+            for reference in manifest.get(collection, [])
+            if isinstance(reference, Mapping)
+        }
+        for role, current_path in semantic_inputs.items():
+            path = Path(current_path)
+            reference = references.get(str(role))
+            if reference is None or not path.is_file():
+                stale_semantic_roles.append(str(role))
+                continue
+            recorded_uri = Path(str(reference.get("uri", "")))
+            same_path = recorded_uri.resolve() == path.resolve()
+            same_digest = sha256_file(path) == reference.get("sha256")
+            if not same_path or not same_digest:
+                stale_semantic_roles.append(str(role))
     return {
-        "fresh": not changed and not missing,
+        "fresh": not changed and not missing and not stale_semantic_roles,
         "checked": checked,
         "changed": sorted(changed),
         "missing": sorted(missing),
+        "stale_semantic_roles": sorted(set(stale_semantic_roles)),
     }
