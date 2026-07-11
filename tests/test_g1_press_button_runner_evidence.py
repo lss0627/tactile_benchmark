@@ -230,3 +230,54 @@ def test_g1_cpu_physics_policy_is_applied_and_verified_before_play() -> None:
 
     assert runner._configure_g1_cpu_physics(SimulationManager) == "cpu"
     assert SimulationManager.value == "cpu"
+
+
+def test_g1_cpu_physics_scene_authors_and_verifies_non_gpu_physx() -> None:
+    class Attribute:
+        def __init__(self, value=None) -> None:
+            self.value = value
+
+        def Set(self, value):
+            self.value = value
+
+        def Get(self):
+            return self.value
+
+    class SceneAPI:
+        gpu = Attribute(True)
+        broadphase = Attribute("GPU")
+
+        @classmethod
+        def CreateEnableGPUDynamicsAttr(cls):
+            return cls.gpu
+
+        @classmethod
+        def GetEnableGPUDynamicsAttr(cls):
+            return cls.gpu
+
+        @classmethod
+        def CreateBroadphaseTypeAttr(cls):
+            return cls.broadphase
+
+        @classmethod
+        def GetBroadphaseTypeAttr(cls):
+            return cls.broadphase
+
+    class SimulationManager:
+        value = "cuda:0"
+
+        @classmethod
+        def set_physics_sim_device(cls, value: str) -> None:
+            cls.value = value
+
+        @classmethod
+        def get_physics_sim_device(cls) -> str:
+            return cls.value
+
+    observed = runner._configure_g1_cpu_physics_scene(SceneAPI, SimulationManager)
+
+    assert observed == {
+        "observed_device": "cpu",
+        "broadphase_type": "MBP",
+        "gpu_dynamics_enabled": False,
+    }

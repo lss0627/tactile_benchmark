@@ -157,6 +157,37 @@ def _configure_g1_cpu_physics(simulation_manager: Any) -> str:
     return observed
 
 
+def _observe_g1_cpu_physics_scene(scene_api: Any, simulation_manager: Any) -> dict[str, Any]:
+    observed_device = str(simulation_manager.get_physics_sim_device()).lower()
+    gpu_dynamics_enabled = scene_api.GetEnableGPUDynamicsAttr().Get()
+    broadphase_type = str(scene_api.GetBroadphaseTypeAttr().Get()).upper()
+    if (
+        observed_device != "cpu"
+        or gpu_dynamics_enabled is not False
+        or broadphase_type != "MBP"
+    ):
+        raise G1PhysicalBlocker(
+            "CPU_PHYSICS_POLICY_NOT_ENFORCED",
+            "observed_device="
+            f"{observed_device}, gpu_dynamics={gpu_dynamics_enabled}, "
+            f"broadphase={broadphase_type}",
+        )
+    return {
+        "observed_device": observed_device,
+        "broadphase_type": broadphase_type,
+        "gpu_dynamics_enabled": False,
+    }
+
+
+def _configure_g1_cpu_physics_scene(scene_api: Any, simulation_manager: Any) -> dict[str, Any]:
+    """Author and verify CPU PhysX on the scene before timeline playback."""
+
+    scene_api.CreateEnableGPUDynamicsAttr().Set(False)
+    scene_api.CreateBroadphaseTypeAttr().Set("MBP")
+    _configure_g1_cpu_physics(simulation_manager)
+    return _observe_g1_cpu_physics_scene(scene_api, simulation_manager)
+
+
 def _g1_simulation_app_config(*, headless: bool) -> dict[str, Any]:
     return {
         "headless": bool(headless),
@@ -827,13 +858,15 @@ def _run_g1_physical(
     fr3_asset = Path(robot.assets.fr3_usd_path)
     mechanism = PressButtonMechanism(load_press_button_mechanism_config(config["_config_path"]))
 
-    physics_policy: dict[str, str] = {}
+    physics_policy: dict[str, Any] = {}
 
     def stage_builder(stage: Any) -> None:
         from isaacsim.core.simulation_manager import SimulationManager  # type: ignore
         from pxr import PhysxSchema, UsdPhysics  # type: ignore
 
-        physics_policy["observed_device"] = _configure_g1_cpu_physics(SimulationManager)
+        physics_scene = UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
+        scene_api = PhysxSchema.PhysxSceneAPI.Apply(physics_scene.GetPrim())
+        physics_policy.update(_configure_g1_cpu_physics_scene(scene_api, SimulationManager))
         mechanism.build_stage(stage)
         for prim in stage.Traverse():
             path = str(prim.GetPath())
@@ -863,11 +896,20 @@ def _run_g1_physical(
     try:
         if not runtime.build(robot.frames.ee_frame):
             raise G1PhysicalBlocker("FR3_CONTROLLER_INITIALIZATION_FAILED", "; ".join(runtime.warnings))
-        if physics_policy.get("observed_device") != "cpu":
-            raise G1PhysicalBlocker(
-                "CPU_PHYSICS_POLICY_NOT_ENFORCED",
-                f"observed={physics_policy.get('observed_device')}",
-            )
+        from isaacsim.core.simulation_manager import SimulationManager  # type: ignore
+        from pxr import PhysxSchema  # type: ignore
+
+        scene_prim = runtime.stage.GetPrimAtPath("/World/PhysicsScene")
+        post_play_policy = _observe_g1_cpu_physics_scene(
+            PhysxSchema.PhysxSceneAPI(scene_prim), SimulationManager
+        )
+        physics_policy.update(
+            {
+                "post_play_observed_device": post_play_policy["observed_device"],
+                "post_play_broadphase_type": post_play_policy["broadphase_type"],
+                "post_play_gpu_dynamics_enabled": post_play_policy["gpu_dynamics_enabled"],
+            }
+        )
         observed_joint_names = tuple(runtime.read_joint_state().joint_names)
         expected_joint_names = tuple(str(item) for item in robot_safe["joint_limits"]["names"])
         if observed_joint_names != expected_joint_names:
@@ -939,6 +981,10 @@ def _run_g1_physical(
             "contact_provenance": {
                 "physics_device": "cpu",
                 "physics_device_observed": physics_policy.get("observed_device"),
+                "physx_broadphase_type": physics_policy.get("post_play_broadphase_type"),
+                "physx_gpu_dynamics_enabled": physics_policy.get(
+                    "post_play_gpu_dynamics_enabled"
+                ),
                 "contact_sensor_started": True,
                 "contact_sensor_prim_path": mechanism.config.contact_sensor_prim_path,
                 "samples": len(all_contacts),
