@@ -566,3 +566,272 @@ def test_tracking_runner_writes_immutable_preliminary_evidence_without_config_mu
             trials=trials,
             aggregation={},
         )
+
+
+def _tracking_lifecycle():
+    runner = _tracking_runner()
+    helper = getattr(runner, "orchestrate_g1_tracking_diagnostic", None)
+    assert callable(helper), "G1 C1 missing failure-evidence lifecycle orchestration"
+    return runner, helper
+
+
+class _FakeLifecycleFactory:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+        self.close_count = 0
+
+    def close(self) -> None:
+        self.close_count += 1
+        self.events.append("shutdown")
+
+
+def _lifecycle_kwargs(tmp_path: Path, **changes: Any) -> dict[str, Any]:
+    runner = _tracking_runner()
+    payload: dict[str, Any] = {
+        "plan": runner.build_g1_tracking_plan(seed=20260712),
+        "output": tmp_path / "c1-lifecycle",
+        "repository_commit": "b" * 40,
+        "command": [sys.executable, str(RUNNER_PATH), "--output", str(tmp_path / "c1-lifecycle")],
+    }
+    payload.update(changes)
+    return payload
+
+
+def test_c1_runtime_failure_writes_evidence_before_shutdown(tmp_path: Path) -> None:
+    runner, orchestrate = _tracking_lifecycle()
+    events: list[str] = []
+    factory = _FakeLifecycleFactory(events)
+
+    def fail_runtime(plan, *, scene_factory):
+        assert scene_factory is factory
+        events.append("runtime_error")
+        raise RuntimeError("synthetic runtime failure")
+
+    def build_failure(error):
+        events.append("build_failure_aggregation")
+        return runner.build_g1_tracking_failure_aggregation(error)
+
+    def write_evidence(**kwargs):
+        events.append("write_evidence")
+        assert kwargs["aggregation"]["systemic_failure"] is True
+        return {"status": "BLOCKED"}
+
+    outcome = orchestrate(
+        **_lifecycle_kwargs(tmp_path),
+        factory_builder=lambda: factory,
+        plan_runner=fail_runtime,
+        failure_builder=build_failure,
+        evidence_writer=write_evidence,
+    )
+
+    assert events == [
+        "runtime_error",
+        "build_failure_aggregation",
+        "write_evidence",
+        "shutdown",
+    ]
+    assert outcome["exit_code"] == 1
+    assert factory.close_count == 1
+
+
+def test_c1_factory_failure_without_asset_writes_complete_immutable_evidence(
+    tmp_path: Path,
+) -> None:
+    runner, orchestrate = _tracking_lifecycle()
+    output = tmp_path / "factory-failure"
+
+    def fail_factory():
+        raise runner.G1ValidationError("G1_C1_ASSET_UNRESOLVED", "asset path unavailable")
+
+    outcome = orchestrate(
+        **_lifecycle_kwargs(tmp_path, output=output),
+        factory_builder=fail_factory,
+    )
+
+    assert outcome["exit_code"] == 1
+    assert {path.name for path in output.iterdir()} == {
+        "report.json",
+        "manifest.json",
+        "trials.json",
+        "samples.jsonl",
+        "command.log",
+        "checksums.sha256",
+    }
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["status"] == "BLOCKED"
+    assert manifest["systemic_failure"] is True
+    assert manifest["systemic_failure_code"] == "G1_C1_ASSET_UNRESOLVED"
+    assert manifest["claim_eligible"] is False
+    assert manifest["formal_config_updated"] is False
+    assert manifest["gate_status_updated"] is False
+    assert manifest["t070_completed"] is False
+    assert manifest["assets"] == []
+    with pytest.raises(FileExistsError):
+        runner.write_g1_tracking_evidence(
+            output=output,
+            repository_commit="b" * 40,
+            command=["repeat"],
+            plan=runner.build_g1_tracking_plan(seed=20260712),
+            trials=[],
+            aggregation={},
+        )
+
+
+def test_c1_unstructured_runtime_failure_uses_stable_systemic_code(tmp_path: Path) -> None:
+    _, orchestrate = _tracking_lifecycle()
+    output = tmp_path / "runtime-failure"
+    factory = _FakeLifecycleFactory([])
+
+    def fail_runtime(plan, *, scene_factory):
+        raise RuntimeError("runtime exploded")
+
+    outcome = orchestrate(
+        **_lifecycle_kwargs(tmp_path, output=output),
+        factory_builder=lambda: factory,
+        plan_runner=fail_runtime,
+    )
+
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    assert outcome["exit_code"] == 1
+    assert manifest["systemic_failure_code"] == "G1_C1_RUNNER_RUNTIME_ERROR"
+    assert "RuntimeError: runtime exploded" in manifest["systemic_failure_message"]
+
+
+def test_c1_aggregation_failure_retains_completed_trials_and_samples(tmp_path: Path) -> None:
+    runner, orchestrate = _tracking_lifecycle()
+    output = tmp_path / "aggregation-failure"
+    factory = _FakeLifecycleFactory([])
+    completed = _trial("completed-before-aggregation-error", 0.0, (1.0e-6,) * 4)
+
+    def completed_run(plan, *, scene_factory):
+        return {"trials": [completed]}
+
+    def fail_aggregation(*args, **kwargs):
+        raise runner.G1ValidationError("G1_C1_AGGREGATION_FAILED", "synthetic aggregate failure")
+
+    outcome = orchestrate(
+        **_lifecycle_kwargs(tmp_path, output=output),
+        factory_builder=lambda: factory,
+        plan_runner=completed_run,
+        aggregator=fail_aggregation,
+    )
+
+    report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+    retained_trials = json.loads((output / "trials.json").read_text(encoding="utf-8"))
+    retained_samples = (output / "samples.jsonl").read_text(encoding="utf-8").splitlines()
+    assert outcome["exit_code"] == 1
+    assert report["trial_count"] == 1
+    assert report["sample_count"] == 256
+    assert len(retained_trials) == 1
+    assert len(retained_samples) == 256
+    assert report["aggregation"]["systemic_failure_code"] == "G1_C1_AGGREGATION_FAILED"
+
+
+@pytest.mark.parametrize("systemic_failure", [False, True])
+def test_c1_success_and_systemic_paths_shutdown_exactly_once(
+    tmp_path: Path, systemic_failure: bool
+) -> None:
+    _, orchestrate = _tracking_lifecycle()
+    events: list[str] = []
+    factory = _FakeLifecycleFactory(events)
+
+    outcome = orchestrate(
+        **_lifecycle_kwargs(tmp_path, output=tmp_path / f"close-{systemic_failure}"),
+        factory_builder=lambda: factory,
+        plan_runner=lambda plan, *, scene_factory: {"trials": []},
+        aggregator=lambda *args, **kwargs: {"systemic_failure": systemic_failure},
+        evidence_writer=lambda **kwargs: events.append("write_evidence") or {"status": "BLOCKED"},
+    )
+
+    assert outcome["exit_code"] == int(systemic_failure)
+    assert events == ["write_evidence", "shutdown"]
+    assert factory.close_count == 1
+
+
+@pytest.mark.parametrize(
+    ("systemic_failure", "expected_exit_code"),
+    [(False, 0), (True, 1)],
+)
+def test_c1_main_returns_orchestrated_cli_status_without_isaac_shutdown_exit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    systemic_failure: bool,
+    expected_exit_code: int,
+) -> None:
+    runner = _tracking_runner()
+    helper = getattr(runner, "orchestrate_g1_tracking_diagnostic", None)
+    assert callable(helper), "G1 C1 missing failure-evidence lifecycle orchestration"
+    monkeypatch.setattr(runner, "_repository_clean", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "orchestrate_g1_tracking_diagnostic",
+        lambda **kwargs: {
+            "exit_code": expected_exit_code,
+            "report": {"aggregation": {"systemic_failure": systemic_failure}},
+        },
+    )
+
+    exit_code = runner.main(["--output", str(tmp_path / "cli")])
+
+    assert exit_code == expected_exit_code
+
+
+def test_c1_main_returns_two_for_dirty_repository_without_constructing_factory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    runner = _tracking_runner()
+    monkeypatch.setattr(runner, "_repository_clean", lambda: False)
+    constructed = []
+    monkeypatch.setattr(runner, "_IsaacSceneFactory", lambda **kwargs: constructed.append(kwargs))
+
+    assert runner.main(["--output", str(tmp_path / "dirty")]) == 2
+    assert constructed == []
+
+
+def test_c1_existing_output_refusal_still_shuts_down_once(tmp_path: Path) -> None:
+    _, orchestrate = _tracking_lifecycle()
+    output = tmp_path / "already-exists"
+    output.mkdir()
+    events: list[str] = []
+    factory = _FakeLifecycleFactory(events)
+
+    with pytest.raises(FileExistsError):
+        orchestrate(
+            **_lifecycle_kwargs(tmp_path, output=output),
+            factory_builder=lambda: factory,
+            plan_runner=lambda plan, *, scene_factory: {"trials": []},
+            aggregator=lambda *args, **kwargs: {"systemic_failure": False},
+        )
+
+    assert events == ["shutdown"]
+    assert factory.close_count == 1
+
+
+def test_c1_evidence_writer_failure_is_explicit_and_still_shuts_down_once(
+    tmp_path: Path,
+) -> None:
+    _, orchestrate = _tracking_lifecycle()
+    events: list[str] = []
+    factory = _FakeLifecycleFactory(events)
+
+    def fail_writer(**kwargs):
+        events.append("writer_error")
+        raise OSError("evidence storage unavailable")
+
+    with pytest.raises(OSError, match="evidence storage unavailable"):
+        orchestrate(
+            **_lifecycle_kwargs(tmp_path),
+            factory_builder=lambda: factory,
+            plan_runner=lambda plan, *, scene_factory: {"trials": []},
+            aggregator=lambda *args, **kwargs: {"systemic_failure": False},
+            evidence_writer=fail_writer,
+        )
+
+    assert events == ["writer_error", "shutdown"]
+    assert factory.close_count == 1
+
+
+def test_c1_script_entrypoint_delegates_process_status_to_system_exit() -> None:
+    source = RUNNER_PATH.read_text(encoding="utf-8")
+
+    assert 'if __name__ == "__main__":\n    raise SystemExit(main())\n' in source
