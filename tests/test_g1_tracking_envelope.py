@@ -11,6 +11,7 @@ import sys
 import textwrap
 from typing import Any, Callable
 
+import numpy as np
 import pytest
 
 from isaac_tactile_libero import runtime as runtime_api
