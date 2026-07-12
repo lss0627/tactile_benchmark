@@ -15,6 +15,15 @@ from .g1_tracking import G1ValidationError
 JACOBIAN_PROVIDER = "lula_fd_translation"
 JACOBIAN_SOURCE = "central_finite_difference_fk"
 CONTROLLER_QUALIFICATION = "lula_fd_translation"
+G1_NONZERO_GOVERNOR_STATES = (
+    "READY",
+    "ALLOW_UNMODIFIED",
+    "SENT",
+    "ACCEPTED",
+    "REJECTED",
+    "ABORTED",
+    "BLOCK_POST_ABORT_SEND",
+)
 
 FORMAL_C1_NONZERO_FIELDS = (
     "scene_id", "fresh_scene_token", "trial_id", "seed", "action_index",
@@ -413,6 +422,233 @@ def validate_formal_c1_nonzero_record(record: Mapping[str, Any]) -> dict[str, An
     return dict(record)
 
 
+def _governor_failure(
+    payload: Mapping[str, Any],
+    *,
+    code: str,
+    state: str,
+    message: str,
+    post_abort_actuation_count: int = 0,
+) -> dict[str, Any]:
+    return {
+        "state": state,
+        "code": code,
+        "message": message,
+        "requested_action_7d": list(payload.get("requested_action_7d", ())),
+        "requested_vector_m": list(payload.get("requested_vector_m", ())),
+        "governed_target": list(
+            payload.get("governed_target", payload.get("pre_send_target", ()))
+        ),
+        "send_allowed": False,
+        "governor_activated": True,
+        "request_changed": code == "G1_NONZERO_GOVERNOR_REQUEST_CHANGED",
+        "candidate_eligibility_impact": "ineligible_governor",
+        "observed_hard_limit_m": payload.get("max_step_motion_m"),
+        "post_abort_actuation_count": int(post_abort_actuation_count),
+    }
+
+
+def evaluate_g1_nonzero_governor(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Evaluate one unmodified-only, fail-closed qualifying action decision."""
+
+    if not isinstance(payload, Mapping):
+        return _governor_failure(
+            {},
+            code="G1_NONZERO_GOVERNOR_INPUT_INVALID",
+            state="ABORTED",
+            message="non-zero governor input must be a mapping",
+        )
+    if payload.get("already_aborted") is True:
+        attempted = payload.get("send_attempted_after_abort") is True
+        return _governor_failure(
+            payload,
+            code=(
+                "G1_NONZERO_POST_ABORT_ACTUATION"
+                if attempted
+                else "G1_NONZERO_GOVERNOR_ALREADY_ABORTED"
+            ),
+            state="BLOCK_POST_ABORT_SEND",
+            message=(
+                "actuation was attempted after the governor abort latched"
+                if attempted
+                else "the governor abort is already latched"
+            ),
+            post_abort_actuation_count=int(attempted),
+        )
+
+    required = (
+        "requested_action_7d", "requested_vector_m", "current_q", "current_qd",
+        "articulation_joint_names", "solver_joint_names", "previous_accepted_target",
+        "pre_send_target", "raw_dq", "clipped_dq", "joint_lower", "joint_upper",
+        "joint_velocity_limits", "max_step_motion_m", "max_abs_dq", "finite",
+    )
+    missing = [field for field in required if field not in payload]
+    if missing or payload.get("finite") is not True:
+        return _governor_failure(
+            payload,
+            code="G1_NONZERO_GOVERNOR_INPUT_INVALID",
+            state="ABORTED",
+            message=(
+                f"non-zero governor input is missing {missing[0]}"
+                if missing
+                else "non-zero governor input is not finite"
+            ),
+        )
+    try:
+        action = _required_array(payload, "requested_action_7d", 7)
+        requested = _required_array(payload, "requested_vector_m", 3)
+        current_q = _required_array(payload, "current_q", 9)
+        current_qd = _required_array(payload, "current_qd", 9)
+        previous = _required_array(payload, "previous_accepted_target", 9)
+        pre_send = _required_array(payload, "pre_send_target", 9)
+        raw_dq = _required_array(payload, "raw_dq", 7)
+        clipped_dq = _required_array(payload, "clipped_dq", 7)
+        joint_lower = _required_array(payload, "joint_lower", 9)
+        joint_upper = _required_array(payload, "joint_upper", 9)
+        velocity_limits = _required_array(payload, "joint_velocity_limits", 9)
+        articulation_names = _unique_names(
+            payload["articulation_joint_names"], name="articulation_joint_names"
+        )
+        solver_names = _unique_names(payload["solver_joint_names"], name="solver_joint_names")
+        max_step = _required_float(payload, "max_step_motion_m")
+        max_abs_dq = _required_float(payload, "max_abs_dq")
+    except (G1ValidationError, TypeError, ValueError) as error:
+        return _governor_failure(
+            payload,
+            code="G1_NONZERO_GOVERNOR_INPUT_INVALID",
+            state="ABORTED",
+            message=f"non-zero governor input is invalid: {error}",
+        )
+    if (
+        len(articulation_names) != 9
+        or len(solver_names) != 7
+        or any(name not in articulation_names for name in solver_names)
+        or np.any(joint_lower >= joint_upper)
+        or np.any(velocity_limits <= 0.0)
+        or max_step != 0.0005
+        or max_abs_dq != 0.02
+        or previous.shape != current_q.shape
+    ):
+        return _governor_failure(
+            payload,
+            code="G1_NONZERO_GOVERNOR_INPUT_INVALID",
+            state="ABORTED",
+            message="non-zero governor identities, limits, or action provenance are invalid",
+        )
+
+    if float(np.linalg.norm(requested)) > max_step:
+        return _governor_failure(
+            payload,
+            code="G1_NONZERO_GOVERNOR_REQUEST_LIMIT",
+            state="REJECTED",
+            message="requested translation is strictly greater than 0.0005 m",
+        )
+    if not np.array_equal(action[:3], requested):
+        return _governor_failure(
+            payload,
+            code="G1_NONZERO_GOVERNOR_INPUT_INVALID",
+            state="ABORTED",
+            message="requested action xyz and translation vector differ",
+        )
+    if np.any(np.abs(current_qd) > velocity_limits):
+        return _governor_failure(
+            payload,
+            code="G1_NONZERO_GOVERNOR_QD_LIMIT",
+            state="ABORTED",
+            message="observed joint velocity exceeds an existing configured limit",
+        )
+    if not np.array_equal(raw_dq, clipped_dq):
+        return _governor_failure(
+            payload,
+            code="G1_NONZERO_GOVERNOR_DQ_CLIP_REQUIRED",
+            state="REJECTED",
+            message="raw dq differs from clipped dq and cannot remain qualifying",
+        )
+    if np.any(pre_send < joint_lower) or np.any(pre_send > joint_upper):
+        return _governor_failure(
+            payload,
+            code="G1_NONZERO_GOVERNOR_JOINT_TARGET_LIMIT",
+            state="ABORTED",
+            message="pre-send target exceeds an existing configured joint limit",
+        )
+    governed = np.asarray(payload.get("governed_target", pre_send), dtype=np.float64)
+    governed_vector = np.asarray(
+        payload.get("governed_requested_vector_m", requested), dtype=np.float64
+    )
+    if (
+        governed.shape != pre_send.shape
+        or governed_vector.shape != requested.shape
+        or not np.all(np.isfinite(governed))
+        or not np.all(np.isfinite(governed_vector))
+        or not np.array_equal(governed, pre_send)
+        or not np.array_equal(governed_vector, requested)
+    ):
+        changed_payload = dict(payload)
+        changed_payload["governed_target"] = governed.tolist()
+        return _governor_failure(
+            changed_payload,
+            code="G1_NONZERO_GOVERNOR_REQUEST_CHANGED",
+            state="REJECTED",
+            message="governor changed or suppressed the requested execution",
+        )
+    if payload.get("send_result") is False:
+        return _governor_failure(
+            payload,
+            code="G1_NONZERO_SEND_FAILED",
+            state="ABORTED",
+            message="joint target send returned false or raised",
+        )
+    return {
+        "state": "ALLOW_UNMODIFIED",
+        "code": None,
+        "message": None,
+        "requested_action_7d": action.tolist(),
+        "requested_vector_m": requested.tolist(),
+        "governed_target": pre_send.tolist(),
+        "send_allowed": True,
+        "governor_activated": False,
+        "request_changed": False,
+        "candidate_eligibility_impact": "unchanged",
+        "observed_hard_limit_m": max_step,
+        "post_abort_actuation_count": 0,
+    }
+
+
+def update_accepted_target_after_send(
+    *,
+    previous: Sequence[float],
+    attempted: Sequence[float],
+    send_result: bool,
+) -> np.ndarray:
+    """Advance accepted-target provenance only after an explicit successful send."""
+
+    previous_target = _finite_vector(previous, name="previous")
+    attempted_target = _finite_vector(attempted, name="attempted")
+    if previous_target.shape != attempted_target.shape:
+        raise G1ValidationError(
+            "G1_C1_TARGET_PROVENANCE", "accepted and attempted targets must match"
+        )
+    return attempted_target.copy() if send_result is True else previous_target.copy()
+
+
+class G1NonzeroGovernor:
+    """Scene-local abort latch around the pure governor decision."""
+
+    def __init__(self) -> None:
+        self.state = "READY"
+        self.aborted = False
+
+    def evaluate(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        effective = dict(payload)
+        if self.aborted:
+            effective["already_aborted"] = True
+        result = evaluate_g1_nonzero_governor(effective)
+        self.state = str(result["state"])
+        if self.state in {"ABORTED", "BLOCK_POST_ABORT_SEND"}:
+            self.aborted = True
+        return result
+
+
 __all__ = [
     "CONTROLLER_QUALIFICATION",
     "JACOBIAN_PROVIDER",
@@ -420,5 +656,9 @@ __all__ = [
     "compute_observed_q_target",
     "jacobian_provenance",
     "FORMAL_C1_NONZERO_FIELDS",
+    "G1_NONZERO_GOVERNOR_STATES",
+    "G1NonzeroGovernor",
+    "evaluate_g1_nonzero_governor",
+    "update_accepted_target_after_send",
     "validate_formal_c1_nonzero_record",
 ]
