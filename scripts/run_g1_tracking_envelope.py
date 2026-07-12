@@ -561,6 +561,7 @@ def orchestrate_g1_tracking_diagnostic(
 
     factory: Any | None = None
     result: Mapping[str, Any] = {"trials": []}
+    shutdown_exit_code = 1
     try:
         try:
             factory = factory_builder()
@@ -580,16 +581,29 @@ def orchestrate_g1_tracking_diagnostic(
 
         exit_code = int(bool(aggregation.get("systemic_failure")))
         asset_path = getattr(factory, "fr3_asset", None) if factory is not None else None
-        report = evidence_writer(
-            output=output,
-            repository_commit=repository_commit,
-            command=command,
-            plan=plan,
-            trials=result.get("trials", []),
-            aggregation=aggregation,
-            configuration_paths=configuration_paths,
-            asset_paths=(asset_path,) if asset_path is not None else (),
-        )
+        try:
+            report = evidence_writer(
+                output=output,
+                repository_commit=repository_commit,
+                command=command,
+                plan=plan,
+                trials=result.get("trials", []),
+                aggregation=aggregation,
+                configuration_paths=configuration_paths,
+                asset_paths=(asset_path,) if asset_path is not None else (),
+            )
+        except Exception as error:
+            print(
+                f"G1_C1_EVIDENCE_WRITE_FAILED: {type(error).__name__}: {error}",
+                file=sys.stderr,
+                flush=True,
+            )
+            manifest_path = Path(output) / "manifest.json"
+            if manifest_path.is_file():
+                manifest_path.replace(Path(output) / "manifest.json.incomplete")
+            shutdown_exit_code = 1
+            raise
+        shutdown_exit_code = exit_code
         return {
             "exit_code": exit_code,
             "report": report,
@@ -598,7 +612,7 @@ def orchestrate_g1_tracking_diagnostic(
         }
     finally:
         if factory is not None:
-            factory.close()
+            factory.close(exit_code=shutdown_exit_code)
 
 
 class _IsaacTrackingScene:
@@ -944,8 +958,8 @@ class _IsaacSceneFactory:
         np.random.seed(int(spec["seed"]))
         return _IsaacTrackingScene(self, spec)
 
-    def close(self) -> None:
-        self.simulation_app.close()
+    def close(self, *, exit_code: int) -> None:
+        self.simulation_app.close(exit_code=int(exit_code))
 
 
 def _repository_commit() -> str:
