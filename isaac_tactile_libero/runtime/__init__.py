@@ -9,6 +9,7 @@ from .g1_tracking import (
     select_g1_tested_command_cap,
     validate_g1_command_cap,
     validate_g1_tracking_trials,
+    validate_formal_g1_tracking_trials,
 )
 from .isaacsim6 import IsaacSim6Lifecycle
 from .fr3_target_latch import FR3PositionTargetLatch
@@ -27,4 +28,5 @@ __all__ = [
     "select_g1_tested_command_cap",
     "validate_g1_command_cap",
     "validate_g1_tracking_trials",
+    "validate_formal_g1_tracking_trials",
 ]

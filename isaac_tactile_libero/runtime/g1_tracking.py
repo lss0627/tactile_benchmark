@@ -825,6 +825,41 @@ def aggregate_g1_tracking_envelope(
     }
 
 
+def validate_formal_g1_tracking_trials(
+    trials: Iterable[Mapping[str, Any] | G1TrackingTrial],
+) -> dict[str, Any]:
+    """Validate only formal qualifying non-zero records, never legacy samples."""
+
+    from .g1_nonzero_kernel import validate_formal_c1_nonzero_record
+
+    evidence = tuple(trials)
+    if not evidence:
+        raise G1ValidationError("G1_C1_DIAGNOSTIC_MISSING", "formal C1 has no trials")
+    sample_count = 0
+    for trial in evidence:
+        samples = _mapping_samples(trial)
+        if not samples:
+            raise G1ValidationError(
+                "G1_C1_DIAGNOSTIC_MISSING", "formal C1 trial has no samples"
+            )
+        for sample in samples:
+            qualification = _sample_value(sample, "controller_qualification")
+            cap_eligible = _sample_value(sample, "benchmark_cap_eligible")
+            provider = _sample_value(sample, "jacobian_provider")
+            if qualification is not None and (
+                qualification != "lula_fd_translation"
+                or cap_eligible is not True
+                or provider != "lula_fd_translation"
+            ):
+                raise G1ValidationError(
+                    "G1_C1_CONTROLLER_UNQUALIFIED",
+                    "compatibility controller samples cannot enter formal C1",
+                )
+            validate_formal_c1_nonzero_record(sample)
+            sample_count += 1
+    return {"valid": True, "trial_count": len(evidence), "sample_count": sample_count}
+
+
 __all__ = [
     "ACTIONS_PER_TRIAL",
     "G1TrackingSample",
@@ -839,4 +874,5 @@ __all__ = [
     "select_g1_tested_command_cap",
     "validate_g1_command_cap",
     "validate_g1_tracking_trials",
+    "validate_formal_g1_tracking_trials",
 ]

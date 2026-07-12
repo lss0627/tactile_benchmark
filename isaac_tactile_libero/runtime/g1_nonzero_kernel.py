@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Any, Sequence
+from decimal import Decimal, InvalidOperation
+import math
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
@@ -13,6 +15,38 @@ from .g1_tracking import G1ValidationError
 JACOBIAN_PROVIDER = "lula_fd_translation"
 JACOBIAN_SOURCE = "central_finite_difference_fk"
 CONTROLLER_QUALIFICATION = "lula_fd_translation"
+
+FORMAL_C1_NONZERO_FIELDS = (
+    "scene_id", "fresh_scene_token", "trial_id", "seed", "action_index",
+    "window_index", "class_id", "class_version", "motif_digest", "phase_id",
+    "segment_index", "motif_action_index", "starting_pose_id",
+    "starting_pose_sha256", "requested_action_7d", "requested_vector_m",
+    "requested_norm_m", "nominal_command_m", "canonical_segment_length_m",
+    "canonical_command_m", "exact_remainder_m", "exact_requested_norm_m",
+    "scalar_schedule_sha256", "scalar_action", "endpoint_after_action",
+    "reversal_before_action", "direction_world", "direction_reversed", "pre_q",
+    "post_q", "pre_qd", "post_qd", "qd_acceleration",
+    "previous_accepted_target", "pre_send_target", "governed_target",
+    "send_attempted", "send_result", "raw_dq", "clipped_dq", "dq_clip_flags",
+    "solver_joint_names", "articulation_joint_names", "jacobian_provider",
+    "jacobian_source", "jacobian_shape", "jacobian_digest", "singular_values",
+    "condition_number", "manipulability", "damping",
+    "finite_difference_epsilon", "predicted_delta_m", "prediction_residual_m",
+    "target_error_before", "target_error_after", "target_lead",
+    "pre_tcp_position_m", "post_tcp_position_m",
+    "observed_displacement_vector_m", "observed_displacement_m",
+    "directional_tcp_projection_m", "orthogonal_tcp_projection_m",
+    "observed_requested_gain", "drive_stiffness", "drive_damping", "drive_effort",
+    "drive_position_target", "drive_velocity_target", "pose_radius_m",
+    "distance_to_segment_start_m", "distance_to_task_ready_m", "governor_state",
+    "governor_code", "governor_message", "governor_activated", "request_changed",
+    "candidate_eligibility_impact", "controller_qualification",
+    "benchmark_cap_eligible", "physics_substeps", "public_action_hz", "contact",
+    "raw_contact_count", "collision", "penetration_m",
+    "penetration_provenance_valid", "collision_monitor_error", "finite",
+    "safety_events", "post_abort_actuation_count", "force_vector_valid",
+    "wrench_valid", "raw_impulse_used_as_force",
+)
 
 
 def _finite_vector(value: Sequence[float], *, name: str) -> np.ndarray:
@@ -138,10 +172,253 @@ def jacobian_provenance(
     }
 
 
+def _schema_error(code: str, message: str) -> None:
+    raise G1ValidationError(code, message)
+
+
+def _required_array(
+    record: Mapping[str, Any],
+    field: str,
+    length: int,
+    *,
+    boolean: bool = False,
+) -> np.ndarray:
+    value = record[field]
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        _schema_error("G1_C1_DIAGNOSTIC_MISSING", f"{field} must be an array")
+    array = np.asarray(value)
+    if array.shape != (length,):
+        _schema_error(
+            "G1_C1_DIAGNOSTIC_MISSING",
+            f"{field} must have shape [{length}], got {list(array.shape)}",
+        )
+    if boolean:
+        if any(type(item) is not bool for item in value):
+            _schema_error("G1_C1_DIAGNOSTIC_MISSING", f"{field} must contain bools")
+        return array.astype(bool)
+    try:
+        numeric = np.asarray(value, dtype=np.float64)
+    except (TypeError, ValueError):
+        _schema_error("G1_C1_DIAGNOSTIC_MISSING", f"{field} must be float64-compatible")
+    if not np.all(np.isfinite(numeric)):
+        _schema_error("G1_C1_CANDIDATE_NONFINITE", f"{field} contains non-finite values")
+    return numeric
+
+
+def _required_float(record: Mapping[str, Any], field: str) -> float:
+    value = record[field]
+    if isinstance(value, bool):
+        _schema_error("G1_C1_DIAGNOSTIC_MISSING", f"{field} must be a finite scalar")
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        _schema_error("G1_C1_DIAGNOSTIC_MISSING", f"{field} must be a finite scalar")
+    if not math.isfinite(result):
+        _schema_error("G1_C1_CANDIDATE_NONFINITE", f"{field} must be finite")
+    return result
+
+
+def _require_array_equal(actual: Any, expected: np.ndarray, *, field: str) -> None:
+    array = np.asarray(actual, dtype=np.float64)
+    if array.shape != expected.shape or not np.array_equal(array, expected):
+        _schema_error(
+            "G1_C1_TARGET_PROVENANCE",
+            f"{field} is inconsistent with the required target arithmetic",
+        )
+
+
+def validate_formal_c1_nonzero_record(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate one complete section-10 formal non-zero record fail-closed."""
+
+    if not isinstance(record, Mapping):
+        _schema_error("G1_C1_DIAGNOSTIC_MISSING", "formal C1 record must be a mapping")
+    missing = [field for field in FORMAL_C1_NONZERO_FIELDS if field not in record]
+    if missing:
+        _schema_error(
+            "G1_C1_DIAGNOSTIC_MISSING",
+            f"formal C1 record is missing required field: {missing[0]}",
+        )
+
+    nonempty_strings = (
+        "scene_id", "fresh_scene_token", "trial_id", "class_id", "class_version",
+        "phase_id", "starting_pose_id", "governor_state",
+        "candidate_eligibility_impact", "controller_qualification",
+        "jacobian_provider", "jacobian_source",
+    )
+    for field in nonempty_strings:
+        if not isinstance(record[field], str) or not record[field]:
+            _schema_error("G1_C1_DIAGNOSTIC_MISSING", f"{field} must be non-empty")
+    for field in (
+        "motif_digest", "starting_pose_sha256", "scalar_schedule_sha256",
+        "jacobian_digest",
+    ):
+        value = record[field]
+        if (
+            not isinstance(value, str)
+            or len(value) != 64
+            or any(character not in "0123456789abcdef" for character in value)
+        ):
+            _schema_error("G1_C1_DIAGNOSTIC_MISSING", f"{field} must be lowercase SHA-256")
+
+    for field in ("seed", "action_index", "window_index", "segment_index", "motif_action_index"):
+        if type(record[field]) is not int:
+            _schema_error("G1_C1_DIAGNOSTIC_MISSING", f"{field} must be int64-compatible")
+    for field in (
+        "endpoint_after_action", "reversal_before_action", "direction_reversed",
+        "send_attempted", "governor_activated", "request_changed",
+        "benchmark_cap_eligible", "contact", "collision",
+        "penetration_provenance_valid", "finite", "force_vector_valid",
+        "wrench_valid", "raw_impulse_used_as_force",
+    ):
+        if type(record[field]) is not bool:
+            _schema_error("G1_C1_DIAGNOSTIC_MISSING", f"{field} must be bool")
+    if record["send_result"] is not None and type(record["send_result"]) is not bool:
+        _schema_error("G1_C1_SEND_PROVENANCE", "send_result must be bool or null")
+    for field in ("raw_contact_count", "post_abort_actuation_count", "physics_substeps"):
+        if type(record[field]) is not int or record[field] < 0:
+            _schema_error("G1_C1_DIAGNOSTIC_MISSING", f"{field} must be non-negative int")
+    if not isinstance(record["safety_events"], list):
+        _schema_error("G1_C1_DIAGNOSTIC_MISSING", "safety_events must be a list")
+
+    solver_names = _unique_names(record["solver_joint_names"], name="solver_joint_names")
+    articulation_names = _unique_names(
+        record["articulation_joint_names"], name="articulation_joint_names"
+    )
+    if len(solver_names) != 7 or len(articulation_names) != 9:
+        _schema_error("G1_C1_JOINT_IDENTITY", "formal FR3 joint orders must be 7/9")
+    if any(name not in articulation_names for name in solver_names):
+        _schema_error("G1_C1_JOINT_IDENTITY", "solver order is not a subset of articulation order")
+
+    arrays_n = {
+        field: _required_array(record, field, 9)
+        for field in (
+            "pre_q", "post_q", "pre_qd", "post_qd", "qd_acceleration",
+            "previous_accepted_target", "pre_send_target", "governed_target",
+            "target_error_before", "target_error_after", "target_lead",
+            "drive_stiffness", "drive_damping", "drive_effort",
+            "drive_position_target", "drive_velocity_target",
+        )
+    }
+    raw_dq = _required_array(record, "raw_dq", 7)
+    clipped_dq = _required_array(record, "clipped_dq", 7)
+    _required_array(record, "dq_clip_flags", 7, boolean=True)
+    action = _required_array(record, "requested_action_7d", 7)
+    requested = _required_array(record, "requested_vector_m", 3)
+    if not np.array_equal(action[:3], requested):
+        _schema_error("G1_C1_DIAGNOSTIC_MISSING", "requested action/vector xyz differs")
+    direction = _required_array(record, "direction_world", 3)
+    if abs(float(np.linalg.norm(direction)) - 1.0) > 1e-12:
+        _schema_error("G1_C1_MOTIF_DECIMAL_PROVENANCE", "direction_world must be unit length")
+    vector_fields = {
+        field: _required_array(record, field, 3)
+        for field in (
+            "predicted_delta_m", "prediction_residual_m", "pre_tcp_position_m",
+            "post_tcp_position_m", "observed_displacement_vector_m",
+            "orthogonal_tcp_projection_m",
+        )
+    }
+    singular_values = _required_array(record, "singular_values", 3)
+    if np.any(singular_values < 0.0) or np.any(singular_values[:-1] < singular_values[1:]):
+        _schema_error("G1_C1_DIAGNOSTIC_MISSING", "singular_values must be sorted descending")
+    if list(record["jacobian_shape"]) != [3, 7]:
+        _schema_error("G1_C1_DIAGNOSTIC_MISSING", "jacobian_shape must be [3, 7]")
+
+    scalar_fields = (
+        "requested_norm_m", "nominal_command_m", "condition_number", "manipulability",
+        "damping", "finite_difference_epsilon", "observed_displacement_m",
+        "directional_tcp_projection_m", "pose_radius_m", "distance_to_segment_start_m",
+        "distance_to_task_ready_m", "penetration_m", "public_action_hz",
+    )
+    scalars = {field: _required_float(record, field) for field in scalar_fields}
+    if record["observed_requested_gain"] is None:
+        _schema_error("G1_C1_DIAGNOSTIC_MISSING", "non-zero gain must not be null")
+    _required_float(record, "observed_requested_gain")
+    if scalars["requested_norm_m"] <= 0.0 or scalars["nominal_command_m"] <= 0.0:
+        _schema_error("G1_C1_DIAGNOSTIC_MISSING", "formal non-zero commands must be positive")
+    if scalars["damping"] <= 0.0 or scalars["finite_difference_epsilon"] <= 0.0:
+        _schema_error("G1_C1_SOLVER_PROVENANCE", "solver parameters must be positive")
+    for field in (
+        "canonical_segment_length_m", "canonical_command_m", "exact_remainder_m",
+        "exact_requested_norm_m", "scalar_action",
+    ):
+        value = record[field]
+        if not isinstance(value, str) or not value:
+            _schema_error("G1_C1_MOTIF_DECIMAL_PROVENANCE", f"{field} must be canonical text")
+        try:
+            decimal_value = Decimal(value)
+        except InvalidOperation:
+            _schema_error("G1_C1_MOTIF_DECIMAL_PROVENANCE", f"{field} is not decimal")
+        if not decimal_value.is_finite():
+            _schema_error("G1_C1_MOTIF_DECIMAL_PROVENANCE", f"{field} is not finite")
+
+    if record["jacobian_provider"] != JACOBIAN_PROVIDER or record["jacobian_source"] != JACOBIAN_SOURCE:
+        _schema_error("G1_C1_CONTROLLER_UNQUALIFIED", "formal C1 requires Lula FD translation")
+    if record["controller_qualification"] != CONTROLLER_QUALIFICATION or record["benchmark_cap_eligible"] is not True:
+        _schema_error("G1_C1_CONTROLLER_UNQUALIFIED", "controller is not cap-qualifying")
+    if record["physics_substeps"] != 3 or scalars["public_action_hz"] != 20.0:
+        _schema_error("G1_C1_CANDIDATE_INCOMPLETE", "formal cadence must be 3 substeps at 20 Hz")
+    if record["finite"] is not True:
+        _schema_error("G1_C1_CANDIDATE_NONFINITE", "formal sample is not finite")
+    if record["force_vector_valid"] or record["wrench_valid"] or record["raw_impulse_used_as_force"]:
+        _schema_error("G1_C1_FORCE_TRUTH", "formal sample violates force/wrench truth")
+    if record["post_abort_actuation_count"] != 0:
+        _schema_error("G1_C1_POST_ABORT_ACTUATION", "formal sample has post-abort actuation")
+    if record["penetration_provenance_valid"] is False and not record["collision_monitor_error"]:
+        _schema_error("G1_C1_CANDIDATE_PENETRATION_PROVENANCE", "invalid monitor needs an error")
+    if record["penetration_provenance_valid"] is True and record["collision_monitor_error"] is not None:
+        _schema_error("G1_C1_CANDIDATE_PENETRATION_PROVENANCE", "valid monitor cannot have an error")
+
+    expected_target = compute_observed_q_target(
+        current_observed_q=arrays_n["pre_q"],
+        articulation_joint_names=articulation_names,
+        solver_joint_names=solver_names,
+        clipped_dq=clipped_dq,
+        previous_accepted_target=arrays_n["previous_accepted_target"],
+    )
+    _require_array_equal(
+        arrays_n["pre_send_target"], expected_target["pre_send_target"],
+        field="pre_send_target",
+    )
+    _require_array_equal(
+        arrays_n["target_error_before"],
+        arrays_n["previous_accepted_target"] - arrays_n["pre_q"],
+        field="target_error_before",
+    )
+    _require_array_equal(
+        arrays_n["target_lead"],
+        arrays_n["pre_send_target"] - arrays_n["previous_accepted_target"],
+        field="target_lead",
+    )
+    _require_array_equal(
+        arrays_n["target_error_after"],
+        arrays_n["governed_target"] - arrays_n["post_q"],
+        field="target_error_after",
+    )
+    _require_array_equal(
+        arrays_n["drive_position_target"], arrays_n["governed_target"],
+        field="drive_position_target",
+    )
+    if not np.array_equal(np.not_equal(raw_dq, clipped_dq), np.asarray(record["dq_clip_flags"])):
+        _schema_error("G1_C1_DIAGNOSTIC_MISSING", "dq clip flags do not match raw/clipped dq")
+    if not np.array_equal(
+        vector_fields["predicted_delta_m"] + vector_fields["prediction_residual_m"],
+        requested,
+    ):
+        _schema_error("G1_C1_DIAGNOSTIC_MISSING", "prediction residual arithmetic is inconsistent")
+    if not np.array_equal(
+        arrays_n["qd_acceleration"],
+        (arrays_n["post_qd"] - arrays_n["pre_qd"]) * scalars["public_action_hz"],
+    ):
+        _schema_error("G1_C1_DIAGNOSTIC_MISSING", "qd acceleration arithmetic is inconsistent")
+    return dict(record)
+
+
 __all__ = [
     "CONTROLLER_QUALIFICATION",
     "JACOBIAN_PROVIDER",
     "JACOBIAN_SOURCE",
     "compute_observed_q_target",
     "jacobian_provenance",
+    "FORMAL_C1_NONZERO_FIELDS",
+    "validate_formal_c1_nonzero_record",
 ]
