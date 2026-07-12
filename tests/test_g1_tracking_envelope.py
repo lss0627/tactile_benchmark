@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import importlib.util
+import json
 import math
+from pathlib import Path
+import sys
 from typing import Any, Callable
 
 import pytest
@@ -344,3 +349,220 @@ def test_rejected_candidate_pre_abort_samples_still_expand_conservative_upper_bo
     assert rejected["G_data"] == 1.25
     assert rejected["G_upper"] > baseline["G_upper"]
     assert rejected["C_raw"] < baseline["C_raw"]
+
+
+ROOT = Path(__file__).resolve().parents[1]
+RUNNER_PATH = ROOT / "scripts/run_g1_tracking_envelope.py"
+
+
+def _tracking_runner():
+    assert RUNNER_PATH.is_file(), "G1 C1 missing no-contact tracking runner script"
+    spec = importlib.util.spec_from_file_location("run_g1_tracking_envelope_test", RUNNER_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+class _FakeTrackingScene:
+    def __init__(
+        self,
+        *,
+        scene_id: str,
+        command_magnitude_m: float,
+        contact_at: int | None = None,
+        safety_at: int | None = None,
+    ) -> None:
+        self.scene_id = scene_id
+        self.command_magnitude_m = command_magnitude_m
+        self.contact_at = contact_at
+        self.safety_at = safety_at
+        self.initial_tcp_position_m = (0.22, 0.0, 0.88)
+        self.approach_target_m = (0.55, 0.0, 0.50)
+        self.calls = 0
+        self.closed = False
+
+    def step(self, *, requested_vector_m, action_index: int, physics_substeps: int):
+        assert physics_substeps == 3
+        assert action_index == self.calls
+        self.calls += 1
+        observed = self.command_magnitude_m * 0.75
+        contact = action_index == self.contact_at
+        safety_events = (
+            [{"code": "WORKSPACE_LIMIT", "message": "synthetic target failure"}]
+            if action_index == self.safety_at
+            else []
+        )
+        return {
+            "executed_joint_names": ["fr3_joint1", "fr3_joint2"],
+            "executed_joint_target_rad": [0.1, -0.2],
+            "pre_tcp_position_m": [0.22, 0.0, 0.88],
+            "post_tcp_position_m": [0.22, 0.0, 0.88 - observed],
+            "observed_displacement_vector_m": [0.0, 0.0, -observed],
+            "observed_displacement_m": observed,
+            "joint_positions_rad": [0.1, -0.2],
+            "joint_velocities_rad_s": [0.0, 0.0],
+            "contact": contact,
+            "raw_contact_count": int(contact),
+            "collision": False,
+            "penetration_m": 0.0,
+            "finite": True,
+            "safety_events": safety_events,
+            "force_vector_valid": False,
+            "wrench_valid": False,
+        }
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_tracking_runner_script_is_import_safe_and_declares_exact_matrix() -> None:
+    runner = _tracking_runner()
+
+    plan = runner.build_g1_tracking_plan(seed=20260712)
+
+    assert plan["commands_m"] == [0.0, 0.00025, 0.00035, 0.00040, 0.00045]
+    assert plan["scenes_per_command"] == 3
+    assert plan["actions_per_scene"] == 256
+    assert plan["window_sizes"] == [64, 64, 64, 64]
+    assert plan["public_action_hz"] == 20.0
+    assert plan["physics_substeps_per_action"] == 3
+
+
+def test_tracking_runner_plan_has_unique_fresh_scenes_with_same_seed() -> None:
+    runner = _tracking_runner()
+
+    plan = runner.build_g1_tracking_plan(seed=20260712)
+    trials = plan["trials"]
+
+    assert len(trials) == 15
+    assert len({trial["scene_id"] for trial in trials}) == 15
+    assert len({trial["fresh_scene_token"] for trial in trials}) == 15
+    assert {trial["seed"] for trial in trials} == {20260712}
+    assert all(trial["actions"] == 256 for trial in trials)
+
+
+def test_tracking_runner_plan_forbids_press_success_and_force_derivation() -> None:
+    runner = _tracking_runner()
+
+    plan = runner.build_g1_tracking_plan(seed=20260712)
+
+    assert plan["runtime_state"] == "NO_CONTACT_TRACKING"
+    assert plan["enters_press"] is False
+    assert plan["task_success_enabled"] is False
+    assert plan["force_vector_valid"] is False
+    assert plan["wrench_valid"] is False
+    assert plan["raw_impulse_used_as_force"] is False
+    assert plan["physics_device"] == "cpu"
+    assert plan["broadphase_type"] == "MBP"
+    assert plan["gpu_dynamics_enabled"] is False
+    assert plan["native_gpu_contact_enabled"] is False
+
+
+def test_tracking_runner_executes_all_planned_actions_and_retains_records() -> None:
+    runner = _tracking_runner()
+    scenes: list[_FakeTrackingScene] = []
+
+    def factory(**spec):
+        scene = _FakeTrackingScene(
+            scene_id=spec["scene_id"], command_magnitude_m=spec["command_magnitude_m"]
+        )
+        scenes.append(scene)
+        return scene
+
+    result = runner.run_g1_tracking_plan(
+        runner.build_g1_tracking_plan(seed=20260712), scene_factory=factory
+    )
+
+    assert len(result["trials"]) == 15
+    assert sum(len(trial["samples"]) for trial in result["trials"]) == 15 * 256
+    assert all(trial["complete"] for trial in result["trials"])
+    assert all(scene.calls == 256 and scene.closed for scene in scenes)
+    assert result["post_abort_actuation_count"] == 0
+    assert result["entered_press"] is False
+    assert result["task_success"] is False
+
+
+@pytest.mark.parametrize(
+    ("failure_kind", "expected_code"),
+    [
+        ("contact", "G1_C1_CANDIDATE_CONTACT"),
+        ("safety", "G1_C1_CANDIDATE_SAFETY"),
+    ],
+)
+def test_tracking_runner_stops_failed_trial_retains_it_and_never_actuates_after_abort(
+    failure_kind: str, expected_code: str
+) -> None:
+    runner = _tracking_runner()
+    scenes: list[_FakeTrackingScene] = []
+
+    def factory(**spec):
+        fail = spec["command_magnitude_m"] == 0.00035 and spec["scene_index"] == 0
+        scene = _FakeTrackingScene(
+            scene_id=spec["scene_id"],
+            command_magnitude_m=spec["command_magnitude_m"],
+            contact_at=5 if fail and failure_kind == "contact" else None,
+            safety_at=5 if fail and failure_kind == "safety" else None,
+        )
+        scenes.append(scene)
+        return scene
+
+    result = runner.run_g1_tracking_plan(
+        runner.build_g1_tracking_plan(seed=20260712), scene_factory=factory
+    )
+
+    failed = next(trial for trial in result["trials"] if trial["failure_code"] == expected_code)
+    assert failed["complete"] is False
+    assert len(failed["samples"]) == 6
+    assert failed["post_abort_actuation_count"] == 0
+    assert result["post_abort_actuation_count"] == 0
+    assert not any(trial["command_magnitude_m"] > 0.00035 for trial in result["trials"])
+    failed_scene = next(scene for scene in scenes if scene.scene_id == failed["scene_id"])
+    assert failed_scene.calls == 6
+    assert failed_scene.closed is True
+
+
+def test_tracking_runner_writes_immutable_preliminary_evidence_without_config_mutation(
+    tmp_path: Path,
+) -> None:
+    runner = _tracking_runner()
+    config_path = ROOT / "configs/robots/fr3_press_button_safe.yaml"
+    before_digest = hashlib.sha256(config_path.read_bytes()).hexdigest()
+    output = tmp_path / "c1-preliminary"
+    trials = [_trial(f"evidence-scene-{index}", 0.0, (1.0e-6,) * 4) for index in range(3)]
+
+    report = runner.write_g1_tracking_evidence(
+        output=output,
+        repository_commit="a" * 40,
+        command=[sys.executable, str(RUNNER_PATH), "--output", str(output)],
+        plan=runner.build_g1_tracking_plan(seed=20260712),
+        trials=trials,
+        aggregation={"systemic_failure": True, "systemic_failure_code": "TEST_ONLY"},
+    )
+
+    assert report["evidence_stage"] == "preliminary"
+    assert report["repository"]["commit"] == "a" * 40
+    assert report["claim_eligible"] is False
+    assert report["formal_config_updated"] is False
+    assert hashlib.sha256(config_path.read_bytes()).hexdigest() == before_digest
+    assert {
+        "command.log",
+        "samples.jsonl",
+        "trials.json",
+        "report.json",
+        "manifest.json",
+        "checksums.sha256",
+    } == {path.name for path in output.iterdir()}
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["status"] == "BLOCKED"
+    assert manifest["repository"]["commit"] == "a" * 40
+    with pytest.raises(FileExistsError):
+        runner.write_g1_tracking_evidence(
+            output=output,
+            repository_commit="a" * 40,
+            command=["repeat"],
+            plan=runner.build_g1_tracking_plan(seed=20260712),
+            trials=trials,
+            aggregation={},
+        )
