@@ -305,6 +305,67 @@ def select_c2a_static_pose(
     }
 
 
+def validate_c2a_readiness_sample(sample: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate static zero-readiness truth with explicit blocker precedence."""
+
+    required = (
+        "contact", "raw_contact_count", "collision", "penetration_m",
+        "penetration_provenance_valid", "collision_monitor_error", "button_released",
+        "button_reset", "force_vector_valid", "wrench_valid",
+        "raw_impulse_used_as_force", "finite", "post_abort_actuation_count",
+    )
+    if not isinstance(sample, Mapping) or any(field not in sample for field in required):
+        _fail("G1_C2A_NONFINITE", "C2a readiness truth is incomplete")
+    if sample["contact"] is True or sample["raw_contact_count"] != 0:
+        _fail("G1_C2A_CONTACT", "C2a static readiness observed CPU Contact")
+    if sample["collision"] is True:
+        _fail("G1_C2A_STATIC_COLLISION", "C2a static readiness observed collision")
+    if sample["penetration_provenance_valid"] is not True:
+        _fail(
+            "G1_C2A_PENETRATION_PROVENANCE",
+            "C2a collision monitor did not provide valid penetration provenance",
+        )
+    penetration = float(sample["penetration_m"])
+    if not math.isfinite(penetration) or penetration < 0.0:
+        _fail("G1_C2A_NONFINITE", "C2a penetration value is invalid")
+    if sample["button_released"] is not True or sample["button_reset"] is not True:
+        _fail("G1_C2A_BUTTON_STATE", "C2a button is not released and reset")
+    if (
+        sample["force_vector_valid"] is not False
+        or sample["wrench_valid"] is not False
+        or sample["raw_impulse_used_as_force"] is not False
+    ):
+        _fail("G1_C2A_FORCE_TRUTH", "C2a readiness violates force/wrench truth")
+    if sample["finite"] is not True:
+        _fail("G1_C2A_NONFINITE", "C2a readiness state is non-finite")
+    if sample["post_abort_actuation_count"] != 0:
+        _fail("G1_C2A_POST_ABORT_ACTUATION", "C2a observed post-abort actuation")
+    return dict(sample)
+
+
+def validate_c2a_static_scene_record(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Require affirmative pre-Play authoring provenance for a static scene."""
+
+    if not isinstance(record, Mapping) or record.get("timeline_playing_before_author") is not False:
+        _fail(
+            "G1_C2A_PREPLAY_AUTHORING_UNPROVEN",
+            "C2a joint/drive authoring cannot be proven to precede timeline Play",
+        )
+    required = (
+        "joint_prim_paths", "joint_state_instances", "authored_positions",
+        "authored_velocities", "drive_targets", "authored_map_sha256",
+        "joint_prim_bijection", "drive_targets_match",
+    )
+    if any(field not in record for field in required):
+        _fail("G1_C2A_DIGEST_MISSING", "C2a pre-Play authoring record is incomplete")
+    if record["joint_prim_bijection"] is not True or record["drive_targets_match"] is not True:
+        _fail("G1_C2A_JOINT_IDENTITY", "C2a authored joint/drive map is not bijective")
+    digest = record["authored_map_sha256"]
+    if not isinstance(digest, str) or len(digest) != 64:
+        _fail("G1_C2A_DIGEST_MISSING", "C2a authored map digest is invalid")
+    return dict(record)
+
+
 __all__ = [
     "C2A_ARTICULATION_JOINT_NAMES",
     "C2A_ARM_JOINT_NAMES",
@@ -315,4 +376,6 @@ __all__ = [
     "expand_c2a_solver_values_by_name",
     "select_c2a_static_pose",
     "validate_c2a_offline_record",
+    "validate_c2a_readiness_sample",
+    "validate_c2a_static_scene_record",
 ]

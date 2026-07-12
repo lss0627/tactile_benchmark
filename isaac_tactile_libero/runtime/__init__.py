@@ -27,6 +27,8 @@ from .g1_static_pose import (
     expand_c2a_solver_values_by_name,
     select_c2a_static_pose,
     validate_c2a_offline_record,
+    validate_c2a_readiness_sample,
+    validate_c2a_static_scene_record,
 )
 
 __all__ = [
@@ -52,4 +54,6 @@ __all__ = [
     "validate_g1_tracking_trials",
     "validate_formal_g1_tracking_trials",
     "validate_c2a_offline_record",
+    "validate_c2a_readiness_sample",
+    "validate_c2a_static_scene_record",
 ]
