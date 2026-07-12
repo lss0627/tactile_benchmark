@@ -392,6 +392,25 @@ def _artifact_reference(path: Path) -> dict[str, Any]:
     return digest_reference(path, name=path.name)
 
 
+def _validated_systemic_failure(
+    code: Any,
+    message: Any,
+) -> dict[str, Any]:
+    """Return one non-empty code/message pair without rewriting valid bytes."""
+
+    code_text = str(code) if code is not None else ""
+    message_text = str(message) if message is not None else ""
+    if not code_text.strip():
+        code_text = "G1_C1_SYSTEMIC_FAILURE_INVALID"
+    if not message_text.strip():
+        message_text = f"C1 systemic failure: {code_text}"
+    return {
+        "systemic_failure": True,
+        "systemic_failure_code": code_text,
+        "systemic_failure_message": message_text,
+    }
+
+
 def write_g1_tracking_evidence(
     *,
     output: str | Path,
@@ -405,6 +424,12 @@ def write_g1_tracking_evidence(
 ) -> dict[str, Any]:
     """Write one immutable preliminary directory without changing tracked inputs."""
 
+    systemic_record: Mapping[str, Any] = {}
+    if aggregation.get("systemic_failure") is True:
+        systemic_record = _validated_systemic_failure(
+            aggregation.get("systemic_failure_code"),
+            aggregation.get("systemic_failure_message"),
+        )
     destination = Path(output)
     destination.mkdir(parents=True, exist_ok=False)
     started_at = _utc_now()
@@ -477,8 +502,8 @@ def write_g1_tracking_evidence(
         "wrench_valid": False,
         "raw_impulse_used_as_force": False,
         "systemic_failure": bool(aggregation.get("systemic_failure", False)),
-        "systemic_failure_code": aggregation.get("systemic_failure_code"),
-        "systemic_failure_message": aggregation.get("systemic_failure_message"),
+        "systemic_failure_code": systemic_record.get("systemic_failure_code"),
+        "systemic_failure_message": systemic_record.get("systemic_failure_message"),
         "aggregation": _jsonable(aggregation),
         "started_at": started_at,
         "finished_at": _utc_now(),
@@ -500,8 +525,8 @@ def write_g1_tracking_evidence(
         "claim_class": "physical_runtime",
         "status": "BLOCKED",
         "systemic_failure": bool(aggregation.get("systemic_failure", False)),
-        "systemic_failure_code": aggregation.get("systemic_failure_code"),
-        "systemic_failure_message": aggregation.get("systemic_failure_message"),
+        "systemic_failure_code": systemic_record.get("systemic_failure_code"),
+        "systemic_failure_message": systemic_record.get("systemic_failure_message"),
         "claim_eligible": False,
         "formal_config_updated": False,
         "gate_status_updated": False,
@@ -537,9 +562,15 @@ def write_g1_tracking_evidence(
         "blockers": [PRELIMINARY_BLOCKER],
         "notes": "C1 preliminary diagnostic only; no G1 status or formal command cap update",
     }
-    systemic_code = aggregation.get("systemic_failure_code")
+    systemic_code = systemic_record.get("systemic_failure_code")
     if systemic_code:
         manifest["blockers"].append(str(systemic_code))
+        manifest["blockers"].append(
+            {
+                "code": str(systemic_code),
+                "message": str(systemic_record.get("systemic_failure_message")),
+            }
+        )
     manifest_path = destination / "manifest.json"
     _write_json(manifest_path, manifest)
 
@@ -562,15 +593,15 @@ def write_g1_tracking_evidence(
 def build_g1_tracking_failure_aggregation(error: Exception) -> dict[str, Any]:
     """Return the structured systemic failure retained in preliminary evidence."""
 
-    code = getattr(error, "code", "G1_C1_RUNNER_RUNTIME_ERROR")
+    code = str(getattr(error, "code", "G1_C1_RUNNER_RUNTIME_ERROR") or "").strip()
+    if not code:
+        code = "G1_C1_RUNNER_RUNTIME_ERROR"
     message = getattr(error, "message", None)
-    if message is None:
+    if message is None or not str(message).strip():
         message = f"{type(error).__name__}: {error}"
-    return {
-        "systemic_failure": True,
-        "systemic_failure_code": str(code),
-        "systemic_failure_message": str(message),
-    }
+    if not str(message).strip():
+        message = "G1 tracking failed without a diagnostic message"
+    return _validated_systemic_failure(code, message)
 
 
 def orchestrate_g1_tracking_diagnostic(
@@ -596,11 +627,10 @@ def orchestrate_g1_tracking_diagnostic(
             factory = factory_builder()
             result = plan_runner(plan, scene_factory=factory)
             if result.get("systemic_failure") is True:
-                aggregation = {
-                    "systemic_failure": True,
-                    "systemic_failure_code": result.get("systemic_failure_code"),
-                    "systemic_failure_message": result.get("systemic_failure_message"),
-                }
+                aggregation = _validated_systemic_failure(
+                    result.get("systemic_failure_code"),
+                    result.get("systemic_failure_message"),
+                )
             else:
                 try:
                     aggregation = dict(

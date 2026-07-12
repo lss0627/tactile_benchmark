@@ -509,35 +509,134 @@ def _candidate_decision(
         "G1_C1_CANDIDATE_SAFETY",
     ):
         if code in codes:
-            return {"eligible": False, "code": code}
+            failing_sample = samples[codes.index(code)]
+            return _candidate_failure_decision(
+                command,
+                code=code,
+                trials=trials,
+                sample=failing_sample,
+                detail=f"retained sample failed {code}",
+            )
     if any(
         float(_sample_value(sample, "observed_displacement_m")) > observed_hard_limit_m
         for sample in samples
     ):
-        return {"eligible": False, "code": "G1_C1_CANDIDATE_SAFETY"}
+        failing_sample = next(
+            sample
+            for sample in samples
+            if float(_sample_value(sample, "observed_displacement_m"))
+            > observed_hard_limit_m
+        )
+        return _candidate_failure_decision(
+            command,
+            code="G1_C1_CANDIDATE_SAFETY",
+            trials=trials,
+            sample=failing_sample,
+            detail="observed displacement exceeded the exact hard limit",
+        )
     if len(trials) < 3 or any(
         _mapping_trial_value(trial, "complete") is not True
         or len(_mapping_samples(trial)) != ACTIONS_PER_TRIAL
         for trial in trials
     ):
-        return {"eligible": False, "code": "G1_C1_CANDIDATE_INCOMPLETE"}
+        return _candidate_failure_decision(
+            command,
+            code="G1_C1_CANDIDATE_INCOMPLETE",
+            trials=trials,
+            detail="candidate does not contain three complete 256-action trials",
+        )
     try:
         validate_g1_tracking_trials(trials, require_complete_matrix=False)
     except G1ValidationError as error:
-        return {"eligible": False, "code": error.code, "message": error.message}
+        return _candidate_failure_decision(
+            command,
+            code=error.code,
+            trials=trials,
+            detail=error.message,
+        )
 
     for trial in trials:
         _, windows = _pre_failure_gains(trial)
         if any(not window for window in windows):
-            return {"eligible": False, "code": "G1_C1_CANDIDATE_INCOMPLETE"}
+            return _candidate_failure_decision(
+                command,
+                code="G1_C1_CANDIDATE_INCOMPLETE",
+                trials=trials,
+                trial=trial,
+                detail="candidate trial has an incomplete gain window",
+            )
         maxima = tuple(max(window) for window in windows)
         if classify_g1_late_window_growth(maxima)["growing"]:
-            return {
-                "eligible": False,
-                "code": "G1_C1_CANDIDATE_LATE_WINDOW_GROWTH",
-                "window_maxima": maxima,
-            }
+            decision = _candidate_failure_decision(
+                command,
+                code="G1_C1_CANDIDATE_LATE_WINDOW_GROWTH",
+                trials=trials,
+                trial=trial,
+                window_index=3,
+                detail="strict late-window growth predicate was observed",
+            )
+            decision["window_maxima"] = maxima
+            return decision
     return {"eligible": True, "code": "G1_C1_CANDIDATE_ELIGIBLE", "command_m": command}
+
+
+def _candidate_failure_decision(
+    command: float,
+    *,
+    code: str,
+    trials: Sequence[Mapping[str, Any] | G1TrackingTrial],
+    detail: str,
+    sample: Mapping[str, Any] | G1TrackingSample | None = None,
+    trial: Mapping[str, Any] | G1TrackingTrial | None = None,
+    window_index: int | None = None,
+) -> dict[str, Any]:
+    """Build the fixed candidate-local message without discarding retained context."""
+
+    if trial is None and sample is not None:
+        sample_trial_id = str(_sample_value(sample, "trial_id") or "")
+        trial = next(
+            (
+                item
+                for item in trials
+                if str(_mapping_trial_value(item, "trial_id") or "") == sample_trial_id
+            ),
+            None,
+        )
+    if trial is None and trials:
+        trial = trials[0]
+    class_id = ""
+    scene_id = ""
+    if sample is not None:
+        class_id = str(_sample_value(sample, "class_id") or "")
+        scene_id = str(_sample_value(sample, "scene_id") or "")
+    if trial is not None:
+        class_id = class_id or str(_mapping_trial_value(trial, "class_id") or "")
+        scene_id = scene_id or str(_mapping_trial_value(trial, "scene_id") or "")
+    action_index = _sample_value(sample, "action_index") if sample is not None else None
+    if window_index is None and sample is not None:
+        window_index = _sample_value(sample, "window_index")
+    observed = (
+        _sample_value(sample, "observed_displacement_m") if sample is not None else None
+    )
+    retained_samples = sum(len(_mapping_samples(item)) for item in trials)
+    skipped_classes = list(
+        _mapping_trial_value(trial, "skipped_remaining_classes") or ()
+    ) if trial is not None else []
+    skipped_scenes = list(
+        _mapping_trial_value(trial, "skipped_remaining_scenes") or ()
+    ) if trial is not None else []
+    skipped_commands = list(
+        _mapping_trial_value(trial, "skipped_higher_commands") or ()
+    ) if trial is not None else []
+    message = (
+        f"{code}: command={command}; class={class_id}; scene={scene_id}; "
+        f"action={action_index}; window={window_index}; requested_m={command}; "
+        f"observed_m={observed}; retained_samples={retained_samples}; "
+        f"skipped_remaining_classes={skipped_classes}; "
+        f"skipped_remaining_scenes={skipped_scenes}; "
+        f"skipped_higher_commands={skipped_commands}; detail={detail}"
+    )
+    return {"eligible": False, "code": code, "message": message}
 
 
 def aggregate_g1_tracking_envelope(
@@ -690,6 +789,7 @@ def aggregate_g1_tracking_envelope(
     selected: float | None
     systemic_failure = False
     systemic_failure_code: str | None = None
+    systemic_failure_message: str | None = None
     try:
         selected = select_g1_tested_command_cap(
             c_raw_m=c_raw,
@@ -703,6 +803,7 @@ def aggregate_g1_tracking_envelope(
         selected = None
         systemic_failure = True
         systemic_failure_code = error.code
+        systemic_failure_message = error.message
 
     return {
         "N_data": n_data,
@@ -719,6 +820,7 @@ def aggregate_g1_tracking_envelope(
         "selected_command_cap_m": selected,
         "systemic_failure": systemic_failure,
         "systemic_failure_code": systemic_failure_code,
+        "systemic_failure_message": systemic_failure_message,
         "zero_command_validation": zero_validation,
     }
 
