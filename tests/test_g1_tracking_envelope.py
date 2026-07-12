@@ -2,15 +2,22 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import inspect
 import json
 import math
 from pathlib import Path
+import subprocess
 import sys
+import textwrap
 from typing import Any, Callable
 
 import pytest
 
 from isaac_tactile_libero import runtime as runtime_api
+from isaac_tactile_libero.runtime.fr3_experimental import (
+    EXPECTED_FR3_DOFS as EXPECTED_TEST_DOFS,
+    IsaacSim6FR3Controller,
+)
 
 
 HARD_LIMIT_M = 0.0005
@@ -417,6 +424,79 @@ class _FakeTrackingScene:
         self.closed = True
 
 
+class _ReadinessTrackingScene:
+    """Import-safe scene double with separate readiness/measurement accounting."""
+
+    def __init__(
+        self,
+        *,
+        scene_id: str,
+        command_magnitude_m: float,
+        fail_readiness_as: str | None = None,
+    ) -> None:
+        self.scene_id = scene_id
+        self.command_magnitude_m = float(command_magnitude_m)
+        self.fail_readiness_as = fail_readiness_as
+        self.initial_tcp_position_m = (0.22, 0.0, 0.88)
+        self.approach_target_m = (0.55, 0.0, 0.50)
+        self.readiness_calls = 0
+        self.measurement_calls = 0
+        self.closed = False
+        self.immutable_target = [float(ord(scene_id[-1]) % 7)] * 9
+
+    def step(
+        self,
+        *,
+        requested_vector_m,
+        action_index: int,
+        physics_substeps: int,
+        phase: str = "measurement",
+    ):
+        assert physics_substeps == 3
+        if phase == "readiness":
+            assert action_index == self.readiness_calls
+            self.readiness_calls += 1
+        else:
+            assert phase == "measurement"
+            assert action_index == self.measurement_calls
+            self.measurement_calls += 1
+        failure = self.fail_readiness_as if phase == "readiness" and action_index == 5 else None
+        observed = 1.0e-6 if self.command_magnitude_m == 0.0 else self.command_magnitude_m * 0.75
+        return {
+            "executed_joint_names": list(EXPECTED_TEST_DOFS),
+            "executed_joint_target_rad": list(self.immutable_target),
+            "pre_tcp_position_m": [0.22, 0.0, 0.88],
+            "post_tcp_position_m": [0.22, 0.0, 0.88 - observed],
+            "observed_displacement_vector_m": [0.0, 0.0, -observed],
+            "observed_displacement_m": observed,
+            "joint_positions_rad": [float(action_index) * 1.0e-4] * 9,
+            "joint_velocities_rad_s": [0.0] * 9,
+            "contact": failure in {"contact", "raw_contact"},
+            "raw_contact_count": int(failure in {"contact", "raw_contact"}),
+            "collision": failure == "collision",
+            "penetration_m": 0.0,
+            "penetration_provenance_valid": failure != "invalid_penetration",
+            "finite": failure != "nonfinite",
+            "safety_events": (
+                [{"code": "WORKSPACE_LIMIT", "message": "readiness safety failure"}]
+                if failure == "safety"
+                else []
+            ),
+            "post_abort_actuation_count": int(failure == "post_abort"),
+            "force_vector_valid": failure == "fake_force",
+            "wrench_valid": failure == "fake_wrench",
+            "raw_impulse_used_as_force": False,
+            "readiness_complete": phase == "readiness" and action_index == 0,
+            "target_latch_provenance": {
+                "scene_id": self.scene_id,
+                "source": "get_dof_position_targets",
+            },
+        }
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def test_tracking_runner_script_is_import_safe_and_declares_exact_matrix() -> None:
     runner = _tracking_runner()
 
@@ -458,6 +538,217 @@ def test_tracking_runner_plan_forbids_press_success_and_force_derivation() -> No
     assert plan["broadphase_type"] == "MBP"
     assert plan["gpu_dynamics_enabled"] is False
     assert plan["native_gpu_contact_enabled"] is False
+
+
+def test_tracking_plan_declares_exact_fixed_readiness_without_changing_physics_or_hard_limit() -> None:
+    runner = _tracking_runner()
+
+    plan = runner.build_g1_tracking_plan(seed=20260712)
+
+    assert "readiness_actions" in plan, "C1 plan missing fixed readiness action count"
+    assert "readiness_early_success_enabled" in plan, "C1 plan missing early-success policy"
+    assert plan["readiness_actions"] == 64
+    assert plan["readiness_early_success_enabled"] is False
+    assert plan["actions_per_scene"] == 256
+    assert plan["window_sizes"] == [64, 64, 64, 64]
+    assert plan["physics_substeps_per_action"] == 3
+    assert plan["observed_hard_limit_m"] == 0.0005
+    assert plan["physics_device"] == "cpu"
+    assert plan["broadphase_type"] == "MBP"
+    assert plan["gpu_dynamics_enabled"] is False
+
+
+def _run_readiness_plan(runner, *, fail_readiness_as: str | None = None):
+    scenes: list[_ReadinessTrackingScene] = []
+
+    def factory(**spec):
+        scene = _ReadinessTrackingScene(
+            scene_id=spec["scene_id"],
+            command_magnitude_m=spec["command_magnitude_m"],
+            fail_readiness_as=fail_readiness_as,
+        )
+        scenes.append(scene)
+        return scene
+
+    result = runner.run_g1_tracking_plan(
+        runner.build_g1_tracking_plan(seed=20260712), scene_factory=factory
+    )
+    return result, scenes
+
+
+def test_each_trial_runs_exactly_64_nonadaptive_readiness_actions_before_measurement() -> None:
+    runner = _tracking_runner()
+
+    result, scenes = _run_readiness_plan(runner)
+
+    assert len(result["trials"]) == 15
+    assert all(scene.readiness_calls == 64 for scene in scenes)
+    assert all(scene.measurement_calls == 256 for scene in scenes)
+    assert all(scene.closed for scene in scenes)
+    assert all(
+        "readiness_samples" in trial
+        for trial in result["trials"]
+    ), "C1 trial missing separately retained readiness samples"
+    assert all(len(trial["readiness_samples"]) == 64 for trial in result["trials"])
+    assert all(len(trial["samples"]) == 256 for trial in result["trials"])
+    assert all(
+        [sample["action_index"] for sample in trial["readiness_samples"]] == list(range(64))
+        for trial in result["trials"]
+    )
+    assert all(
+        sample["physics_substeps"] == 3
+        for trial in result["trials"]
+        for sample in trial["readiness_samples"]
+    )
+    assert all(
+        len(
+            {
+                tuple(sample["executed_joint_target_rad"])
+                for sample in trial["readiness_samples"]
+            }
+        )
+        == 1
+        for trial in result["trials"]
+    ), "readiness hold target changed"
+    assert all(
+        len(
+            {
+                tuple(sample["executed_joint_target_rad"])
+                for sample in [*trial["readiness_samples"], *trial["samples"]]
+            }
+        )
+        == 1
+        for trial in result["trials"]
+        if trial["command_magnitude_m"] == 0.0
+    ), "zero-command target changed across readiness and measurement"
+    assert all(
+        sample["force_vector_valid"] is False
+        and sample["wrench_valid"] is False
+        and sample["raw_impulse_used_as_force"] is False
+        for trial in result["trials"]
+        for sample in trial["readiness_samples"]
+    )
+
+
+def test_readiness_ignores_early_success_and_preserves_four_ordered_measurement_windows() -> None:
+    runner = _tracking_runner()
+
+    result, scenes = _run_readiness_plan(runner)
+
+    assert all(scene.readiness_calls == 64 for scene in scenes)
+    assert all(
+        [sample["window_index"] for sample in trial["samples"]]
+        == [index // 64 for index in range(256)]
+        for trial in result["trials"]
+    )
+    assert all(
+        [sum(sample["window_index"] == window for sample in trial["samples"]) for window in range(4)]
+        == [64, 64, 64, 64]
+        for trial in result["trials"]
+    )
+
+
+def test_readiness_samples_are_separate_retained_and_excluded_from_tracking_aggregation() -> None:
+    runner = _tracking_runner()
+    result, _scenes = _run_readiness_plan(runner)
+    trials = result["trials"]
+    assert all(
+        "readiness_samples" in trial for trial in trials
+    ), "C1 trial missing separately retained readiness samples"
+    assert all(len(trial["readiness_samples"]) == 64 for trial in trials)
+
+    baseline = runtime_api.aggregate_g1_tracking_envelope(
+        trials,
+        observed_hard_limit_m=HARD_LIMIT_M,
+        tested_commands_m=TESTED_COMMANDS_M,
+    )
+    for trial in trials:
+        for sample in trial["readiness_samples"]:
+            sample["observed_displacement_m"] = 1000.0
+            sample["observed_requested_gain"] = 1000.0
+    changed_readiness = runtime_api.aggregate_g1_tracking_envelope(
+        trials,
+        observed_hard_limit_m=HARD_LIMIT_M,
+        tested_commands_m=TESTED_COMMANDS_M,
+    )
+
+    for field in ("N_data", "N_scene", "G_data", "G_scene", "G_time", "G_command", "C_raw"):
+        assert changed_readiness[field] == baseline[field]
+
+
+@pytest.mark.parametrize(
+    "failure_kind",
+    [
+        "contact",
+        "collision",
+        "invalid_penetration",
+        "nonfinite",
+        "safety",
+        "fake_force",
+        "fake_wrench",
+        "post_abort",
+    ],
+)
+def test_any_unsafe_readiness_sample_is_systemic_and_prevents_measurement(
+    failure_kind: str,
+) -> None:
+    runner = _tracking_runner()
+
+    result, scenes = _run_readiness_plan(runner, fail_readiness_as=failure_kind)
+
+    assert result.get("systemic_failure") is True
+    assert str(result.get("systemic_failure_code", "")).startswith("G1_C1_READINESS_")
+    assert len(result["trials"]) == 1
+    failed = result["trials"][0]
+    assert failed["complete"] is False
+    assert failed["failure_code"].startswith("G1_C1_READINESS_")
+    assert len(failed["readiness_samples"]) == 6
+    assert failed["samples"] == []
+    assert scenes[0].readiness_calls == 6
+    assert scenes[0].measurement_calls == 0
+    assert result["post_abort_actuation_count"] == int(failure_kind == "post_abort")
+
+
+def test_every_fresh_scene_builds_distinct_target_latch_provenance() -> None:
+    runner = _tracking_runner()
+
+    result, _scenes = _run_readiness_plan(runner)
+
+    assert all(
+        "target_latch_provenance" in trial for trial in result["trials"]
+    ), "C1 trial missing scene-local target-latch provenance"
+    provenance = [trial["target_latch_provenance"] for trial in result["trials"]]
+    assert len(provenance) == 15
+    assert len({item["scene_id"] for item in provenance}) == 15
+    assert all(item["source"] == "get_dof_position_targets" for item in provenance)
+
+
+def test_public_controller_and_c1_use_the_same_position_target_latch_contract() -> None:
+    runner = _tracking_runner()
+    shared_type = getattr(runtime_api, "FR3PositionTargetLatch", None)
+    assert isinstance(shared_type, type), "missing shared FR3PositionTargetLatch contract"
+    assert getattr(IsaacSim6FR3Controller, "target_latch_type", None) is shared_type
+    assert getattr(runner._IsaacTrackingScene, "target_latch_type", None) is shared_type
+
+    latch = shared_type(
+        dof_names=EXPECTED_TEST_DOFS,
+        scene_token="semantic-equivalence-scene",
+    )
+    initial = np.linspace(-0.2, 0.2, 9, dtype=np.float32)
+    latch.seed(
+        initial,
+        dof_names=EXPECTED_TEST_DOFS,
+        scene_token="semantic-equivalence-scene",
+        source="get_dof_position_targets",
+    )
+    for observed in (np.zeros(9), np.ones(9), np.full(9, -4.0)):
+        np.testing.assert_array_equal(
+            latch.resolve_zero_target(
+                observed_joint_positions=observed,
+                scene_token="semantic-equivalence-scene",
+            ),
+            initial,
+        )
 
 
 def test_tracking_runner_executes_all_planned_actions_and_retains_records() -> None:
@@ -568,6 +859,42 @@ def test_tracking_runner_writes_immutable_preliminary_evidence_without_config_mu
         )
 
 
+def test_tracking_evidence_saves_readiness_separately_with_complete_counts(tmp_path: Path) -> None:
+    runner = _tracking_runner()
+    output = tmp_path / "c1-readiness-evidence"
+    trial = _trial("readiness-evidence-scene", 0.0, (1.0e-6,) * 4)
+    trial["readiness_samples"] = [
+        _sample(
+            scene_id="readiness-evidence-scene",
+            command_m=0.0,
+            action_index=index,
+            zero_displacement_m=1.0e-6,
+            phase="readiness",
+        )
+        for index in range(64)
+    ]
+
+    report = runner.write_g1_tracking_evidence(
+        output=output,
+        repository_commit="c" * 40,
+        command=[sys.executable, str(RUNNER_PATH), "--output", str(output)],
+        plan=runner.build_g1_tracking_plan(seed=20260712),
+        trials=[trial],
+        aggregation={"systemic_failure": False},
+    )
+
+    readiness_path = output / "readiness_samples.jsonl"
+    measurement_path = output / "samples.jsonl"
+    assert readiness_path.is_file()
+    assert len(readiness_path.read_text(encoding="utf-8").splitlines()) == 64
+    assert len(measurement_path.read_text(encoding="utf-8").splitlines()) == 256
+    assert report["readiness_sample_count"] == 64
+    assert report["sample_count"] == 256
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    artifact_names = {artifact["name"] for artifact in manifest["artifacts"]}
+    assert "readiness_samples.jsonl" in artifact_names
+
+
 def _tracking_lifecycle():
     runner = _tracking_runner()
     helper = getattr(runner, "orchestrate_g1_tracking_diagnostic", None)
@@ -579,9 +906,11 @@ class _FakeLifecycleFactory:
     def __init__(self, events: list[str]) -> None:
         self.events = events
         self.close_count = 0
+        self.close_exit_codes: list[int | None] = []
 
-    def close(self) -> None:
+    def close(self, exit_code: int | None = None) -> None:
         self.close_count += 1
+        self.close_exit_codes.append(exit_code)
         self.events.append("shutdown")
 
 
@@ -752,6 +1081,53 @@ def test_c1_success_and_systemic_paths_shutdown_exactly_once(
     ("systemic_failure", "expected_exit_code"),
     [(False, 0), (True, 1)],
 )
+def test_c1_shutdown_receives_computed_exit_code_after_evidence_and_checksum(
+    tmp_path: Path,
+    systemic_failure: bool,
+    expected_exit_code: int,
+) -> None:
+    _, orchestrate = _tracking_lifecycle()
+    events: list[str] = []
+    factory = _FakeLifecycleFactory(events)
+
+    outcome = orchestrate(
+        **_lifecycle_kwargs(tmp_path, output=tmp_path / f"exit-{expected_exit_code}"),
+        factory_builder=lambda: factory,
+        plan_runner=lambda plan, *, scene_factory: {"trials": []},
+        aggregator=lambda *args, **kwargs: {"systemic_failure": systemic_failure},
+        evidence_writer=lambda **kwargs: events.extend(["write_evidence", "checksum_complete"])
+        or {"status": "BLOCKED"},
+    )
+
+    assert outcome["exit_code"] == expected_exit_code
+    assert events == ["write_evidence", "checksum_complete", "shutdown"]
+    assert factory.close_count == 1
+    assert factory.close_exit_codes == [expected_exit_code]
+
+
+def test_isaac_scene_factory_forwards_exit_code_to_simulation_app_close() -> None:
+    runner = _tracking_runner()
+    parameters = inspect.signature(runner._IsaacSceneFactory.close).parameters
+    assert "exit_code" in parameters, "C1 Isaac scene factory close is missing exit-code propagation"
+
+    received: list[int] = []
+
+    class FakeSimulationApp:
+        def close(self, *, exit_code: int) -> None:
+            received.append(exit_code)
+
+    factory = object.__new__(runner._IsaacSceneFactory)
+    factory.simulation_app = FakeSimulationApp()
+
+    factory.close(exit_code=1)
+
+    assert received == [1]
+
+
+@pytest.mark.parametrize(
+    ("systemic_failure", "expected_exit_code"),
+    [(False, 0), (True, 1)],
+)
 def test_c1_main_returns_orchestrated_cli_status_without_isaac_shutdown_exit(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -829,6 +1205,87 @@ def test_c1_evidence_writer_failure_is_explicit_and_still_shuts_down_once(
 
     assert events == ["writer_error", "shutdown"]
     assert factory.close_count == 1
+
+
+def test_c1_writer_failure_reports_structured_error_closes_with_one_and_has_no_valid_manifest(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _, orchestrate = _tracking_lifecycle()
+    output = tmp_path / "writer-failure"
+    events: list[str] = []
+    factory = _FakeLifecycleFactory(events)
+
+    def fail_writer(**kwargs):
+        output.mkdir()
+        (output / "manifest.json.partial").write_text("{}\n", encoding="utf-8")
+        raise OSError("evidence storage unavailable")
+
+    with pytest.raises(OSError, match="evidence storage unavailable"):
+        orchestrate(
+            **_lifecycle_kwargs(tmp_path, output=output),
+            factory_builder=lambda: factory,
+            plan_runner=lambda plan, *, scene_factory: {"trials": []},
+            aggregator=lambda *args, **kwargs: {"systemic_failure": False},
+            evidence_writer=fail_writer,
+        )
+
+    captured = capsys.readouterr()
+    assert "G1_C1_EVIDENCE_WRITE_FAILED" in captured.err
+    assert factory.close_count == 1
+    assert factory.close_exit_codes == [1]
+    assert not (output / "manifest.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("systemic_failure", "expected_returncode"),
+    [(False, 0), (True, 1)],
+)
+def test_import_safe_fast_shutdown_subprocess_preserves_orchestration_exit_code(
+    systemic_failure: bool,
+    expected_returncode: int,
+) -> None:
+    script = textwrap.dedent(
+        f"""
+        import importlib.util
+        import os
+        import pathlib
+        import sys
+
+        runner_path = pathlib.Path({str(RUNNER_PATH)!r})
+        spec = importlib.util.spec_from_file_location("g1_exit_subprocess", runner_path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+
+        class FastCloseFactory:
+            def close(self, exit_code=None):
+                os._exit(91 if exit_code is None else int(exit_code))
+
+        module.orchestrate_g1_tracking_diagnostic(
+            plan=module.build_g1_tracking_plan(seed=20260712),
+            output="unused-by-injected-writer",
+            repository_commit="d" * 40,
+            command=["import-safe-subprocess"],
+            factory_builder=FastCloseFactory,
+            plan_runner=lambda plan, *, scene_factory: {{"trials": []}},
+            aggregator=lambda *args, **kwargs: {{"systemic_failure": {systemic_failure!r}}},
+            evidence_writer=lambda **kwargs: {{"status": "BLOCKED"}},
+        )
+        os._exit(92)
+        """
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert "isaacsim" not in completed.stderr.lower()
+    assert completed.returncode == expected_returncode
 
 
 def test_c1_script_entrypoint_delegates_process_status_to_system_exit() -> None:

@@ -29,14 +29,21 @@ class FakeLifecycle:
 
 
 class FakeController:
+    def __init__(self):
+        self.initialize_count = 0
+        self.closed = False
+
     def initialize(self):
-        pass
+        self.initialize_count += 1
 
     def read_joint_state(self):
         return np.zeros(9, dtype=np.float32), np.zeros(9, dtype=np.float32)
 
     def apply_action(self, action):
         return {"command_sent": True, "bounded_action": list(action), "controller_method": "fake_dls"}
+
+    def close(self):
+        self.closed = True
 
 
 class FakeContact:
@@ -138,3 +145,22 @@ def test_gpu_physics_is_rejected_before_lifecycle_creation() -> None:
     else:
         raise AssertionError("GPU physics must fail before native initialization")
     assert called is False
+
+
+def test_real_fr3_reset_reseeds_controller_and_close_clears_its_latch() -> None:
+    from isaac_tactile_libero.envs.isaacsim_fr3_press_button_env import IsaacSimFR3PressButtonEnv
+
+    env = IsaacSimFR3PressButtonEnv(
+        enable_runtime=True,
+        lifecycle_factory=FakeLifecycle,
+        component_builder=_components,
+    ).build()
+    controller = env.controller
+
+    env.reset(seed=1)
+    env.reset(seed=2)
+    env.close()
+
+    assert controller.initialize_count == 2
+    assert controller.closed is True
+    assert env.lifecycle.closed is True
