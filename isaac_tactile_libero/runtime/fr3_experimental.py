@@ -40,6 +40,11 @@ class IsaacSim6FR3Controller:
     """Bounded 7D delta-EE controller using experimental articulation Jacobians."""
 
     target_latch_type = FR3PositionTargetLatch
+    qualification_metadata = {
+        "controller_qualification": "compatibility_smoke",
+        "benchmark_cap_eligible": False,
+        "jacobian_provider": "isaacsim_experimental_articulation",
+    }
 
     def __init__(
         self,
@@ -195,6 +200,7 @@ class IsaacSim6FR3Controller:
                 articulation_object_id=id(self.articulation),
             )
         return {
+            **self.qualification_metadata,
             "command_sent": command_sent,
             "controller_method": "experimental_jacobian_dls",
             "action_shape": list(bounded.shape),

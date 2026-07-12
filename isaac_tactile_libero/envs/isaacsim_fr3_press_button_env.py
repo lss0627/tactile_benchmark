@@ -215,6 +215,13 @@ class IsaacSimFR3PressButtonEnv:
             "camera_valid": self.last_camera is not None,
             "action_result": dict(self.last_action_result),
         }
+        for field in (
+            "controller_qualification",
+            "benchmark_cap_eligible",
+            "jacobian_provider",
+        ):
+            if field in self.last_action_result:
+                info[field] = self.last_action_result[field]
         return obs, 0.0, False, False, info
 
     def _capture_camera(self) -> None:
