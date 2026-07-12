@@ -7,6 +7,7 @@ import argparse
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 import hashlib
+import inspect
 import json
 import math
 from pathlib import Path
@@ -25,6 +26,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from isaac_tactile_libero.evidence.manifest import digest_reference, sha256_file  # noqa: E402
+from isaac_tactile_libero.runtime.fr3_target_latch import FR3PositionTargetLatch  # noqa: E402
 from isaac_tactile_libero.robots.fr3_articulation_spec import (  # noqa: E402
     load_fr3_articulation_config,
 )
@@ -66,6 +68,7 @@ OBSERVED_HARD_LIMIT_M = 0.0005
 TRACKING_COMMANDS_M = (0.0, 0.00025, 0.00035, 0.00040, 0.00045)
 NONZERO_TRACKING_COMMANDS_M = TRACKING_COMMANDS_M[1:]
 SCENES_PER_COMMAND = 3
+READINESS_ACTIONS = 64
 PRELIMINARY_BLOCKER = "C1_PRELIMINARY_NOT_GATE_EVIDENCE"
 
 
@@ -116,6 +119,8 @@ def build_g1_tracking_plan(*, seed: int) -> dict[str, Any]:
         "commands_m": [float(value) for value in TRACKING_COMMANDS_M],
         "scenes_per_command": SCENES_PER_COMMAND,
         "actions_per_scene": ACTIONS_PER_TRIAL,
+        "readiness_actions": READINESS_ACTIONS,
+        "readiness_early_success_enabled": False,
         "window_sizes": [WINDOW_SIZE] * WINDOW_COUNT,
         "public_action_hz": PUBLIC_ACTION_HZ,
         "physics_substeps_per_action": PHYSICS_SUBSTEPS_PER_ACTION,
@@ -164,51 +169,127 @@ def _trial_failure_code(step: Mapping[str, Any]) -> str | None:
     return None
 
 
+def _readiness_failure_code(step: Mapping[str, Any]) -> str | None:
+    if int(step.get("post_abort_actuation_count", 0)) > 0:
+        return "G1_C1_READINESS_POST_ABORT_ACTUATION"
+    if bool(step.get("contact")) or int(step.get("raw_contact_count", 0)) > 0:
+        return "G1_C1_READINESS_CONTACT"
+    if bool(step.get("collision")):
+        return "G1_C1_READINESS_COLLISION"
+    if step.get("penetration_provenance_valid") is not True:
+        return "G1_C1_READINESS_PENETRATION_PROVENANCE"
+    if bool(step.get("force_vector_valid")) or bool(step.get("wrench_valid")):
+        return "G1_C1_READINESS_FAKE_FORCE"
+    if bool(step.get("raw_impulse_used_as_force")):
+        return "G1_C1_READINESS_RAW_IMPULSE_AS_FORCE"
+    if step.get("finite") is not True:
+        return "G1_C1_READINESS_NONFINITE"
+    if step.get("safety_events"):
+        return "G1_C1_READINESS_SAFETY"
+    return None
+
+
+def _tracking_sample(
+    *,
+    spec: Mapping[str, Any],
+    step: Mapping[str, Any],
+    action_index: int,
+    requested: Sequence[float],
+    phase: str,
+) -> dict[str, Any]:
+    command = float(spec["command_magnitude_m"])
+    observed = float(step["observed_displacement_m"])
+    gain = None if phase == "readiness" or command == 0.0 else observed / command
+    return {
+        "scene_id": str(spec["scene_id"]),
+        "trial_id": str(spec["trial_id"]),
+        "seed": int(spec["seed"]),
+        "phase": phase,
+        "command_magnitude_m": command,
+        "action_index": action_index,
+        "window_index": None if phase == "readiness" else action_index // WINDOW_SIZE,
+        "requested_vector_m": list(requested),
+        "executed_joint_names": list(step["executed_joint_names"]),
+        "executed_joint_target_rad": list(step["executed_joint_target_rad"]),
+        "pre_tcp_position_m": list(step["pre_tcp_position_m"]),
+        "post_tcp_position_m": list(step["post_tcp_position_m"]),
+        "observed_displacement_vector_m": list(step["observed_displacement_vector_m"]),
+        "observed_displacement_m": observed,
+        "observed_requested_gain": gain,
+        "physics_substeps": PHYSICS_SUBSTEPS_PER_ACTION,
+        "public_action_hz": PUBLIC_ACTION_HZ,
+        "joint_positions_rad": list(step["joint_positions_rad"]),
+        "joint_velocities_rad_s": list(step["joint_velocities_rad_s"]),
+        "contact": bool(step.get("contact", False)),
+        "raw_contact_count": int(step.get("raw_contact_count", 0)),
+        "collision": bool(step.get("collision", False)),
+        "penetration_m": float(step.get("penetration_m", 0.0)),
+        "penetration_provenance_valid": bool(
+            step.get("penetration_provenance_valid", False)
+        ),
+        "finite": bool(step.get("finite", False)),
+        "safety_events": list(step.get("safety_events", [])),
+        "post_abort_actuation_count": int(step.get("post_abort_actuation_count", 0)),
+        "force_vector_valid": bool(step.get("force_vector_valid", False)),
+        "wrench_valid": bool(step.get("wrench_valid", False)),
+        "raw_impulse_used_as_force": bool(step.get("raw_impulse_used_as_force", False)),
+        "target_latch_provenance": _jsonable(step.get("target_latch_provenance", {})),
+        "button_travel_m": step.get("button_travel_m"),
+    }
+
+
 def _execute_tracking_trial(spec: Mapping[str, Any], scene: Any) -> dict[str, Any]:
     command = float(spec["command_magnitude_m"])
     requested = _requested_vector(scene, command)
+    readiness_samples: list[dict[str, Any]] = []
     samples: list[dict[str, Any]] = []
     failure_code: str | None = None
     post_abort_actuation_count = 0
+    target_latch_provenance: dict[str, Any] = {}
+    supports_readiness = "phase" in inspect.signature(scene.step).parameters
+    if supports_readiness:
+        readiness_requested = (0.0, 0.0, 0.0)
+        for action_index in range(READINESS_ACTIONS):
+            step = scene.step(
+                requested_vector_m=readiness_requested,
+                action_index=action_index,
+                physics_substeps=PHYSICS_SUBSTEPS_PER_ACTION,
+                phase="readiness",
+            )
+            sample = _tracking_sample(
+                spec=spec,
+                step=step,
+                action_index=action_index,
+                requested=readiness_requested,
+                phase="readiness",
+            )
+            readiness_samples.append(sample)
+            post_abort_actuation_count += int(sample["post_abort_actuation_count"])
+            if sample["target_latch_provenance"]:
+                target_latch_provenance = dict(sample["target_latch_provenance"])
+            failure_code = _readiness_failure_code(step)
+            if failure_code is not None:
+                break
     for action_index in range(int(spec["actions"])):
+        if failure_code is not None:
+            break
         step = scene.step(
             requested_vector_m=requested,
             action_index=action_index,
             physics_substeps=PHYSICS_SUBSTEPS_PER_ACTION,
+            **({"phase": "measurement"} if supports_readiness else {}),
         )
-        observed = float(step["observed_displacement_m"])
-        gain = None if command == 0.0 else observed / command
-        sample = {
-            "scene_id": str(spec["scene_id"]),
-            "trial_id": str(spec["trial_id"]),
-            "seed": int(spec["seed"]),
-            "command_magnitude_m": command,
-            "action_index": action_index,
-            "window_index": action_index // WINDOW_SIZE,
-            "requested_vector_m": list(requested),
-            "executed_joint_names": list(step["executed_joint_names"]),
-            "executed_joint_target_rad": list(step["executed_joint_target_rad"]),
-            "pre_tcp_position_m": list(step["pre_tcp_position_m"]),
-            "post_tcp_position_m": list(step["post_tcp_position_m"]),
-            "observed_displacement_vector_m": list(step["observed_displacement_vector_m"]),
-            "observed_displacement_m": observed,
-            "observed_requested_gain": gain,
-            "physics_substeps": PHYSICS_SUBSTEPS_PER_ACTION,
-            "public_action_hz": PUBLIC_ACTION_HZ,
-            "joint_positions_rad": list(step["joint_positions_rad"]),
-            "joint_velocities_rad_s": list(step["joint_velocities_rad_s"]),
-            "contact": bool(step.get("contact", False)),
-            "raw_contact_count": int(step.get("raw_contact_count", 0)),
-            "collision": bool(step.get("collision", False)),
-            "penetration_m": float(step.get("penetration_m", 0.0)),
-            "finite": bool(step.get("finite", False)),
-            "safety_events": list(step.get("safety_events", [])),
-            "post_abort_actuation_count": 0,
-            "force_vector_valid": bool(step.get("force_vector_valid", False)),
-            "wrench_valid": bool(step.get("wrench_valid", False)),
-            "button_travel_m": step.get("button_travel_m"),
-        }
+        sample = _tracking_sample(
+            spec=spec,
+            step=step,
+            action_index=action_index,
+            requested=requested,
+            phase="measurement",
+        )
         samples.append(sample)
+        post_abort_actuation_count += int(sample["post_abort_actuation_count"])
+        if sample["target_latch_provenance"]:
+            target_latch_provenance = dict(sample["target_latch_provenance"])
         failure_code = _trial_failure_code(step)
         if failure_code is not None:
             break
@@ -219,6 +300,7 @@ def _execute_tracking_trial(spec: Mapping[str, Any], scene: Any) -> dict[str, An
         "seed": int(spec["seed"]),
         "scene_index": int(spec["scene_index"]),
         "command_magnitude_m": command,
+        "readiness_samples": readiness_samples,
         "samples": samples,
         "complete": failure_code is None and len(samples) == ACTIONS_PER_TRIAL,
         "failure_code": failure_code,
@@ -227,6 +309,7 @@ def _execute_tracking_trial(spec: Mapping[str, Any], scene: Any) -> dict[str, An
         "task_success": False,
         "force_vector_valid": False,
         "wrench_valid": False,
+        "target_latch_provenance": target_latch_provenance,
         "scene_provenance": _jsonable(getattr(scene, "provenance", {})),
     }
 
@@ -244,6 +327,7 @@ def run_g1_tracking_plan(
         )
     retained: list[dict[str, Any]] = []
     stop_after_command: float | None = None
+    systemic_failure_code: str | None = None
     for spec in plan["trials"]:
         command = float(spec["command_magnitude_m"])
         if stop_after_command is not None and command > stop_after_command:
@@ -255,6 +339,8 @@ def run_g1_tracking_plan(
             scene.close()
         retained.append(trial)
         if trial["failure_code"] is not None:
+            if str(trial["failure_code"]).startswith("G1_C1_READINESS_"):
+                systemic_failure_code = str(trial["failure_code"])
             stop_after_command = command
             break
     return {
@@ -268,6 +354,8 @@ def run_g1_tracking_plan(
         "force_vector_valid": False,
         "wrench_valid": False,
         "stopped_after_command_m": stop_after_command,
+        "systemic_failure": systemic_failure_code is not None,
+        "systemic_failure_code": systemic_failure_code,
     }
 
 
@@ -304,6 +392,18 @@ def write_g1_tracking_evidence(
         ),
         encoding="utf-8",
     )
+    has_readiness_records = any("readiness_samples" in trial for trial in trials)
+    readiness_path: Path | None = None
+    if has_readiness_records:
+        readiness_path = destination / "readiness_samples.jsonl"
+        readiness_path.write_text(
+            "".join(
+                json.dumps(_jsonable(sample), sort_keys=True) + "\n"
+                for trial in trials
+                for sample in trial.get("readiness_samples", [])
+            ),
+            encoding="utf-8",
+        )
     report = {
         "schema_version": "g1-tracking-report-v1",
         "evidence_stage": "preliminary",
@@ -316,6 +416,9 @@ def write_g1_tracking_evidence(
         "plan": _jsonable(plan),
         "trial_count": len(trials),
         "sample_count": sum(len(trial.get("samples", [])) for trial in trials),
+        "readiness_sample_count": sum(
+            len(trial.get("readiness_samples", [])) for trial in trials
+        ),
         "failed_trials": [
             {"trial_id": trial.get("trial_id"), "failure_code": trial.get("failure_code")}
             for trial in trials
@@ -327,12 +430,18 @@ def write_g1_tracking_evidence(
         "contact_events": sum(
             int(bool(sample.get("contact")))
             for trial in trials
-            for sample in trial.get("samples", [])
+            for sample in [
+                *trial.get("readiness_samples", []),
+                *trial.get("samples", []),
+            ]
         ),
         "safety_events": [
             event
             for trial in trials
-            for sample in trial.get("samples", [])
+            for sample in [
+                *trial.get("readiness_samples", []),
+                *trial.get("samples", []),
+            ]
             for event in sample.get("safety_events", [])
         ],
         "force_vector_valid": False,
@@ -388,7 +497,13 @@ def write_g1_tracking_evidence(
         "finished_at": report["finished_at"],
         "artifacts": [
             _artifact_reference(path)
-            for path in (command_path, samples_path, trials_path, report_path)
+            for path in (
+                command_path,
+                samples_path,
+                *((readiness_path,) if readiness_path is not None else ()),
+                trials_path,
+                report_path,
+            )
         ],
         "blockers": [PRELIMINARY_BLOCKER],
         "notes": "C1 preliminary diagnostic only; no G1 status or formal command cap update",
@@ -400,7 +515,14 @@ def write_g1_tracking_evidence(
     _write_json(manifest_path, manifest)
 
     checksum_path = destination / "checksums.sha256"
-    checksum_paths = (command_path, samples_path, trials_path, report_path, manifest_path)
+    checksum_paths = (
+        command_path,
+        samples_path,
+        *((readiness_path,) if readiness_path is not None else ()),
+        trials_path,
+        report_path,
+        manifest_path,
+    )
     checksum_path.write_text(
         "".join(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n" for path in checksum_paths),
         encoding="utf-8",
@@ -482,6 +604,8 @@ def orchestrate_g1_tracking_diagnostic(
 class _IsaacTrackingScene:
     """One newly loaded FR3/button stage for one no-contact trial."""
 
+    target_latch_type = FR3PositionTargetLatch
+
     def __init__(self, owner: "_IsaacSceneFactory", spec: Mapping[str, Any]) -> None:
         self.owner = owner
         self.spec = dict(spec)
@@ -496,6 +620,8 @@ class _IsaacTrackingScene:
         self.physics_policy: dict[str, Any] = {}
         self._initial_contact: Any | None = None
         self._aborted = False
+        self.target_latch: FR3PositionTargetLatch | None = None
+        self._scene_token = str(self.spec["fresh_scene_token"])
         self._build()
 
     def _build(self) -> None:
@@ -550,6 +676,36 @@ class _IsaacTrackingScene:
                 "G1_C1_RUNNER_JOINT_IDENTITY",
                 f"C1 joint order mismatch: expected={expected_names}, observed={observed_names}",
             )
+        controller_runtime = runtime.ik_runtime.ee_controller.controller
+        articulation = controller_runtime.articulation
+        target_reader = getattr(articulation, "get_dof_position_targets", None)
+        if not callable(target_reader):
+            raise G1ValidationError(
+                "G1_C1_READINESS_TARGET_UNAVAILABLE",
+                "C1 articulation position target API is unavailable",
+            )
+        try:
+            initial_targets = target_reader()
+            latch = self.target_latch_type(
+                dof_names=observed_names,
+                scene_token=self._scene_token,
+                prim_path=runtime.articulation_root_path,
+                articulation_object_id=id(articulation),
+            )
+            latch.seed(
+                initial_targets,
+                dof_names=observed_names,
+                scene_token=self._scene_token,
+                source="get_dof_position_targets",
+                prim_path=runtime.articulation_root_path,
+                articulation_object_id=id(articulation),
+            )
+        except Exception as error:
+            raise G1ValidationError(
+                "G1_C1_READINESS_TARGET_INVALID",
+                f"C1 articulation position target is invalid: {error}",
+            ) from error
+        self.target_latch = latch
 
         from isaacsim.sensors.experimental.physics import Contact  # type: ignore
 
@@ -605,6 +761,7 @@ class _IsaacTrackingScene:
             "approach_target_m": list(self.approach_target_m),
             "force_vector_valid": False,
             "wrench_valid": False,
+            "target_latch_provenance": self.target_latch.provenance,
         }
 
     def step(
@@ -613,6 +770,7 @@ class _IsaacTrackingScene:
         requested_vector_m: Sequence[float],
         action_index: int,
         physics_substeps: int,
+        phase: str = "measurement",
     ) -> dict[str, Any]:
         if self._aborted:
             raise G1ValidationError(
@@ -622,6 +780,9 @@ class _IsaacTrackingScene:
         assert self.contact_sensor is not None
         assert self.collision_monitor is not None
         assert self.safety is not None
+        assert self.target_latch is not None
+        if phase not in {"readiness", "measurement"}:
+            raise G1ValidationError("G1_C1_READINESS_PHASE_INVALID", f"invalid C1 phase: {phase}")
         runtime = self.runtime
         before_ee = runtime.read_current_ee_transform()
         before_tcp = np.asarray(before_ee.position, dtype=float)
@@ -642,12 +803,16 @@ class _IsaacTrackingScene:
         )
         pre_decision = self.safety.check(pre_sample)
         safety_events: list[dict[str, Any]] = []
-        targets = np.asarray(joint_before.joint_positions, dtype=float)
+        targets = self.target_latch.resolve_zero_target(
+            observed_joint_positions=joint_before.joint_positions,
+            scene_token=self._scene_token,
+        )
         if not pre_decision.allow_actuation:
             safety_events.extend(violation.as_dict() for violation in pre_decision.violations)
             self._aborted = True
+            self.target_latch.abort("pre-actuation safety failure")
         else:
-            if float(np.linalg.norm(requested)) > 0.0:
+            if phase == "measurement" and float(np.linalg.norm(requested)) > 0.0:
                 action = [*requested.tolist(), 0.0, 0.0, 0.0, 0.0]
                 result, _q, _jacobian = runtime.compute_action_delta(
                     action_name=f"c1_{self.spec['trial_id']}_{action_index}",
@@ -662,15 +827,31 @@ class _IsaacTrackingScene:
                         {"code": "CONTROLLER_FAILURE", "message": str(error)}
                     )
                     self._aborted = True
+                    self.target_latch.abort("differential IK failure")
                 else:
                     targets = runtime.expand_solver_delta_to_articulation(
                         joint_before, result.clipped_dq
                     )
-            if not self._aborted and not runtime.send_joint_position_targets(targets):
-                safety_events.append(
-                    {"code": "CONTROLLER_FAILURE", "message": "joint target API returned false"}
-                )
-                self._aborted = True
+            if not self._aborted:
+                sent = runtime.send_joint_position_targets(targets)
+                if not sent:
+                    safety_events.append(
+                        {"code": "CONTROLLER_FAILURE", "message": "joint target API returned false"}
+                    )
+                    self._aborted = True
+                    self.target_latch.abort("joint target API returned false")
+                elif phase == "measurement" and float(np.linalg.norm(requested)) > 0.0:
+                    self.target_latch.accept_target(
+                        targets,
+                        send_succeeded=True,
+                        dof_names=joint_before.joint_names,
+                        scene_token=self._scene_token,
+                        source="accepted_nonzero_action",
+                        prim_path=runtime.articulation_root_path,
+                        articulation_object_id=id(
+                            runtime.ik_runtime.ee_controller.controller.articulation
+                        ),
+                    )
 
         if not self._aborted:
             runtime.update(int(physics_substeps))
@@ -699,6 +880,7 @@ class _IsaacTrackingScene:
             if not post_decision.allow_actuation:
                 safety_events.extend(violation.as_dict() for violation in post_decision.violations)
                 self._aborted = True
+                self.target_latch.abort("post-actuation safety failure")
         finite = bool(
             np.all(np.isfinite(after_tcp))
             and np.all(np.isfinite(joint_after.joint_positions))
@@ -717,10 +899,14 @@ class _IsaacTrackingScene:
             "raw_contact_count": len(contact.raw_contacts),
             "collision": bool(collision["unsafe_collision"]),
             "penetration_m": float(collision["max_penetration_m"]),
+            "penetration_provenance_valid": True,
             "finite": finite,
             "safety_events": safety_events,
+            "post_abort_actuation_count": 0,
             "force_vector_valid": False,
             "wrench_valid": False,
+            "raw_impulse_used_as_force": False,
+            "target_latch_provenance": self.target_latch.provenance,
             "button_travel_m": float(button.travel_m),
         }
 
@@ -729,6 +915,8 @@ class _IsaacTrackingScene:
             self.contact_sensor.reset()
         if self.runtime is not None:
             self.runtime.close()
+        if self.target_latch is not None:
+            self.target_latch.invalidate("scene closed")
 
 
 class _IsaacSceneFactory:
