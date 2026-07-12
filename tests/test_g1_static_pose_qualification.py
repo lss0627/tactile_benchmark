@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 from typing import Any
 
+import numpy as np
 import pytest
 
 
@@ -63,6 +64,8 @@ def _runner():
 
 
 def _offline_record(**changes: Any) -> dict[str, Any]:
+    world_from_base = np.eye(4, dtype=np.float64).tolist()
+    base_from_world = np.eye(4, dtype=np.float64).tolist()
     record = {
         "schema_version": "g1.c2a.static.v1",
         "candidate_id": "task-ready-z-0p55",
@@ -97,8 +100,8 @@ def _offline_record(**changes: Any) -> dict[str, Any]:
         "workspace_valid": True,
         "stage_meters_per_unit": 1.0,
         "stage_up_axis": "Z",
-        "world_from_base": [[1.0, 0.0, 0.0, 0.0]] * 4,
-        "base_from_world": [[1.0, 0.0, 0.0, 0.0]] * 4,
+        "world_from_base": world_from_base,
+        "base_from_world": base_from_world,
         "transform_sha256": "d" * 64,
         "finite": True,
         "asset_sha256": "e" * 64,
@@ -125,6 +128,27 @@ def test_c2a_offline_candidates_have_exact_ids_order_and_positions() -> None:
         for candidate in candidates
     ) == EXPECTED_CANDIDATES
     assert [candidate["candidate_order"] for candidate in candidates] == [0, 1, 2]
+
+
+def test_c2a_offline_transform_fixture_is_finite_inverse_identity_4x4() -> None:
+    record = _offline_record()
+    world_from_base = np.asarray(record["world_from_base"], dtype=np.float64)
+    base_from_world = np.asarray(record["base_from_world"], dtype=np.float64)
+    identity = np.eye(4, dtype=np.float64)
+
+    assert world_from_base.shape == (4, 4)
+    assert base_from_world.shape == (4, 4)
+    assert np.isfinite(world_from_base).all()
+    assert np.isfinite(base_from_world).all()
+    np.testing.assert_array_equal(world_from_base @ base_from_world, identity)
+    np.testing.assert_array_equal(base_from_world @ world_from_base, identity)
+    assert record["world_from_base"] is not record["base_from_world"]
+    assert all(
+        world_row is not base_row
+        for world_row, base_row in zip(
+            record["world_from_base"], record["base_from_world"]
+        )
+    )
 
 
 def test_c2a_reference_orientation_provenance_is_shared_and_immutable() -> None:
@@ -192,11 +216,27 @@ def test_c2a_offline_validator_rejects_invalid_residual_frame_limit_or_digest(
 
 
 def test_c2a_selects_highest_candidate_passing_all_three_scenes() -> None:
-    select = _static_capability("select_c2a_static_pose")
     candidates = [
-        {**_offline_record(), "candidate_id": candidate_id, "candidate_order": index}
-        for index, (candidate_id, _position) in enumerate(EXPECTED_CANDIDATES)
+        {
+            **_offline_record(),
+            "candidate_id": candidate_id,
+            "candidate_order": index,
+            "target_position_world_m": list(position),
+        }
+        for index, (candidate_id, position) in enumerate(EXPECTED_CANDIDATES)
     ]
+    assert tuple(
+        (
+            candidate["candidate_id"],
+            candidate["candidate_order"],
+            candidate["target_position_world_m"],
+        )
+        for candidate in candidates
+    ) == tuple(
+        (candidate_id, index, position)
+        for index, (candidate_id, position) in enumerate(EXPECTED_CANDIDATES)
+    )
+    select = _static_capability("select_c2a_static_pose")
     scenes = [
         {"candidate_id": candidate["candidate_id"], "scene_id": f"{candidate['candidate_id']}-{scene}", "passed": candidate["candidate_order"] > 0}
         for candidate in candidates
@@ -341,11 +381,10 @@ def test_c2a_preplay_provenance_unavailable_is_a_blocker() -> None:
     with pytest.raises(Exception) as caught:
         validate({"timeline_playing_before_author": None})
 
-    assert getattr(caught.value, "code", "") in {
-        "G1_C2A_FRAME",
-        "G1_C2A_DIGEST_MISSING",
-        "G1_C2A_PREPLAY_PROVENANCE",
-    }
+    assert (
+        getattr(caught.value, "code", "")
+        == "G1_C2A_PREPLAY_AUTHORING_UNPROVEN"
+    )
 
 
 def test_c2a_evidence_is_preliminary_hashed_and_carries_all_no_claim_flags(

@@ -37,8 +37,16 @@ def _kernel_capability(name: str):
 
 
 def _formal_record() -> dict[str, Any]:
-    zeros9 = [0.0] * 9
-    zeros7 = [0.0] * 7
+    pre_q = np.asarray(
+        [0.1, -0.2, 0.3, -0.4, 0.2, -0.1, 0.05, 0.02, 0.02],
+        dtype=np.float64,
+    )
+    expanded_dq = np.asarray([0.001] * 7 + [0.0, 0.0], dtype=np.float64)
+    previous_accepted_target = pre_q.copy()
+    pre_send_target = pre_q + expanded_dq
+    governed_target = pre_send_target.copy()
+    post_q = governed_target.copy()
+    zeros9 = np.zeros(9, dtype=np.float64)
     return {
         "scene_id": "scene-0",
         "fresh_scene_token": "fresh-scene-0",
@@ -68,14 +76,14 @@ def _formal_record() -> dict[str, Any]:
         "reversal_before_action": False,
         "direction_world": [0.0, 0.0, -1.0],
         "direction_reversed": False,
-        "pre_q": zeros9,
-        "post_q": zeros9,
-        "pre_qd": zeros9,
-        "post_qd": zeros9,
-        "qd_acceleration": zeros9,
-        "previous_accepted_target": [0.4] * 9,
-        "pre_send_target": [0.001] * 7 + [0.02, 0.02],
-        "governed_target": [0.001] * 7 + [0.02, 0.02],
+        "pre_q": pre_q.tolist(),
+        "post_q": post_q.tolist(),
+        "pre_qd": zeros9.tolist(),
+        "post_qd": zeros9.tolist(),
+        "qd_acceleration": zeros9.tolist(),
+        "previous_accepted_target": previous_accepted_target.tolist(),
+        "pre_send_target": pre_send_target.tolist(),
+        "governed_target": governed_target.tolist(),
         "send_attempted": True,
         "send_result": True,
         "raw_dq": [0.001] * 7,
@@ -94,9 +102,9 @@ def _formal_record() -> dict[str, Any]:
         "finite_difference_epsilon": 0.0001,
         "predicted_delta_m": [0.0, 0.0, -0.00025],
         "prediction_residual_m": [0.0, 0.0, 0.0],
-        "target_error_before": zeros9,
-        "target_error_after": zeros9,
-        "target_lead": [-0.399] * 7 + [-0.38, -0.38],
+        "target_error_before": (previous_accepted_target - pre_q).tolist(),
+        "target_error_after": (governed_target - post_q).tolist(),
+        "target_lead": (pre_send_target - previous_accepted_target).tolist(),
         "pre_tcp_position_m": [0.55, 0.0, 0.55],
         "post_tcp_position_m": [0.55, 0.0, 0.54975],
         "observed_displacement_vector_m": [0.0, 0.0, -0.00025],
@@ -107,8 +115,8 @@ def _formal_record() -> dict[str, Any]:
         "drive_stiffness": [400.0] * 9,
         "drive_damping": [40.0] * 9,
         "drive_effort": [0.0] * 9,
-        "drive_position_target": [0.001] * 7 + [0.02, 0.02],
-        "drive_velocity_target": zeros9,
+        "drive_position_target": governed_target.tolist(),
+        "drive_velocity_target": zeros9.tolist(),
         "pose_radius_m": 0.00025,
         "distance_to_segment_start_m": 0.00025,
         "distance_to_task_ready_m": 0.00025,
@@ -242,8 +250,33 @@ def test_kernel_retains_lula_fd_jacobian_and_target_provenance() -> None:
     assert result["raw_dq"] == [0.001] * 7
     assert result["clipped_dq"] == [0.001] * 7
     assert result["predicted_delta_m"] == [0.0, 0.0, -0.00025]
-    assert result["previous_accepted_target"] == [0.4] * 9
+    assert result["previous_accepted_target"] == _formal_record()["pre_q"]
     assert result["pre_send_target"] != result["previous_accepted_target"]
+
+
+def test_formal_nonzero_fixture_target_arithmetic_is_mechanically_consistent() -> None:
+    record = _formal_record()
+    pre_q = np.asarray(record["pre_q"], dtype=np.float64)
+    post_q = np.asarray(record["post_q"], dtype=np.float64)
+    previous = np.asarray(record["previous_accepted_target"], dtype=np.float64)
+    pre_send = np.asarray(record["pre_send_target"], dtype=np.float64)
+    governed = np.asarray(record["governed_target"], dtype=np.float64)
+    expanded_dq = np.asarray([*record["clipped_dq"], 0.0, 0.0], dtype=np.float64)
+
+    np.testing.assert_array_equal(previous, pre_q)
+    np.testing.assert_allclose(pre_send, pre_q + expanded_dq, rtol=0.0, atol=0.0)
+    np.testing.assert_array_equal(governed, pre_send)
+    np.testing.assert_array_equal(post_q, governed)
+    np.testing.assert_array_equal(
+        record["target_error_before"], previous - pre_q
+    )
+    np.testing.assert_array_equal(
+        record["target_lead"], pre_send - previous
+    )
+    np.testing.assert_array_equal(
+        record["target_error_after"], governed - post_q
+    )
+    np.testing.assert_array_equal(record["drive_position_target"], governed)
 
 
 FORMAL_NONZERO_FIELDS = tuple(_formal_record())
