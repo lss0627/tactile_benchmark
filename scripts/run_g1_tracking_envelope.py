@@ -338,6 +338,9 @@ def write_g1_tracking_evidence(
         "force_vector_valid": False,
         "wrench_valid": False,
         "raw_impulse_used_as_force": False,
+        "systemic_failure": bool(aggregation.get("systemic_failure", False)),
+        "systemic_failure_code": aggregation.get("systemic_failure_code"),
+        "systemic_failure_message": aggregation.get("systemic_failure_message"),
         "aggregation": _jsonable(aggregation),
         "started_at": started_at,
         "finished_at": _utc_now(),
@@ -358,6 +361,13 @@ def write_g1_tracking_evidence(
         "gate_id": "G1",
         "claim_class": "physical_runtime",
         "status": "BLOCKED",
+        "systemic_failure": bool(aggregation.get("systemic_failure", False)),
+        "systemic_failure_code": aggregation.get("systemic_failure_code"),
+        "systemic_failure_message": aggregation.get("systemic_failure_message"),
+        "claim_eligible": False,
+        "formal_config_updated": False,
+        "gate_status_updated": False,
+        "t070_completed": False,
         "repository": {
             "commit": str(repository_commit),
             "dirty": False,
@@ -396,6 +406,77 @@ def write_g1_tracking_evidence(
         encoding="utf-8",
     )
     return report
+
+
+def build_g1_tracking_failure_aggregation(error: Exception) -> dict[str, Any]:
+    """Return the structured systemic failure retained in preliminary evidence."""
+
+    code = getattr(error, "code", "G1_C1_RUNNER_RUNTIME_ERROR")
+    message = getattr(error, "message", None)
+    if message is None:
+        message = f"{type(error).__name__}: {error}"
+    return {
+        "systemic_failure": True,
+        "systemic_failure_code": str(code),
+        "systemic_failure_message": str(message),
+    }
+
+
+def orchestrate_g1_tracking_diagnostic(
+    *,
+    plan: Mapping[str, Any],
+    output: str | Path,
+    repository_commit: str,
+    command: Sequence[str],
+    factory_builder: Callable[[], Any],
+    configuration_paths: Sequence[str | Path] = (),
+    plan_runner: Callable[..., Mapping[str, Any]] = run_g1_tracking_plan,
+    aggregator: Callable[..., Mapping[str, Any]] = aggregate_g1_tracking_envelope,
+    failure_builder: Callable[[Exception], Mapping[str, Any]] = build_g1_tracking_failure_aggregation,
+    evidence_writer: Callable[..., Mapping[str, Any]] = write_g1_tracking_evidence,
+) -> dict[str, Any]:
+    """Persist success or failure evidence before closing the Isaac runtime."""
+
+    factory: Any | None = None
+    result: Mapping[str, Any] = {"trials": []}
+    try:
+        try:
+            factory = factory_builder()
+            result = plan_runner(plan, scene_factory=factory)
+            try:
+                aggregation = dict(
+                    aggregator(
+                        result.get("trials", []),
+                        observed_hard_limit_m=OBSERVED_HARD_LIMIT_M,
+                        tested_commands_m=NONZERO_TRACKING_COMMANDS_M,
+                    )
+                )
+            except Exception as error:
+                aggregation = dict(failure_builder(error))
+        except Exception as error:
+            aggregation = dict(failure_builder(error))
+
+        exit_code = int(bool(aggregation.get("systemic_failure")))
+        asset_path = getattr(factory, "fr3_asset", None) if factory is not None else None
+        report = evidence_writer(
+            output=output,
+            repository_commit=repository_commit,
+            command=command,
+            plan=plan,
+            trials=result.get("trials", []),
+            aggregation=aggregation,
+            configuration_paths=configuration_paths,
+            asset_paths=(asset_path,) if asset_path is not None else (),
+        )
+        return {
+            "exit_code": exit_code,
+            "report": report,
+            "aggregation": aggregation,
+            "trials": list(result.get("trials", [])),
+        }
+    finally:
+        if factory is not None:
+            factory.close()
 
 
 class _IsaacTrackingScene:
@@ -675,8 +756,8 @@ class _IsaacSceneFactory:
         np.random.seed(int(spec["seed"]))
         return _IsaacTrackingScene(self, spec)
 
-    def close(self, *, exit_code: int) -> None:
-        self.simulation_app.close(exit_code=int(exit_code))
+    def close(self) -> None:
+        self.simulation_app.close()
 
 
 def _repository_commit() -> str:
@@ -722,55 +803,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         robot_safety_path = (ROOT / robot_safety_path).resolve()
     seed = int(args.seed if args.seed is not None else task_config["runtime"]["deterministic_reset_seed"])
     plan = build_g1_tracking_plan(seed=seed)
-    factory: _IsaacSceneFactory | None = None
-    result: dict[str, Any] = {"trials": []}
-    aggregation: dict[str, Any]
-    exit_code = 1
-    try:
-        factory = _IsaacSceneFactory(
+    outcome = orchestrate_g1_tracking_diagnostic(
+        plan=plan,
+        output=Path(args.output),
+        repository_commit=_repository_commit(),
+        command=[sys.executable, str(Path(__file__).resolve()), *(argv or sys.argv[1:])],
+        configuration_paths=(task_config_path, robot_safety_path),
+        factory_builder=lambda: _IsaacSceneFactory(
             task_config_path=task_config_path,
             robot_safety_path=robot_safety_path,
             headless=bool(args.headless),
-        )
-        result = run_g1_tracking_plan(plan, scene_factory=factory)
-        try:
-            aggregation = aggregate_g1_tracking_envelope(
-                result["trials"],
-                observed_hard_limit_m=OBSERVED_HARD_LIMIT_M,
-                tested_commands_m=NONZERO_TRACKING_COMMANDS_M,
-            )
-        except G1ValidationError as error:
-            aggregation = {
-                "systemic_failure": True,
-                "systemic_failure_code": error.code,
-                "systemic_failure_message": error.message,
-            }
-        exit_code = int(bool(aggregation.get("systemic_failure")))
-    except Exception as error:
-        code = getattr(error, "code", "G1_C1_RUNNER_RUNTIME_ERROR")
-        aggregation = {
-            "systemic_failure": True,
-            "systemic_failure_code": str(code),
-            "systemic_failure_message": f"{type(error).__name__}: {error}",
-        }
-        exit_code = 1
-    finally:
-        if factory is not None:
-            factory.close(exit_code=exit_code)
-
-    output = Path(args.output)
-    report = write_g1_tracking_evidence(
-        output=output,
-        repository_commit=_repository_commit(),
-        command=[sys.executable, str(Path(__file__).resolve()), *(argv or sys.argv[1:])],
-        plan=plan,
-        trials=result.get("trials", []),
-        aggregation=aggregation,
-        configuration_paths=(task_config_path, robot_safety_path),
-        asset_paths=(factory.fr3_asset,) if factory is not None else (),
+        ),
     )
+    report = outcome["report"]
     print(json.dumps(report, indent=2, sort_keys=True))
-    return exit_code
+    return int(outcome["exit_code"])
 
 
 if __name__ == "__main__":
