@@ -11,11 +11,13 @@ from .g1_tracking import (
     validate_g1_tracking_trials,
 )
 from .isaacsim6 import IsaacSim6Lifecycle
+from .fr3_target_latch import FR3PositionTargetLatch
 
 __all__ = [
     "G1TrackingSample",
     "G1TrackingTrial",
     "G1ValidationError",
+    "FR3PositionTargetLatch",
     "IsaacSim6Lifecycle",
     "aggregate_g1_tracking_envelope",
     "classify_g1_late_window_growth",

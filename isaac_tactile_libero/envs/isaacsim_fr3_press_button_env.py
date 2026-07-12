@@ -312,6 +312,10 @@ class IsaacSimFR3PressButtonEnv:
     def close(self) -> None:
         if self.closed:
             return
+        if self.controller is not None:
+            close_controller = getattr(self.controller, "close", None)
+            if callable(close_controller):
+                close_controller()
         if self.contact_sensor is not None:
             self.contact_sensor.reset()
         if self.camera_sensor is not None:
