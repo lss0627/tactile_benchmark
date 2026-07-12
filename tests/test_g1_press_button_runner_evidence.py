@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 import subprocess
 import sys
+
+import pytest
 
 import scripts.run_fr3_press_button_press_smoke as runner
 from isaac_tactile_libero.robots.fr3_runtime_safety import FR3SafetySample, SafetyViolation
@@ -185,6 +188,118 @@ def test_g1_gate_policy_blocks_missing_collision_or_penetration_provenance() -> 
     assert status == "BLOCKED"
     assert "G1_EPISODE_0_COLLISION_MONITOR_INVALID" in blockers
     assert "G1_EPISODE_1_PENETRATION_PROVENANCE_INVALID" in blockers
+
+
+def _runner_bundle_validator():
+    value = getattr(runner, "_validate_g1_control_bundle", None)
+    assert callable(value), "G1 runner missing accepted cap/reset bundle validator"
+    return value
+
+
+def _runner_evidence_validator():
+    value = getattr(runner, "_validate_g1_accepted_bundle_evidence", None)
+    assert callable(value), "G1 runner missing accepted-bundle evidence validator"
+    return value
+
+
+def _runner_validation_error_type():
+    value = getattr(runner, "G1ValidationError", None)
+    assert isinstance(value, type), "G1 runner missing structured G1ValidationError"
+    return value
+
+
+def _accepted_control_bundle(**changes):
+    bundle = {
+        "schema_version": "g1-control-bundle-v1",
+        "validated": True,
+        "command_cap_m": 0.00035,
+        "observed_hard_limit_m": 0.0005,
+        "tracking": {"validated": True, "sha256": "a" * 64},
+        "reset": {"validated": True, "sha256": "b" * 64},
+        "budget": {"validated": True, "sha256": "c" * 64},
+        "provenance": {"sha256": "d" * 64},
+        "binding": {
+            "tracking_sha256": "a" * 64,
+            "reset_sha256": "b" * 64,
+        },
+        "force_vector_valid": False,
+        "wrench_valid": False,
+        "post_abort_actuation_count": 0,
+    }
+    bundle.update(changes)
+    return bundle
+
+
+def test_g1_runner_command_cap_must_be_strictly_below_exact_observed_limit() -> None:
+    validate = _runner_bundle_validator()
+    error_type = _runner_validation_error_type()
+
+    with pytest.raises(error_type, match="strictly below 0.0005") as caught:
+        validate(_accepted_control_bundle(command_cap_m=0.0005))
+
+    assert caught.value.code == "G1_COMMAND_CAP_NO_RESERVE"
+
+
+def test_g1_runner_rejects_nextafter_observed_limit_as_command_cap() -> None:
+    validate = _runner_bundle_validator()
+    error_type = _runner_validation_error_type()
+
+    with pytest.raises(error_type, match="strictly below 0.0005") as caught:
+        validate(
+            _accepted_control_bundle(
+                command_cap_m=math.nextafter(0.0005, math.inf)
+            )
+        )
+
+    assert caught.value.code == "G1_COMMAND_CAP_NO_RESERVE"
+
+
+@pytest.mark.parametrize(
+    ("changes", "code"),
+    [
+        ({"tracking": {"validated": False, "sha256": "a" * 64}}, "G1_BUNDLE_CAP_UNVALIDATED"),
+        ({"reset": {"validated": False, "sha256": "b" * 64}}, "G1_BUNDLE_RESET_UNVALIDATED"),
+        ({"provenance": {}}, "G1_BUNDLE_PROVENANCE_MISSING"),
+        (
+            {"binding": {"tracking_sha256": "e" * 64, "reset_sha256": "b" * 64}},
+            "G1_BUNDLE_HASH_MISMATCH",
+        ),
+    ],
+)
+def test_g1_runner_rejects_unvalidated_or_mismatched_bundle(changes, code: str) -> None:
+    validate = _runner_bundle_validator()
+    error_type = _runner_validation_error_type()
+
+    with pytest.raises(error_type, match="bundle") as caught:
+        validate(_accepted_control_bundle(**changes))
+
+    assert caught.value.code == code
+
+
+def test_g1_runner_evidence_requires_complete_accepted_bundle() -> None:
+    validate = _runner_evidence_validator()
+    error_type = _runner_validation_error_type()
+    summary = {
+        "accepted_control_bundle": {
+            "command_cap_m": 0.00035,
+            "tracking": {"sha256": "a" * 64},
+        }
+    }
+
+    with pytest.raises(error_type, match="complete accepted bundle") as caught:
+        validate(summary)
+
+    assert caught.value.code == "G1_EVIDENCE_ACCEPTED_BUNDLE_INCOMPLETE"
+
+
+def test_g1_runner_accepted_bundle_keeps_force_masks_false_and_post_abort_zero() -> None:
+    validate = _runner_bundle_validator()
+
+    result = validate(_accepted_control_bundle())
+
+    assert result["force_vector_valid"] is False
+    assert result["wrench_valid"] is False
+    assert result["post_abort_actuation_count"] == 0
 
 
 def test_g1_simulation_app_config_uses_exit_code_preserving_fast_shutdown() -> None:

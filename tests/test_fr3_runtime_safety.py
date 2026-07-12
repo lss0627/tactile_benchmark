@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
+import math
 from pathlib import Path
 import sys
 
@@ -237,6 +239,79 @@ def test_physical_workspace_has_measured_provenance_and_aborts_just_outside_boun
         )
         assert decision.allow_actuation is False
         assert decision.violations[0].code == "WORKSPACE_LIMIT"
+
+
+def _exact_observed_limit_monitor(module):
+    limits = _limits(module)
+    exact_limits = module.FR3SafetyLimits(
+        **{
+            **limits.__dict__,
+            "max_step_motion_m": 0.0005,
+        }
+    )
+    return module.FR3RuntimeSafety(exact_limits)
+
+
+def test_observed_public_action_displacement_equal_to_exact_hard_limit_passes() -> None:
+    module = _target()
+    monitor = _exact_observed_limit_monitor(module)
+
+    decision = monitor.check(
+        _safe_sample(
+            module,
+            previous_tcp_position=(0.50, 0.0, 0.5005),
+            requested_delta=(0.0, 0.0, -0.00035),
+            observed_delta=(0.0, 0.0, -0.0005),
+        )
+    )
+
+    assert decision.safe is True
+    assert decision.allow_actuation is True
+
+
+def test_nextafter_above_exact_observed_hard_limit_aborts_without_epsilon() -> None:
+    module = _target()
+    monitor = _exact_observed_limit_monitor(module)
+    above = math.nextafter(0.0005, math.inf)
+
+    decision = monitor.check(
+        _safe_sample(
+            module,
+            previous_tcp_position=(0.50, 0.0, 0.5005),
+            requested_delta=(0.0, 0.0, -0.00035),
+            observed_delta=(0.0, 0.0, -above),
+        )
+    )
+
+    assert decision.safe is False
+    assert decision.allow_actuation is False
+    assert decision.violations[0].code == "PER_STEP_MOTION_LIMIT"
+    assert decision.violations[0].observed == above
+    assert decision.violations[0].limit == 0.0005
+
+
+def test_observed_hard_limit_comparison_source_has_no_epsilon_or_isclose() -> None:
+    module = _target()
+    source = inspect.getsource(module.FR3RuntimeSafety.check)
+    comparison_line = next(
+        line for line in source.splitlines() if "step_motion >" in line
+    )
+
+    assert comparison_line.strip() == "if step_motion > self.limits.max_step_motion_m:"
+    assert "isclose" not in comparison_line
+
+
+def test_physical_safety_config_requires_exact_observed_hard_limit(tmp_path: Path) -> None:
+    module = _target()
+    source = ROOT / "configs/robots/fr3_press_button_safe.yaml"
+    payload = yaml.safe_load(source.read_text(encoding="utf-8"))
+    assert payload["motion"]["max_translation_per_step_m"] == 0.0005
+    payload["motion"]["max_translation_per_step_m"] = math.nextafter(0.0005, math.inf)
+    invalid = tmp_path / "invalid-observed-limit.yaml"
+    invalid.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="exactly 0.0005 m"):
+        module.load_fr3_runtime_safety(invalid)
 
 
 def test_physical_joint_limits_accept_runtime_float32_boundary_noise_but_not_excursions() -> None:
