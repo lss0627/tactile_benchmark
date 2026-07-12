@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+import hashlib
+import json
 import math
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -13,6 +15,15 @@ PHYSICS_SUBSTEPS_PER_ACTION = 3
 ACTIONS_PER_TRIAL = 256
 WINDOW_SIZE = 64
 WINDOW_COUNT = 4
+
+G1_TRAJECTORY_CLASS_IDS = (
+    "C1_LOCAL_APPROACH_AXIS_RT_V1",
+    "C1_LOCAL_PRESS_AXIS_RT_V1",
+    "C1_LOCAL_RETRACT_AXIS_RT_V1",
+    "C1_CONTINUOUS_APPROACH_LEG_V1",
+    "C1_CONTINUOUS_PRESS_RELEASE_LEG_V1",
+    "C1_CONTINUOUS_RETRACT_LEG_V1",
+)
 
 
 class G1ValidationError(ValueError):
@@ -860,6 +871,231 @@ def validate_formal_g1_tracking_trials(
     return {"valid": True, "trial_count": len(evidence), "sample_count": sample_count}
 
 
+def g1_trajectory_class_definitions() -> list[dict[str, Any]]:
+    """Return the six fixed task-pose tracking classes in canonical order."""
+
+    rows = (
+        (G1_TRAJECTORY_CLASS_IDS[0], "local_round_trip", "APPROACH_LOCAL", "A-S"),
+        (G1_TRAJECTORY_CLASS_IDS[1], "local_round_trip", "PRESS_RELEASE_LOCAL", "press_axis"),
+        (G1_TRAJECTORY_CLASS_IDS[2], "local_round_trip", "RETRACT_LOCAL", "R-A"),
+        (G1_TRAJECTORY_CLASS_IDS[3], "phase_reflected", "APPROACH", "A-S"),
+        (G1_TRAJECTORY_CLASS_IDS[4], "phase_reflected", "PRESS_RELEASE", "P-A"),
+        (G1_TRAJECTORY_CLASS_IDS[5], "phase_reflected", "RETRACT", "R-A"),
+    )
+    return [
+        {
+            "class_id": class_id,
+            "class_version": "v1",
+            "motif_type": motif_type,
+            "phase_id": phase_id,
+            "direction_source": direction_source,
+            "start_source": "C2a_qualified_task_ready_pose",
+            "required": True,
+        }
+        for class_id, motif_type, phase_id, direction_source in rows
+    ]
+
+
+def _canonical_decimal(value: Decimal) -> str:
+    return "0" if value == 0 else format(value, "f")
+
+
+def _motif_digest(payload: Mapping[str, Any]) -> str:
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def build_g1_local_round_trip_motif(
+    *,
+    command_m: str | float,
+    direction_world: Sequence[float],
+) -> dict[str, Any]:
+    """Build one exact 64-action +16/-32/+16 local motif."""
+
+    command = Decimal(str(command_m))
+    direction = tuple(float(value) for value in direction_world)
+    if command <= 0 or len(direction) != 3 or any(not math.isfinite(value) for value in direction):
+        raise G1ValidationError("G1_C1_MOTIF_DECIMAL_PROVENANCE", "local motif input is invalid")
+    norm = math.sqrt(sum(value * value for value in direction))
+    if norm <= 0.0:
+        raise G1ValidationError("G1_C1_MOTIF_DECIMAL_PROVENANCE", "local motif direction is zero")
+    unit = tuple(value / norm for value in direction)
+    multipliers = [1] * 16 + [-1] * 32 + [1] * 16
+    command_text = _canonical_decimal(command)
+    actions = [
+        {
+            "motif_action_index": index,
+            "signed_multiplier": multiplier,
+            "exact_requested_norm_m": command_text,
+            "requested_norm_m": float(command),
+            "requested_vector_m": [
+                float(command) * multiplier * component for component in unit
+            ],
+            "reversal_before_action": index in {16, 48},
+        }
+        for index, multiplier in enumerate(multipliers)
+    ]
+    digest_inputs = {
+        "command_m": command_text,
+        "direction_world": list(unit),
+        "signed_multipliers": multipliers,
+    }
+    return {
+        "actions": 64,
+        "schedule": actions,
+        "signed_multipliers": multipliers,
+        "reversal_before_actions": [16, 48],
+        "requested_pose_radius_m": _canonical_decimal(command * Decimal(16)),
+        "reset_actions": [],
+        "settle_actions": [],
+        "motif_digest": _motif_digest(digest_inputs),
+        "digest_inputs": digest_inputs,
+    }
+
+
+def build_g1_phase_reflected_motif(
+    *,
+    segment_length_m: str | float,
+    command_m: str | float,
+    actions: int,
+) -> dict[str, Any]:
+    """Build the exact Decimal endpoint/reflection schedule before float64 materialization."""
+
+    length = Decimal(str(segment_length_m))
+    command = Decimal(str(command_m))
+    if length <= 0 or command <= 0 or type(actions) is not int or actions != 256:
+        raise G1ValidationError(
+            "G1_C1_MOTIF_DECIMAL_PROVENANCE",
+            "phase motif requires positive geometry/command and exactly 256 actions",
+        )
+    length_text = _canonical_decimal(length)
+    command_text = _canonical_decimal(command)
+    remainder = length % command
+    remainder_text = _canonical_decimal(remainder)
+    position = Decimal(0)
+    sign = 1
+    segment_index = 0
+    schedule: list[dict[str, Any]] = []
+    endpoint_actions: list[int] = []
+    reversal_before_actions: list[int] = []
+    digest_schedule: list[dict[str, Any]] = []
+    for action_index in range(actions):
+        remaining = length - position if sign > 0 else position
+        reversal_before = False
+        if remaining == 0:
+            sign *= -1
+            segment_index += 1
+            reversal_before = True
+            reversal_before_actions.append(action_index)
+            remaining = length - position if sign > 0 else position
+        requested = min(command, remaining)
+        if requested <= 0:
+            raise G1ValidationError(
+                "G1_C1_MOTIF_DECIMAL_PROVENANCE",
+                "phase motif would emit a zero-length non-zero action",
+            )
+        position += Decimal(sign) * requested
+        endpoint_after = position == 0 or position == length
+        if endpoint_after:
+            endpoint_actions.append(action_index)
+        requested_text = _canonical_decimal(requested)
+        scalar_text = _canonical_decimal(Decimal(sign) * requested)
+        digest_item = {
+            "action_index": action_index,
+            "segment_index": segment_index,
+            "sign": sign,
+            "exact_requested_norm_m": requested_text,
+            "scalar_action": scalar_text,
+            "endpoint_after_action": endpoint_after,
+            "reversal_before_action": reversal_before,
+        }
+        digest_schedule.append(digest_item)
+        schedule.append(
+            {
+                **digest_item,
+                "requested_norm_m": float(requested),
+            }
+        )
+    digest_inputs = {
+        "segment_length_m": length_text,
+        "command_m": command_text,
+        "remainder_m": remainder_text,
+        "schedule": digest_schedule,
+    }
+    return {
+        "actions": actions,
+        "segment_length_m": length_text,
+        "command_m": command_text,
+        "remainder_m": remainder_text,
+        "schedule": schedule,
+        "endpoint_actions": endpoint_actions,
+        "reversal_before_actions": reversal_before_actions,
+        "motif_digest": _motif_digest(digest_inputs),
+        "digest_inputs": digest_inputs,
+        "schedule_arithmetic": "decimal",
+        "float64_materialization_only": True,
+        "reset_actions": [],
+        "settle_actions": [],
+    }
+
+
+def validate_g1_trajectory_routes(
+    *,
+    class_definitions: Sequence[Mapping[str, Any]],
+    workspace_valid: bool,
+    contact_exclusion_valid: bool,
+) -> dict[str, Any]:
+    """Require every declared class and the full no-contact routes."""
+
+    class_ids = tuple(str(item.get("class_id", "")) for item in class_definitions)
+    if (
+        class_ids != G1_TRAJECTORY_CLASS_IDS
+        or workspace_valid is not True
+        or contact_exclusion_valid is not True
+    ):
+        raise G1ValidationError(
+            "G1_C1_POSE_UNQUALIFIED",
+            "C2a pose does not support every full C1 route in workspace/contact exclusion",
+        )
+    return {"valid": True, "class_ids": list(class_ids)}
+
+
+def build_g1_multiclass_tracking_plan(*, seed: int) -> dict[str, Any]:
+    """Build the fixed 6-class x 5-command x 3-scene acquisition plan."""
+
+    commands = (0.0, 0.00025, 0.00035, 0.00040, 0.00045)
+    trials = [
+        {
+            "class_id": class_id,
+            "class_version": "v1",
+            "command_m": command,
+            "scene_index": scene_index,
+            "scene_id": f"{class_id}-{command:.8f}-{scene_index}",
+            "fresh_scene_token": f"g1-{seed}-{class_id}-{command:.8f}-{scene_index}",
+            "seed": int(seed),
+            "readiness_actions": 64,
+            "measurement_actions": 256,
+            "physics_substeps": 3,
+        }
+        for command in commands
+        for class_id in G1_TRAJECTORY_CLASS_IDS
+        for scene_index in range(3)
+    ]
+    return {
+        "seed": int(seed),
+        "class_ids": list(G1_TRAJECTORY_CLASS_IDS),
+        "class_definitions": g1_trajectory_class_definitions(),
+        "commands_m": list(commands),
+        "readiness_actions": 64,
+        "measurement_actions": 256,
+        "window_sizes": [64, 64, 64, 64],
+        "scenes_per_class_command": 3,
+        "measurement_reset_actions": [],
+        "measurement_settle_actions": [],
+        "trials": trials,
+    }
+
+
 __all__ = [
     "ACTIONS_PER_TRIAL",
     "G1TrackingSample",
@@ -869,10 +1105,16 @@ __all__ = [
     "PUBLIC_ACTION_HZ",
     "WINDOW_COUNT",
     "WINDOW_SIZE",
+    "G1_TRAJECTORY_CLASS_IDS",
     "aggregate_g1_tracking_envelope",
+    "build_g1_local_round_trip_motif",
+    "build_g1_multiclass_tracking_plan",
+    "build_g1_phase_reflected_motif",
     "classify_g1_late_window_growth",
+    "g1_trajectory_class_definitions",
     "select_g1_tested_command_cap",
     "validate_g1_command_cap",
     "validate_g1_tracking_trials",
     "validate_formal_g1_tracking_trials",
+    "validate_g1_trajectory_routes",
 ]
