@@ -631,6 +631,90 @@ def update_accepted_target_after_send(
     return attempted_target.copy() if send_result is True else previous_target.copy()
 
 
+def invoke_g1_qualifying_kernel(
+    *,
+    runtime: Any,
+    kernel_input: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Invoke the one qualifying runtime method without rewriting its inputs."""
+
+    action = kernel_input.get("requested_action_7d")
+    if not isinstance(action, Sequence) or isinstance(action, (str, bytes)) or len(action) != 7:
+        raise G1ValidationError(
+            "G1_NONZERO_GOVERNOR_INPUT_INVALID",
+            "qualifying kernel requires the exact public 7D action schema",
+        )
+    method = getattr(runtime, "compute_governed_translation_target", None)
+    if not callable(method):
+        raise G1ValidationError(
+            "G1_C1_CONTROLLER_UNQUALIFIED",
+            "runtime does not expose the shared qualifying non-zero method",
+        )
+    return dict(method(**dict(kernel_input)))
+
+
+def execute_g1_qualifying_kernel_send(
+    *,
+    kernel_result: Mapping[str, Any],
+    send_target: Any,
+    accept_target: Any,
+    physical_context: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Apply one governed target and update the accepted latch only on success."""
+
+    result = {**dict(physical_context or {}), **dict(kernel_result)}
+    if kernel_result.get("send_allowed") is not True:
+        result.update(
+            runtime_state="ABORTED",
+            send_attempted=False,
+            send_result=None,
+            executed_joint_target=None,
+            post_abort_actuation_count=int(
+                (physical_context or {}).get("post_abort_actuation_count", 0)
+            ),
+        )
+        return result
+    target = list(kernel_result.get("governed_target", ()))
+    if not target:
+        result.update(
+            runtime_state="ABORTED",
+            governor_state="ABORTED",
+            governor_code="G1_NONZERO_GOVERNOR_INPUT_INVALID",
+            send_attempted=False,
+            send_result=None,
+            executed_joint_target=None,
+        )
+        return result
+    try:
+        sent = send_target(target)
+        send_succeeded = sent is not False
+    except Exception as error:
+        send_succeeded = False
+        result["send_error"] = f"{type(error).__name__}: {error}"
+    result.update(
+        send_attempted=True,
+        send_result=send_succeeded,
+        executed_joint_target=target if send_succeeded else None,
+    )
+    if not send_succeeded:
+        result.update(
+            runtime_state="ABORTED",
+            governor_state="ABORTED",
+            governor_code="G1_NONZERO_SEND_FAILED",
+        )
+        return result
+    try:
+        accept_target(target)
+    except Exception as error:
+        result.update(
+            runtime_state="ABORTED",
+            governor_state="ABORTED",
+            governor_code="G1_C1_TARGET_PROVENANCE",
+            accept_error=f"{type(error).__name__}: {error}",
+        )
+    return result
+
+
 class G1NonzeroGovernor:
     """Scene-local abort latch around the pure governor decision."""
 
@@ -659,6 +743,8 @@ __all__ = [
     "G1_NONZERO_GOVERNOR_STATES",
     "G1NonzeroGovernor",
     "evaluate_g1_nonzero_governor",
+    "execute_g1_qualifying_kernel_send",
+    "invoke_g1_qualifying_kernel",
     "update_accepted_target_after_send",
     "validate_formal_c1_nonzero_record",
 ]

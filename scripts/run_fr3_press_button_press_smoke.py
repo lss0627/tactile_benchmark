@@ -41,6 +41,10 @@ from isaac_tactile_libero.evidence.manifest import (  # noqa: E402
     validate_evidence_manifest,
 )
 from isaac_tactile_libero.evidence.run_context import RunContext  # noqa: E402
+from isaac_tactile_libero.runtime.g1_nonzero_kernel import (  # noqa: E402
+    execute_g1_qualifying_kernel_send as _execute_g1_qualifying_kernel_send,
+    invoke_g1_qualifying_kernel as _invoke_g1_qualifying_kernel,
+)
 from isaac_tactile_libero.robots.fr3_articulation_spec import load_fr3_articulation_config  # noqa: E402
 from isaac_tactile_libero.robots.fr3_differential_ik import (  # noqa: E402
     DifferentialIKConfig,
@@ -609,6 +613,9 @@ def _g1_execute_episode(
     release_observation_index: int | None = None
     reset_tcp = np.asarray(runtime.read_current_ee_transform().position, dtype=float)
     previous_tcp = reset_tcp.copy()
+    previous_accepted_target = np.asarray(
+        runtime.read_joint_state().joint_positions, dtype=float
+    )
     stage = runtime.ik_runtime.ee_controller.controller.stage
     from pxr import Usd, UsdGeom  # type: ignore
 
@@ -751,7 +758,7 @@ def _g1_execute_episode(
         return button, outcome, contact
 
     def send_toward(phase: str, target: np.ndarray, stop: Any) -> bool:
-        nonlocal previous_tcp
+        nonlocal previous_tcp, previous_accepted_target
         limit = state_limits[phase]
         cfg = DifferentialIKConfig(max_abs_dq=0.02)
         for state_step in range(limit):
@@ -809,39 +816,103 @@ def _g1_execute_episode(
                 )
                 return False
             action = [float(delta[0]), float(delta[1]), float(delta[2]), 0.0, 0.0, 0.0, 0.0]
-            diffik, _q, _jacobian = runtime.compute_action_delta(
-                action_name=f"g1_{episode_index}_{phase}_{state_step}",
-                action=action,
-                joint_state=joint,
-                config=cfg,
-            )
+            try:
+                kernel_record = _invoke_g1_qualifying_kernel(
+                    runtime=runtime,
+                    kernel_input={
+                        "requested_action_7d": action,
+                        "current_observed_q": list(joint.joint_positions),
+                        "current_observed_qd": list(joint.joint_velocities),
+                        "previous_accepted_target": previous_accepted_target.tolist(),
+                        "articulation_joint_names": list(joint.joint_names),
+                        "safety_limits": safety.limits,
+                        "already_aborted": not machine.can_actuate,
+                        "action_name": f"g1_{episode_index}_{phase}_{state_step}",
+                        "config": cfg,
+                        "class_id": f"PHYSICAL_{phase}",
+                        "starting_pose_sha256": None,
+                    },
+                )
+            except Exception as error:
+                requested_actions.append(
+                    {
+                        "episode_id": episode_id,
+                        "step": step_index + 1,
+                        "runtime_state": phase,
+                        "action": action,
+                        "requested_action_7d": action,
+                        "qualifying_kernel_error": {
+                            "code": str(
+                                getattr(
+                                    error,
+                                    "code",
+                                    "G1_NONZERO_GOVERNOR_INPUT_INVALID",
+                                )
+                            ),
+                            "message": str(error),
+                        },
+                        "physics_substeps": physics_substeps,
+                    }
+                )
+                _abort_machine(
+                    machine,
+                    code=str(
+                        getattr(error, "code", "G1_NONZERO_GOVERNOR_INPUT_INVALID")
+                    ),
+                    detail=str(error),
+                    events=events,
+                )
+                return False
             requested_actions.append(
                 {
                     "episode_id": episode_id,
                     "step": step_index + 1,
                     "runtime_state": phase,
                     "action": action,
+                    "requested_action_7d": kernel_record.get("requested_action_7d"),
+                    "governed_target": kernel_record.get("governed_target"),
+                    "qualifying_kernel": kernel_record,
                     "physics_substeps": physics_substeps,
                 }
             )
-            if not diffik.dq_safety_pass:
+            send_record = _execute_g1_qualifying_kernel_send(
+                kernel_result=kernel_record,
+                send_target=runtime.send_joint_position_targets,
+                accept_target=lambda accepted: None,
+                physical_context={
+                    "runtime_state": phase,
+                    "step_budget_remaining": max(
+                        0, budget.step_limit - budget.steps_executed
+                    ),
+                    "wall_time_budget_remaining_s": max(
+                        0.0,
+                        budget.wall_time_limit_s - budget_decision.elapsed_s,
+                    ),
+                    "contact": False,
+                    "raw_contact_count": 0,
+                    "penetration_provenance_valid": True,
+                    "force_vector_valid": False,
+                    "wrench_valid": False,
+                    "raw_impulse_used_as_force": False,
+                    "post_abort_actuation_count": 0,
+                },
+            )
+            if send_record.get("send_result") is not True:
                 _abort_machine(
                     machine,
-                    code="CONTROLLER_DQ_SAFETY_FAILED",
-                    detail="; ".join(diffik.errors) or "differential IK rejected target",
+                    code=str(
+                        send_record.get("governor_code")
+                        or "CONTROLLER_ACTUATION_FAILED"
+                    ),
+                    detail=str(
+                        send_record.get("governor_message")
+                        or "shared qualifying kernel blocked or failed the target"
+                    ),
                     events=events,
                 )
                 return False
-            target_joints = runtime.expand_solver_delta_to_articulation(joint, diffik.clipped_dq)
-            sent = runtime.send_joint_position_targets(target_joints)
-            if not sent:
-                _abort_machine(
-                    machine,
-                    code="CONTROLLER_ACTUATION_FAILED",
-                    detail="set_dof_position_targets returned false",
-                    events=events,
-                )
-                return False
+            target_joints = np.asarray(send_record["executed_joint_target"], dtype=float)
+            previous_accepted_target = target_joints.copy()
             budget.finish_step()
             button, outcome, _contact = observe_and_record(
                 phase,
@@ -856,6 +927,9 @@ def _g1_execute_episode(
                     "step": step_index,
                     "runtime_state": phase,
                     "requested_action": action,
+                    "requested_action_7d": send_record.get("requested_action_7d"),
+                    "governed_target": send_record.get("governed_target"),
+                    "executed_joint_target": send_record.get("executed_joint_target"),
                     "joint_position_targets": [float(item) for item in target_joints],
                     "button_travel_m": button.travel_m,
                     "task_success": outcome.success,
@@ -942,6 +1016,9 @@ def _g1_execute_episode(
                     events=events,
                 )
                 break
+            previous_accepted_target = np.asarray(
+                joint.joint_positions, dtype=float
+            ).copy()
             budget.finish_step()
             button, outcome, _contact = observe_and_record(
                 "HOLD",

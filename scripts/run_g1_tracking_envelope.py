@@ -27,6 +27,10 @@ if str(ROOT) not in sys.path:
 
 from isaac_tactile_libero.evidence.manifest import digest_reference, sha256_file  # noqa: E402
 from isaac_tactile_libero.runtime.fr3_target_latch import FR3PositionTargetLatch  # noqa: E402
+from isaac_tactile_libero.runtime.g1_nonzero_kernel import (  # noqa: E402
+    execute_g1_qualifying_kernel_send as _execute_g1_qualifying_kernel_send,
+    invoke_g1_qualifying_kernel as _invoke_g1_qualifying_kernel,
+)
 from isaac_tactile_libero.robots.fr3_articulation_spec import (  # noqa: E402
     load_fr3_articulation_config,
 )
@@ -887,6 +891,7 @@ class _IsaacTrackingScene:
             observed_joint_positions=joint_before.joint_positions,
             scene_token=self._scene_token,
         )
+        kernel_record: dict[str, Any] | None = None
         if not pre_decision.allow_actuation:
             safety_events.extend(violation.as_dict() for violation in pre_decision.violations)
             self._aborted = True
@@ -894,25 +899,74 @@ class _IsaacTrackingScene:
         else:
             if phase == "measurement" and float(np.linalg.norm(requested)) > 0.0:
                 action = [*requested.tolist(), 0.0, 0.0, 0.0, 0.0]
-                result, _q, _jacobian = runtime.compute_action_delta(
-                    action_name=f"c1_{self.spec['trial_id']}_{action_index}",
-                    action=action,
-                    joint_state=joint_before,
-                    config=DifferentialIKConfig(max_abs_dq=0.02),
-                )
                 try:
-                    validate_differential_ik_result(result)
-                except ValueError as error:
+                    kernel_record = _invoke_g1_qualifying_kernel(
+                        runtime=runtime,
+                        kernel_input={
+                            "requested_action_7d": action,
+                            "current_observed_q": list(joint_before.joint_positions),
+                            "current_observed_qd": list(joint_before.joint_velocities),
+                            "previous_accepted_target": targets.tolist(),
+                            "articulation_joint_names": list(joint_before.joint_names),
+                            "safety_limits": self.safety.limits,
+                            "already_aborted": self._aborted,
+                            "action_name": f"c1_{self.spec['trial_id']}_{action_index}",
+                            "config": DifferentialIKConfig(max_abs_dq=0.02),
+                            "class_id": self.spec.get("class_id"),
+                            "starting_pose_sha256": self.spec.get("starting_pose_sha256"),
+                        },
+                    )
+                except Exception as error:
                     safety_events.append(
-                        {"code": "CONTROLLER_FAILURE", "message": str(error)}
+                        {
+                            "code": str(getattr(error, "code", "CONTROLLER_FAILURE")),
+                            "message": str(error),
+                        }
                     )
                     self._aborted = True
-                    self.target_latch.abort("differential IK failure")
+                    self.target_latch.abort("qualifying non-zero kernel failure")
                 else:
-                    targets = runtime.expand_solver_delta_to_articulation(
-                        joint_before, result.clipped_dq
+                    send_record = _execute_g1_qualifying_kernel_send(
+                        kernel_result=kernel_record,
+                        send_target=runtime.send_joint_position_targets,
+                        accept_target=lambda target: self.target_latch.accept_target(
+                            target,
+                            send_succeeded=True,
+                            dof_names=joint_before.joint_names,
+                            scene_token=self._scene_token,
+                            source="accepted_nonzero_action",
+                            prim_path=runtime.articulation_root_path,
+                            articulation_object_id=id(
+                                runtime.ik_runtime.ee_controller.controller.articulation
+                            ),
+                        ),
                     )
-            if not self._aborted:
+                    kernel_record = send_record
+                    if (
+                        send_record.get("send_result") is not True
+                        or send_record.get("runtime_state") == "ABORTED"
+                    ):
+                        safety_events.append(
+                            {
+                                "code": str(
+                                    send_record.get("governor_code")
+                                    or "CONTROLLER_FAILURE"
+                                ),
+                                "message": str(
+                                    send_record.get("governor_message")
+                                    or "qualifying kernel blocked or failed send"
+                                ),
+                            }
+                        )
+                        self._aborted = True
+                        self.target_latch.abort("qualifying non-zero kernel blocked send")
+                    else:
+                        targets = np.asarray(
+                            send_record["executed_joint_target"], dtype=float
+                        )
+            if not self._aborted and not (
+                phase == "measurement" and float(np.linalg.norm(requested)) > 0.0
+            ):
                 sent = runtime.send_joint_position_targets(targets)
                 if not sent:
                     safety_events.append(
@@ -920,18 +974,6 @@ class _IsaacTrackingScene:
                     )
                     self._aborted = True
                     self.target_latch.abort("joint target API returned false")
-                elif phase == "measurement" and float(np.linalg.norm(requested)) > 0.0:
-                    self.target_latch.accept_target(
-                        targets,
-                        send_succeeded=True,
-                        dof_names=joint_before.joint_names,
-                        scene_token=self._scene_token,
-                        source="accepted_nonzero_action",
-                        prim_path=runtime.articulation_root_path,
-                        articulation_object_id=id(
-                            runtime.ik_runtime.ee_controller.controller.articulation
-                        ),
-                    )
 
         if not self._aborted:
             runtime.update(int(physics_substeps))
@@ -987,6 +1029,16 @@ class _IsaacTrackingScene:
             "raw_impulse_used_as_force": False,
             "target_latch_provenance": self.target_latch.provenance,
             "button_travel_m": float(button.travel_m),
+            "qualifying_kernel": _jsonable(kernel_record),
+            "requested_action_7d": (
+                kernel_record.get("requested_action_7d") if kernel_record else None
+            ),
+            "governed_target": (
+                kernel_record.get("governed_target") if kernel_record else None
+            ),
+            "executed_joint_target": (
+                kernel_record.get("executed_joint_target") if kernel_record else targets.tolist()
+            ),
         }
 
     def close(self) -> None:

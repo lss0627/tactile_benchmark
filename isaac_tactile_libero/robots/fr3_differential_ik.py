@@ -419,6 +419,10 @@ class FR3DifferentialIKRuntime:
         current_observed_qd: Sequence[float],
         previous_accepted_target: Sequence[float],
         articulation_joint_names: Sequence[str],
+        safety_limits: Any,
+        already_aborted: bool = False,
+        send_result: bool | None = None,
+        governor: Any | None = None,
         action_name: str = "g1_qualifying_nonzero",
         config: DifferentialIKConfig | None = None,
         **context: Any,
@@ -427,6 +431,7 @@ class FR3DifferentialIKRuntime:
 
         from isaac_tactile_libero.runtime.g1_nonzero_kernel import (
             compute_observed_q_target,
+            evaluate_g1_nonzero_governor,
             jacobian_provenance,
         )
 
@@ -464,7 +469,7 @@ class FR3DifferentialIKRuntime:
             raw_dq=result.raw_dq,
             clipped_dq=result.clipped_dq,
         )
-        return {
+        base_result = {
             **context,
             "requested_action_7d": action.copy(),
             "requested_vector_m": action[:3].copy(),
@@ -477,6 +482,47 @@ class FR3DifferentialIKRuntime:
             "damping": float(cfg.damping),
             "finite_difference_epsilon": float(cfg.finite_difference_epsilon),
         }
+        governor_payload = {
+            "requested_action_7d": action.tolist(),
+            "requested_vector_m": action[:3].tolist(),
+            "current_q": observed_q.tolist(),
+            "current_qd": observed_qd.tolist(),
+            "articulation_joint_names": list(names),
+            "solver_joint_names": list(self.solver_joint_names),
+            "previous_accepted_target": list(previous_accepted_target),
+            "pre_send_target": target["pre_send_target"].tolist(),
+            "raw_dq": list(result.raw_dq),
+            "clipped_dq": list(result.clipped_dq),
+            "joint_lower": list(safety_limits.joint_position_lower),
+            "joint_upper": list(safety_limits.joint_position_upper),
+            "joint_velocity_limits": list(safety_limits.joint_velocity_abs),
+            "max_step_motion_m": float(safety_limits.max_step_motion_m),
+            "max_abs_dq": float(cfg.max_abs_dq),
+            "already_aborted": bool(already_aborted),
+            "send_attempted_after_abort": False,
+            "send_result": send_result,
+            "finite": bool(
+                np.all(np.isfinite(action))
+                and np.all(np.isfinite(observed_q))
+                and np.all(np.isfinite(observed_qd))
+                and np.all(np.isfinite(jacobian))
+                and np.isfinite(diagnostics["condition_number"])
+                and np.isfinite(diagnostics["manipulability"])
+            ),
+        }
+        evaluator = getattr(governor, "evaluate", None)
+        decision = (
+            evaluator(governor_payload)
+            if callable(evaluator)
+            else evaluate_g1_nonzero_governor(governor_payload)
+        )
+        return _jsonable({
+            **base_result,
+            **decision,
+            "governor_state": decision["state"],
+            "governor_code": decision["code"],
+            "governor_message": decision["message"],
+        })
 
     def send_joint_position_targets(self, targets: Sequence[float]) -> bool:
         return bool(getattr(self.ik_runtime, "_send_joint_position_targets")(np.asarray(targets, dtype=np.float32)))
