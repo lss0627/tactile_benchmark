@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import math
 from pathlib import Path
@@ -521,3 +522,151 @@ def test_g1_runner_uses_benchmark_action_cadence() -> None:
     assert config["runtime"]["control_frequency_hz"] == 20.0
     assert config["runtime"]["physics_dt_s"] == 1.0 / 60.0
     assert runner._g1_physics_substeps_per_action(config) == 3
+
+
+def _tracking_runner_for_shared_kernel():
+    path = Path("scripts/run_g1_tracking_envelope.py").resolve()
+    spec = importlib.util.spec_from_file_location("g1_tracking_shared_kernel_test", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+class _KernelCallSpy:
+    def __init__(self, *, send_allowed: bool = True) -> None:
+        self.calls = []
+        self.send_allowed = send_allowed
+
+    def compute_governed_translation_target(self, **kwargs):
+        self.calls.append(dict(kwargs))
+        return {
+            "send_allowed": self.send_allowed,
+            "requested_action_7d": list(kwargs["requested_action_7d"]),
+            "requested_vector_m": list(kwargs["requested_action_7d"][:3]),
+            "governed_target": [0.001] * 7 + [0.02, 0.02],
+            "controller_qualification": "lula_fd_translation",
+            "benchmark_cap_eligible": True,
+            "jacobian_provider": "lula_fd_translation",
+        }
+
+
+def test_c1_and_physical_paths_call_same_shared_kernel_with_identical_inputs() -> None:
+    tracking_runner = _tracking_runner_for_shared_kernel()
+    tracking_invoke = getattr(tracking_runner, "_invoke_g1_qualifying_kernel", None)
+    physical_invoke = getattr(runner, "_invoke_g1_qualifying_kernel", None)
+    assert callable(tracking_invoke), (
+        "T147 tracking runner missing shared qualifying-kernel invocation seam"
+    )
+    assert callable(physical_invoke), (
+        "T147 physical runner missing shared qualifying-kernel invocation seam"
+    )
+    kernel_input = {
+        "requested_action_7d": [0.0, 0.0, -0.00025, 0.0, 0.0, 0.0, 0.0],
+        "current_observed_q": [0.0] * 9,
+        "current_observed_qd": [0.0] * 9,
+        "previous_accepted_target": [0.4] * 9,
+        "class_id": "C1_LOCAL_PRESS_AXIS_RT_V1",
+        "starting_pose_sha256": "a" * 64,
+    }
+    tracking_spy = _KernelCallSpy()
+    physical_spy = _KernelCallSpy()
+
+    tracking_invoke(runtime=tracking_spy, kernel_input=kernel_input)
+    physical_invoke(runtime=physical_spy, kernel_input=kernel_input)
+
+    assert tracking_spy.calls == physical_spy.calls == [kernel_input]
+
+
+def test_physical_shared_kernel_retains_requested_governed_and_executed_distinction() -> None:
+    execute = getattr(runner, "_execute_g1_qualifying_kernel_send", None)
+    assert callable(execute), (
+        "T147 physical runner missing governed target send boundary"
+    )
+    requested = [0.0, 0.0, -0.00025, 0.0, 0.0, 0.0, 0.0]
+    governed_target = [0.001] * 7 + [0.02, 0.02]
+
+    result = execute(
+        kernel_result={
+            "send_allowed": True,
+            "requested_action_7d": requested,
+            "requested_vector_m": requested[:3],
+            "governed_target": governed_target,
+        },
+        send_target=lambda _target: True,
+        accept_target=lambda _target: None,
+    )
+
+    assert result["requested_action_7d"] == requested
+    assert result["governed_target"] == governed_target
+    assert result["executed_joint_target"] == governed_target
+    assert result["send_result"] is True
+
+
+def test_physical_shared_kernel_abort_preserves_state_budget_contact_and_truth() -> None:
+    execute = getattr(runner, "_execute_g1_qualifying_kernel_send", None)
+    assert callable(execute), (
+        "T147 physical runner missing fail-closed shared-kernel integration"
+    )
+    sends = []
+    context = {
+        "runtime_state": "APPROACH",
+        "step_budget_remaining": 100,
+        "wall_time_budget_remaining_s": 10.0,
+        "contact": False,
+        "raw_contact_count": 0,
+        "penetration_provenance_valid": True,
+        "force_vector_valid": False,
+        "wrench_valid": False,
+        "raw_impulse_used_as_force": False,
+        "post_abort_actuation_count": 0,
+    }
+
+    result = execute(
+        kernel_result={
+            "send_allowed": False,
+            "governor_state": "ABORTED",
+            "governor_code": "G1_NONZERO_GOVERNOR_QD_LIMIT",
+        },
+        send_target=lambda target: sends.append(target),
+        accept_target=lambda _target: None,
+        physical_context=context,
+    )
+
+    assert sends == []
+    assert result["runtime_state"] == "ABORTED"
+    assert result["post_abort_actuation_count"] == 0
+    for field in (
+        "step_budget_remaining",
+        "wall_time_budget_remaining_s",
+        "contact",
+        "raw_contact_count",
+        "penetration_provenance_valid",
+        "force_vector_valid",
+        "wrench_valid",
+        "raw_impulse_used_as_force",
+    ):
+        assert result[field] == context[field]
+
+
+def test_physical_shared_kernel_keeps_public_action_schema_exactly_7d() -> None:
+    invoke = getattr(runner, "_invoke_g1_qualifying_kernel", None)
+    assert callable(invoke), (
+        "T147 physical runner missing 7D-preserving shared-kernel seam"
+    )
+    spy = _KernelCallSpy()
+    action = [0.0, 0.0, -0.00025, 0.0, 0.0, 0.0, 0.0]
+
+    result = invoke(
+        runtime=spy,
+        kernel_input={
+            "requested_action_7d": action,
+            "current_observed_q": [0.0] * 9,
+            "current_observed_qd": [0.0] * 9,
+            "previous_accepted_target": [0.0] * 9,
+        },
+    )
+
+    assert len(spy.calls[0]["requested_action_7d"]) == 7
+    assert result["requested_action_7d"] == action

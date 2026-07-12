@@ -164,3 +164,42 @@ def test_real_fr3_reset_reseeds_controller_and_close_clears_its_latch() -> None:
     assert controller.initialize_count == 2
     assert controller.closed is True
     assert env.lifecycle.closed is True
+
+
+def test_real_fr3_environment_forwards_compatibility_only_controller_metadata() -> None:
+    from isaac_tactile_libero.envs.isaacsim_fr3_press_button_env import IsaacSimFR3PressButtonEnv
+
+    class MetadataController(FakeController):
+        def apply_action(self, action):
+            return {
+                **super().apply_action(action),
+                "controller_qualification": "compatibility_smoke",
+                "benchmark_cap_eligible": False,
+                "jacobian_provider": "isaacsim_experimental_articulation",
+            }
+
+    def components(_env):
+        return MetadataController(), FakeContact(), FakeCamera()
+
+    env = IsaacSimFR3PressButtonEnv(
+        enable_runtime=True,
+        lifecycle_factory=FakeLifecycle,
+        component_builder=components,
+    ).build()
+    try:
+        env.reset(seed=4)
+        _obs, _reward, _terminated, _truncated, info = env.step(
+            np.zeros(7, dtype=np.float32)
+        )
+    finally:
+        env.close()
+
+    for field in (
+        "controller_qualification",
+        "benchmark_cap_eligible",
+        "jacobian_provider",
+    ):
+        assert field in info, f"T148 public environment did not forward metadata: {field}"
+    assert info["controller_qualification"] == "compatibility_smoke"
+    assert info["benchmark_cap_eligible"] is False
+    assert info["jacobian_provider"] == "isaacsim_experimental_articulation"

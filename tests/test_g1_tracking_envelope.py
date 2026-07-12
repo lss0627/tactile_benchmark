@@ -1458,3 +1458,442 @@ def test_c1_script_entrypoint_delegates_process_status_to_system_exit() -> None:
     source = RUNNER_PATH.read_text(encoding="utf-8")
 
     assert 'if __name__ == "__main__":\n    raise SystemExit(main())\n' in source
+
+
+TRAJECTORY_CLASS_IDS = (
+    "C1_LOCAL_APPROACH_AXIS_RT_V1",
+    "C1_LOCAL_PRESS_AXIS_RT_V1",
+    "C1_LOCAL_RETRACT_AXIS_RT_V1",
+    "C1_CONTINUOUS_APPROACH_LEG_V1",
+    "C1_CONTINUOUS_PRESS_RELEASE_LEG_V1",
+    "C1_CONTINUOUS_RETRACT_LEG_V1",
+)
+
+
+def test_formal_nonzero_schema_is_distinct_from_legacy_preliminary_zero_fixture() -> None:
+    legacy = [_trial(f"legacy-zero-{index}", 0.0, (1.0e-6,) * 4) for index in range(3)]
+    legacy_result = runtime_api.validate_g1_tracking_trials(legacy)
+    assert legacy_result["valid"] is True
+    formal_validate = _capability("validate_formal_g1_tracking_trials")
+
+    with pytest.raises(Exception) as caught:
+        formal_validate(legacy)
+
+    assert getattr(caught.value, "code", "") == "G1_C1_DIAGNOSTIC_MISSING"
+
+
+def test_compatibility_sample_cannot_enter_formal_nonzero_qualification() -> None:
+    formal_validate = _capability("validate_formal_g1_tracking_trials")
+    compatibility = _trial("compatibility-scene", 0.00025, (1.0,) * 4)
+    for sample in compatibility["samples"]:
+        sample.update(
+            controller_qualification="compatibility_smoke",
+            benchmark_cap_eligible=False,
+            jacobian_provider="isaacsim_experimental_articulation",
+        )
+
+    with pytest.raises(Exception) as caught:
+        formal_validate([compatibility])
+
+    assert getattr(caught.value, "code", "") == "G1_C1_CONTROLLER_UNQUALIFIED"
+
+
+def test_tracking_plan_declares_six_exact_trajectory_classes_in_order() -> None:
+    definitions = _capability("g1_trajectory_class_definitions")()
+
+    assert tuple(item["class_id"] for item in definitions) == TRAJECTORY_CLASS_IDS
+    assert all(item["class_version"] == "v1" for item in definitions)
+
+
+def test_local_round_trip_has_exact_plus16_minus32_plus16_schedule() -> None:
+    build = _capability("build_g1_local_round_trip_motif")
+
+    motif = build(command_m="0.00025", direction_world=[0.0, 0.0, -1.0])
+
+    assert motif["signed_multipliers"] == [1] * 16 + [-1] * 32 + [1] * 16
+    assert motif["reversal_before_actions"] == [16, 48]
+    assert motif["requested_pose_radius_m"] == "0.00400"
+    assert motif["actions"] == 64
+    assert motif["reset_actions"] == []
+    assert motif["settle_actions"] == []
+
+
+def test_exact_divisible_segment_produces_no_phantom_remainder() -> None:
+    build = _capability("build_g1_phase_reflected_motif")
+
+    motif = build(segment_length_m="0.04", command_m="0.00025", actions=256)
+
+    assert motif["remainder_m"] == "0"
+    assert all(item["exact_requested_norm_m"] == "0.00025" for item in motif["schedule"])
+    assert not any(item["exact_requested_norm_m"] == "0" for item in motif["schedule"])
+
+
+def test_non_divisible_segment_records_exact_positive_remainder() -> None:
+    build = _capability("build_g1_phase_reflected_motif")
+
+    motif = build(segment_length_m="0.04", command_m="0.0003", actions=256)
+
+    assert motif["remainder_m"] == "0.0001"
+    remainders = [
+        item for item in motif["schedule"] if item["exact_requested_norm_m"] == "0.0001"
+    ]
+    assert remainders
+    assert all(float(item["requested_norm_m"]) > 0.0 for item in motif["schedule"])
+
+
+def test_phase_motif_256_actions_and_reversals_are_deterministic() -> None:
+    build = _capability("build_g1_phase_reflected_motif")
+
+    first = build(segment_length_m="0.04", command_m="0.0003", actions=256)
+    second = build(segment_length_m="0.04", command_m="0.0003", actions=256)
+
+    assert len(first["schedule"]) == 256
+    assert first["schedule"] == second["schedule"]
+    assert first["endpoint_actions"] == second["endpoint_actions"]
+    assert first["reversal_before_actions"] == second["reversal_before_actions"]
+    assert all(item["exact_requested_norm_m"] != "0" for item in first["schedule"])
+
+
+def test_motif_digest_changes_with_canonical_scalar_schedule() -> None:
+    build = _capability("build_g1_phase_reflected_motif")
+
+    base = build(segment_length_m="0.04", command_m="0.00025", actions=256)
+    changed_length = build(segment_length_m="0.0401", command_m="0.00025", actions=256)
+    changed_command = build(segment_length_m="0.04", command_m="0.0003", actions=256)
+
+    assert len({base["motif_digest"], changed_length["motif_digest"], changed_command["motif_digest"]}) == 3
+    assert base["digest_inputs"]["segment_length_m"] == "0.04"
+    assert base["digest_inputs"]["command_m"] == "0.00025"
+    assert "schedule" in base["digest_inputs"]
+
+
+def test_phase_motif_uses_exact_schedule_until_float64_materialization() -> None:
+    build = _capability("build_g1_phase_reflected_motif")
+
+    motif = build(segment_length_m="0.04", command_m="0.0003", actions=256)
+
+    assert motif["schedule_arithmetic"] in {"decimal", "exact_integer_distance"}
+    assert motif["float64_materialization_only"] is True
+    assert all(
+        item["requested_norm_m"] == float(item["exact_requested_norm_m"])
+        for item in motif["schedule"]
+    )
+
+
+def test_trajectory_route_exclusion_or_workspace_failure_rejects_pose() -> None:
+    validate = _capability("validate_g1_trajectory_routes")
+
+    with pytest.raises(Exception) as caught:
+        validate(
+            class_definitions=_capability("g1_trajectory_class_definitions")(),
+            workspace_valid=False,
+            contact_exclusion_valid=True,
+        )
+
+    assert getattr(caught.value, "code", "") == "G1_C1_POSE_UNQUALIFIED"
+
+
+def test_each_class_requires_64_readiness_256_measurement_three_scenes_and_no_window_reset() -> None:
+    build = _capability("build_g1_multiclass_tracking_plan")
+
+    plan = build(seed=20260712)
+
+    assert plan["class_ids"] == list(TRAJECTORY_CLASS_IDS)
+    assert plan["readiness_actions"] == 64
+    assert plan["measurement_actions"] == 256
+    assert plan["window_sizes"] == [64, 64, 64, 64]
+    assert plan["scenes_per_class_command"] == 3
+    assert plan["measurement_reset_actions"] == []
+    assert plan["measurement_settle_actions"] == []
+
+
+def _multiclass_summary_fixture() -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for class_index, class_id in enumerate(TRAJECTORY_CLASS_IDS):
+        for scene_index in range(3):
+            rows.append(
+                {
+                    "class_id": class_id,
+                    "scene_id": f"zero-{class_index}-{scene_index}",
+                    "command_m": 0.0,
+                    "complete": True,
+                    "zero_displacements_m": [
+                        (class_index + 1) * 1.0e-7 + scene_index * 1.0e-8
+                    ] * 256,
+                    "window_maxima": [0.0, 0.0, 0.0, 0.0],
+                    "retained_gains": [],
+                    "governor_activated": False,
+                }
+            )
+            rows.append(
+                {
+                    "class_id": class_id,
+                    "scene_id": f"low-{class_index}-{scene_index}",
+                    "command_m": 0.00025,
+                    "complete": True,
+                    "zero_displacements_m": [],
+                    "window_maxima": [0.6, 0.7, 0.8, 0.75],
+                    "retained_gains": [0.6, 0.7, 0.8, 0.75],
+                    "governor_activated": False,
+                }
+            )
+    return rows
+
+
+def test_multiclass_aggregation_uses_global_data_and_class_local_scene_terms() -> None:
+    aggregate = _capability("aggregate_g1_multiclass_tracking_envelope")
+
+    result = aggregate(
+        _multiclass_summary_fixture(),
+        observed_hard_limit_m=0.0005,
+        tested_commands_m=TESTED_COMMANDS_M,
+        required_class_ids=TRAJECTORY_CLASS_IDS,
+    )
+
+    assert result["N_data"] == 6.2e-7
+    assert result["N_scene"] == 2.0e-8
+    assert result["N_upper"] == result["N_data"] + result["N_scene"]
+    assert result["G_data"] == 0.8
+    assert result["G_scene"] == 0.0
+    assert result["G_time"] == 0.1
+    assert result["G_command"] == 0.0
+    assert result["G_upper"] == max(
+        1.0,
+        result["G_data"] + result["G_scene"] + result["G_time"] + result["G_command"],
+    )
+    assert result["C_raw"] == (0.0005 - result["N_upper"]) / result["G_upper"]
+
+
+def test_one_class_strict_late_growth_rejects_whole_candidate() -> None:
+    aggregate = _capability("aggregate_g1_multiclass_tracking_envelope")
+    rows = _multiclass_summary_fixture()
+    late = next(row for row in rows if row["command_m"] == 0.00025)
+    late["window_maxima"] = [0.6, 0.7, 0.8, 0.9]
+
+    result = aggregate(
+        rows,
+        observed_hard_limit_m=0.0005,
+        tested_commands_m=TESTED_COMMANDS_M,
+        required_class_ids=TRAJECTORY_CLASS_IDS,
+    )
+
+    assert result["candidate_decisions"]["0.00025000"]["eligible"] is False
+    assert result["candidate_decisions"]["0.00025000"]["code"] == "G1_C1_CANDIDATE_LATE_WINDOW_GROWTH"
+
+
+def test_governor_intervention_makes_multiclass_candidate_ineligible() -> None:
+    aggregate = _capability("aggregate_g1_multiclass_tracking_envelope")
+    rows = _multiclass_summary_fixture()
+    row = next(item for item in rows if item["command_m"] == 0.00025)
+    row["governor_activated"] = True
+
+    result = aggregate(
+        rows,
+        observed_hard_limit_m=0.0005,
+        tested_commands_m=TESTED_COMMANDS_M,
+        required_class_ids=TRAJECTORY_CLASS_IDS,
+    )
+
+    assert result["candidate_decisions"]["0.00025000"]["eligible"] is False
+    assert result["candidate_decisions"]["0.00025000"]["code"] == "G1_C1_GOVERNOR_INTERVENTION"
+
+
+def test_rejected_candidate_retained_gains_enter_global_terms_but_incomplete_group_not_g_scene() -> None:
+    aggregate = _capability("aggregate_g1_multiclass_tracking_envelope")
+    rows = _multiclass_summary_fixture()
+    rows.append(
+        {
+            "class_id": TRAJECTORY_CLASS_IDS[0],
+            "scene_id": "rejected-high-0",
+            "command_m": 0.00035,
+            "complete": False,
+            "retained_gains": [1.0, 1.2, 1.4],
+            "window_maxima": [1.0, 1.2, 1.4],
+            "failure_code": "G1_C1_CANDIDATE_SAFETY",
+            "retained_rejection": True,
+            "governor_activated": False,
+        }
+    )
+
+    result = aggregate(
+        rows,
+        observed_hard_limit_m=0.0005,
+        tested_commands_m=TESTED_COMMANDS_M,
+        required_class_ids=TRAJECTORY_CLASS_IDS,
+    )
+
+    assert result["G_data"] == 1.4
+    assert result["G_time"] >= 0.2
+    assert result["G_command"] >= 0.6
+    assert [TRAJECTORY_CLASS_IDS[0], "0.00035000"] not in result["G_scene_groups"]
+    assert result["failed_samples_retained"] is True
+
+
+def test_rejected_candidate_stop_tail_does_not_invalidate_complete_lower_candidate() -> None:
+    aggregate = _capability("aggregate_g1_multiclass_tracking_envelope")
+    rows = _multiclass_summary_fixture()
+    rows.append(
+        {
+            "class_id": TRAJECTORY_CLASS_IDS[0],
+            "scene_id": "rejected-high-0",
+            "command_m": 0.00035,
+            "complete": False,
+            "retained_gains": [1.1],
+            "window_maxima": [1.1],
+            "failure_code": "G1_C1_CANDIDATE_SAFETY",
+            "retained_rejection": True,
+            "skipped_remaining_classes": list(TRAJECTORY_CLASS_IDS[1:]),
+            "skipped_remaining_scenes": [1, 2],
+            "skipped_higher_commands": [0.00040, 0.00045],
+            "governor_activated": False,
+        }
+    )
+
+    result = aggregate(
+        rows,
+        observed_hard_limit_m=0.0005,
+        tested_commands_m=TESTED_COMMANDS_M,
+        required_class_ids=TRAJECTORY_CLASS_IDS,
+    )
+
+    assert result["systemic_failure"] is False
+    assert result["candidate_decisions"]["0.00025000"]["eligible"] is True
+    assert result["candidate_decisions"]["0.00035000"]["eligible"] is False
+    assert result["selected_command_cap_m"] == 0.00025
+
+
+def test_missing_scene_without_retained_rejection_is_systemic() -> None:
+    aggregate = _capability("aggregate_g1_multiclass_tracking_envelope")
+    rows = _multiclass_summary_fixture()
+    rows.pop()
+
+    result = aggregate(
+        rows,
+        observed_hard_limit_m=0.0005,
+        tested_commands_m=TESTED_COMMANDS_M,
+        required_class_ids=TRAJECTORY_CLASS_IDS,
+    )
+
+    assert result["systemic_failure"] is True
+    assert result["systemic_failure_code"] == "G1_C1_REQUIRED_CLASS_MISSING"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["zero_incomplete", "eligible_incomplete", "unproven_stop_tail"],
+)
+def test_unexplained_multiclass_incompleteness_is_systemic(mutation: str) -> None:
+    aggregate = _capability("aggregate_g1_multiclass_tracking_envelope")
+    rows = _multiclass_summary_fixture()
+    if mutation == "zero_incomplete":
+        rows.pop(0)
+    elif mutation == "eligible_incomplete":
+        rows[-1]["complete"] = False
+        rows[-1]["candidate_eligible"] = True
+    else:
+        rows[-1]["complete"] = False
+        rows[-1]["retained_rejection"] = True
+        rows[-1]["skipped_remaining_classes"] = []
+
+    result = aggregate(
+        rows,
+        observed_hard_limit_m=0.0005,
+        tested_commands_m=TESTED_COMMANDS_M,
+        required_class_ids=TRAJECTORY_CLASS_IDS,
+    )
+
+    assert result["systemic_failure"] is True
+    assert result["systemic_failure_code"] in {
+        "G1_C1_ZERO_COMMAND_INVALID",
+        "G1_C1_REQUIRED_CLASS_MISSING",
+        "G1_C1_CLASS_PROVENANCE_MISMATCH",
+    }
+
+
+def test_higher_commands_are_skipped_after_first_retained_candidate_failure() -> None:
+    plan = _capability("build_g1_multiclass_tracking_plan")(seed=20260712)
+    execute = _capability("run_g1_multiclass_tracking_plan")
+    calls: list[float] = []
+
+    result = execute(
+        plan,
+        trial_runner=lambda spec: calls.append(spec["command_m"]) or {
+            "failure_code": "G1_C1_CANDIDATE_SAFETY"
+            if spec["command_m"] == 0.00035
+            else None
+        },
+    )
+
+    assert 0.00040 not in calls and 0.00045 not in calls
+    assert result["skipped_higher_commands"] == [0.00040, 0.00045]
+
+
+class _SharedQualifyingKernelSpy:
+    def __init__(self, result: dict[str, Any] | None = None) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.result = result or {
+            "send_allowed": True,
+            "requested_action_7d": [0.0, 0.0, -0.00025, 0.0, 0.0, 0.0, 0.0],
+            "requested_vector_m": [0.0, 0.0, -0.00025],
+            "governed_target": [0.001] * 7 + [0.02, 0.02],
+            "controller_qualification": "lula_fd_translation",
+            "benchmark_cap_eligible": True,
+            "jacobian_provider": "lula_fd_translation",
+        }
+
+    def compute_governed_translation_target(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(dict(kwargs))
+        return dict(self.result)
+
+
+def test_c1_nonzero_path_invokes_shared_qualifying_kernel_with_observed_state() -> None:
+    runner = _tracking_runner()
+    invoke = getattr(runner, "_invoke_g1_qualifying_kernel", None)
+    assert callable(invoke), (
+        "T147 C1 runner missing injected shared qualifying-kernel boundary"
+    )
+    spy = _SharedQualifyingKernelSpy()
+    kernel_input = {
+        "requested_action_7d": [0.0, 0.0, -0.00025, 0.0, 0.0, 0.0, 0.0],
+        "current_observed_q": [0.0] * 9,
+        "current_observed_qd": [0.0] * 9,
+        "previous_accepted_target": [0.4] * 9,
+        "class_id": TRAJECTORY_CLASS_IDS[0],
+        "starting_pose_sha256": "a" * 64,
+    }
+
+    result = invoke(runtime=spy, kernel_input=kernel_input)
+
+    assert spy.calls == [kernel_input]
+    assert result["controller_qualification"] == "lula_fd_translation"
+    assert result["benchmark_cap_eligible"] is True
+    assert result["requested_action_7d"] == kernel_input["requested_action_7d"]
+
+
+def test_c1_shared_kernel_latch_updates_only_after_successful_send() -> None:
+    runner = _tracking_runner()
+    execute = getattr(runner, "_execute_g1_qualifying_kernel_send", None)
+    assert callable(execute), (
+        "T147 C1 runner missing governed send/latch integration seam"
+    )
+    accepted: list[list[float]] = []
+    result = {
+        "send_allowed": True,
+        "governed_target": [0.001] * 7 + [0.02, 0.02],
+    }
+
+    failed = execute(
+        kernel_result=result,
+        send_target=lambda _target: False,
+        accept_target=lambda target: accepted.append(list(target)),
+    )
+    assert failed["send_result"] is False
+    assert accepted == []
+
+    succeeded = execute(
+        kernel_result=result,
+        send_target=lambda _target: True,
+        accept_target=lambda target: accepted.append(list(target)),
+    )
+    assert succeeded["send_result"] is True
+    assert accepted == [result["governed_target"]]

@@ -273,3 +273,34 @@ def test_nonzero_ik_clipping_gripper_and_target_expansion_remain_unchanged() -> 
     assert result["max_abs_joint_delta"] <= 0.02
     assert sent.shape == (9,)
     np.testing.assert_allclose(sent[7:9], [0.04, 0.04])
+
+
+def test_experimental_controller_reports_exact_compatibility_only_metadata() -> None:
+    controller = IsaacSim6FR3Controller(articulation_factory=FakeArticulation)
+    controller.initialize()
+
+    result = controller.apply_action(np.zeros(7, dtype=np.float32))
+
+    for field in (
+        "controller_qualification",
+        "benchmark_cap_eligible",
+        "jacobian_provider",
+    ):
+        assert field in result, f"T148 compatibility controller missing metadata: {field}"
+    assert result["controller_qualification"] == "compatibility_smoke"
+    assert result["benchmark_cap_eligible"] is False
+    assert result["jacobian_provider"] == "isaacsim_experimental_articulation"
+    assert result["action_shape"] == [7]
+    assert result["controller_method"] == "experimental_jacobian_dls"
+
+
+def test_compatibility_controller_metadata_cannot_claim_benchmark_cap_eligibility() -> None:
+    metadata = getattr(IsaacSim6FR3Controller, "qualification_metadata", None)
+    assert isinstance(metadata, dict), (
+        "T148 experimental controller missing fixed qualification metadata"
+    )
+    assert metadata == {
+        "controller_qualification": "compatibility_smoke",
+        "benchmark_cap_eligible": False,
+        "jacobian_provider": "isaacsim_experimental_articulation",
+    }
