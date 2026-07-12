@@ -401,14 +401,82 @@ class FR3DifferentialIKRuntime:
     ) -> np.ndarray:
         full = np.asarray(joint_state.joint_positions, dtype=float).copy()
         name_to_index = {str(name): index for index, name in enumerate(joint_state.joint_names)}
-        for solver_index, solver_name in enumerate(self.solver_joint_names):
-            if solver_index >= len(solver_delta):
-                continue
-            if solver_name in name_to_index:
-                full[name_to_index[solver_name]] += float(solver_delta[solver_index])
-            elif solver_index < full.size:
-                full[solver_index] += float(solver_delta[solver_index])
+        solver_names = tuple(str(name) for name in self.solver_joint_names)
+        if len(solver_delta) != len(solver_names):
+            raise ValueError("solver delta length does not match solver joint names")
+        missing = [name for name in solver_names if name not in name_to_index]
+        if missing:
+            raise ValueError(f"solver joints are absent from articulation order: {missing}")
+        for solver_index, solver_name in enumerate(solver_names):
+            full[name_to_index[solver_name]] += float(solver_delta[solver_index])
         return full
+
+    def compute_governed_translation_target(
+        self,
+        *,
+        requested_action_7d: Sequence[float],
+        current_observed_q: Sequence[float],
+        current_observed_qd: Sequence[float],
+        previous_accepted_target: Sequence[float],
+        articulation_joint_names: Sequence[str],
+        action_name: str = "g1_qualifying_nonzero",
+        config: DifferentialIKConfig | None = None,
+        **context: Any,
+    ) -> dict[str, Any]:
+        """Compute one unsent qualifying target with complete Lula-FD provenance."""
+
+        from isaac_tactile_libero.runtime.g1_nonzero_kernel import (
+            compute_observed_q_target,
+            jacobian_provenance,
+        )
+
+        action = np.asarray(requested_action_7d, dtype=np.float64)
+        observed_q = np.asarray(current_observed_q, dtype=np.float64)
+        observed_qd = np.asarray(current_observed_qd, dtype=np.float64)
+        names = tuple(str(name) for name in articulation_joint_names)
+        if action.shape != (7,) or observed_q.shape != observed_qd.shape:
+            raise ValueError("qualifying action/q/qd shapes are invalid")
+        if observed_q.shape != (len(names),):
+            raise ValueError("qualifying q/qd must match articulation joint names")
+        joint_state = FR3JointState(
+            joint_names=names,
+            joint_positions=tuple(float(value) for value in observed_q),
+            joint_velocities=tuple(float(value) for value in observed_qd),
+        )
+        cfg = config or DifferentialIKConfig(max_abs_dq=0.02)
+        result, _solver_q, jacobian = self.compute_action_delta(
+            action_name=action_name,
+            action=action,
+            joint_state=joint_state,
+            config=cfg,
+        )
+        validate_differential_ik_result(result)
+        target = compute_observed_q_target(
+            current_observed_q=observed_q,
+            articulation_joint_names=names,
+            solver_joint_names=self.solver_joint_names,
+            clipped_dq=result.clipped_dq,
+            previous_accepted_target=previous_accepted_target,
+        )
+        diagnostics = jacobian_provenance(
+            jacobian,
+            requested_vector_m=action[:3],
+            raw_dq=result.raw_dq,
+            clipped_dq=result.clipped_dq,
+        )
+        return {
+            **context,
+            "requested_action_7d": action.copy(),
+            "requested_vector_m": action[:3].copy(),
+            "current_observed_q": observed_q.copy(),
+            "current_observed_qd": observed_qd.copy(),
+            **target,
+            **diagnostics,
+            "governed_target": target["pre_send_target"].copy(),
+            "send_allowed": True,
+            "damping": float(cfg.damping),
+            "finite_difference_epsilon": float(cfg.finite_difference_epsilon),
+        }
 
     def send_joint_position_targets(self, targets: Sequence[float]) -> bool:
         return bool(getattr(self.ik_runtime, "_send_joint_position_targets")(np.asarray(targets, dtype=np.float32)))
@@ -422,14 +490,13 @@ class FR3DifferentialIKRuntime:
 
 def solver_joint_vector_from_joint_state(joint_state: FR3JointState, solver_names: Sequence[str]) -> np.ndarray:
     name_to_position = {str(name): float(pos) for name, pos in zip(joint_state.joint_names, joint_state.joint_positions)}
-    values: list[float] = []
-    for index, name in enumerate(solver_names):
-        if name in name_to_position:
-            values.append(name_to_position[name])
-        elif index < len(joint_state.joint_positions):
-            values.append(float(joint_state.joint_positions[index]))
-        else:
-            values.append(0.0)
+    names = tuple(str(name) for name in solver_names)
+    if len(set(names)) != len(names):
+        raise ValueError("solver joint names must be unique")
+    missing = [name for name in names if name not in name_to_position]
+    if missing:
+        raise ValueError(f"solver joints are absent from articulation order: {missing}")
+    values = [name_to_position[name] for name in names]
     return np.asarray(values, dtype=float)
 
 
