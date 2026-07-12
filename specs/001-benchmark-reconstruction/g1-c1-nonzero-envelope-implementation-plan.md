@@ -358,13 +358,32 @@ cross-origin samples enter aggregation.
 
 ### 8.2 Continuous phase-shaped reflected motif
 
-For a declared segment vector `v`, let `L=||v||`, `d=unit(v)`, scalar state `x_0=0`, and direction
-sign `sigma_0=+1`. Before action `n`, flip `sigma_n` only if already at an endpoint. Define distance
-to the active endpoint `r_n = L-x_n` for `sigma_n=+1`, else `r_n=x_n`; request
-`delta_n=sigma_n*d*min(c,r_n)`; update `x_{n+1}=x_n+sigma_n*||delta_n||`; and flip for the next
-action when the endpoint was reached. The endpoint remainder is predeclared by `(L,c,n)` and uses
-its actual non-zero norm as the gain denominator; it is not a candidate or cap. The algorithm
-continues for exactly 256 actions, even if it traverses the segment more than once.
+The scalar schedule is exact decimal arithmetic, not accumulated binary float. Convert each
+versioned geometry coordinate and command through `Decimal(str(config_value))` (or an equivalent
+exact integer distance unit) before deriving the segment. Let canonical positive decimals be
+`L_D`, the segment length, and `c_D`, the nominal command. Let `x_0=Decimal("0")` and direction sign
+`sigma_0=+1`. The unit direction `d=unit(v)` is geometric; it does not decide endpoint timing.
+
+Before action `n`, compute exact remaining distance `r_n=L_D-x_n` for `sigma_n=+1`, else `r_n=x_n`.
+If `r_n == 0` exactly, flip direction first, recompute `r_n`, and then materialize the next positive
+request; never send a zero-length action under a non-zero candidate. Otherwise set exact scalar
+`u_n=min(c_D,r_n)`, request `delta_n=float64(sigma_n*u_n*d)` only at the final action-vector boundary,
+and update exact state `x_{n+1}=x_n+sigma_n*u_n`. Endpoint/reversal decisions use only the exact
+decimal state.
+
+Define `remainder_D = L_D % c_D`. If `remainder_D == 0`, every endpoint-reaching step is exactly
+`c_D`; no near-zero or phantom remainder exists. Otherwise every endpoint remainder is the exact
+declared positive decimal `remainder_D`, and its exact decimal value is the gain denominator before
+the observed displacement is divided. Float64 conversion occurs only when materializing the action
+vector and numeric evidence fields. `requested_norm_m` is the float64 materialization of
+`exact_requested_norm_m`, never a norm recomputed from the rounded vector. Float conversion never
+changes schedule membership, action count, reversal, or denominator provenance. No epsilon,
+`isclose`, post-run clipping, or favorable remainder pruning is permitted.
+
+The algorithm continues for exactly 256 actions, even if it traverses the segment more than once.
+Canonical JSON for the motif digest includes the canonical decimal strings for `L_D`, `c_D`, and
+`remainder_D`, plus every action's exact scalar string, sign, endpoint flag, and reversal schedule.
+Changing any canonical scalar or schedule member must change the digest.
 
 | Class ID | Start | Segment source | Max requested radius | Reversal boundary |
 |---|---|---|---:|---|
@@ -379,18 +398,36 @@ the pose is not C1-qualified; the route is never shortened after inspection. Pha
 endpoint remainders, reversals, and motif digest are recorded in every sample.
 
 The zero command is executed for every required class and three fresh scenes; its trajectory
-generator returns exactly zero for all 256 measurement actions. Thus the complete unchanged matrix
-is `6 classes x 5 current commands x 3 fresh scenes`. A later lower command adds a full
+generator returns exactly zero for all 256 measurement actions. Thus the declared unchanged matrix
+is `6 classes x 5 current commands x 3 fresh scenes`, subject only to the fail-closed stop-tail in
+section 8.3. A later lower command adds a full
 `6 x 3` slice only after separate approval; it cannot fill missing samples by interpolation.
 
 ### 8.3 Failure and sample inclusion
 
-Unsafe, Contact, invalid collision/penetration provenance, non-finite, missing diagnostic,
-governor-activated, hard-limit, send-failed, or incomplete samples stop that trial and remain
-retained. Candidate-local failure rejects that command but all finite pre-failure non-zero gains
-still enter conservative upper bounds. Zero-trial failure, omitted required class, class-definition
-hash mismatch, fresh-scene failure, or post-abort actuation is systemic and ends C1. No direction,
-class, scene, reversal, endpoint remainder, or unfavorable window may be omitted.
+Commands execute in strictly ascending order: zero first, then the versioned non-zero matrix. All
+six zero classes and all three fresh scenes/class must complete; any zero failure or omission is
+systemic and ends C1.
+
+For a non-zero candidate `c`, full `6 classes x 3 scenes x 256 actions` completeness is required only
+to mark `c` eligible. The first candidate-local safety, governor, Contact, collision/penetration
+provenance, finite/diagnostic, send, hard-limit, or late-growth failure immediately rejects `c` and
+retains the failure trial and all preceding samples. Acquisition then skips the remaining
+classes/scenes for `c` and every higher command. It must not call any skipped scene or action. Fully
+complete lower commands retain their eligibility; candidate rejection is not a reason to clear them.
+
+Finite pre-failure gains from rejected `c` still enter `G_data`, available adjacent-window terms in
+`G_time`, and `Cmax(c)`/`G_command`. They never fabricate a missing scene or a `G_scene` range. The
+candidate decision and message record ordered lists of `skipped_remaining_classes`,
+`skipped_remaining_scenes`, and `skipped_higher_commands`, plus the exact command/class/scene/action/
+window, requested/observed motion, retained sample count, and rejection provenance.
+
+Missing acquisition is systemic only when the zero matrix is incomplete; a non-zero candidate has
+no explicit retained rejection yet lacks required work; a candidate is labelled eligible without a
+complete six-class/three-scene matrix; or execution order/provenance cannot prove the missing work is
+the safe stop-tail of the first rejected candidate. Post-abort actuation, reused/ambiguous fresh-scene
+identity, class-definition hash drift, or selective deletion remains systemic. No acquired
+direction, class, scene, reversal, exact remainder, or unfavorable window may be omitted.
 
 ## 9. Multi-class aggregation formulas
 
@@ -416,28 +453,38 @@ For every retained non-zero sample:
 W(k,c,s,w) = max gain in ordered window w of that continuous trial
 Smax(k,c,s)= max retained gain in that scene
 Cmax(c)    = max_{k,s,a} g(k,c,s,a)
+Q3         = {(k,c): exactly three fresh scenes for this class/command completed}
 
 G_data    = max_{k,c,s,a} g(k,c,s,a)
-G_scene   = max_{k,c} (max_s Smax(k,c,s) - min_s Smax(k,c,s))
+G_scene   = max_{(k,c) in Q3} (max_s Smax(k,c,s) - min_s Smax(k,c,s))
 G_time    = max(0, W(k,c,s,w+1) - W(k,c,s,w)) over available adjacent retained windows
 G_command = max_c Cmax(c) - min_c Cmax(c)
 G_upper   = max(1.0, G_data + G_scene + G_time + G_command)
 C_raw     = (0.0005 - N_upper) / G_upper
 ```
 
-All non-zero nominal commands with retained finite gains contribute to `G_command`, including a
-later rejected command. `G_scene` is invalid rather than cross-mixing classes when any required
-class/command lacks its three declared scene identities. Candidate eligibility for command `c`
-requires all six classes and all three scenes/class to complete 256 actions, retain all required
-fields, remain safe, have no governor intervention/request change, and have no trial for which
-`W3 > W2 && W4 > W3`. One late-growing class rejects the candidate. A stable command above `C_raw`
-also remains ineligible.
+All non-zero commands with at least one retained finite gain contribute `Cmax(c)` to `G_command`,
+including a rejected command; no term is invented for a candidate rejected before its first finite
+gain. `G_time` uses every adjacent pair of actually retained windows, including available windows
+from a rejected trial. `G_scene` uses only members of `Q3`: a rejected candidate's completed
+three-scene class group still contributes, but an incomplete stop-tail group contributes no range,
+is never padded with zero, and does not invalidate complete lower candidates. If `Q3` is empty,
+`G_scene` remains unavailable and no cap can be selected; it is not silently set to zero.
+
+Candidate eligibility for command `c` requires all six classes and all three scenes/class to complete
+256 actions, retain all required fields, remain safe, have no governor intervention/request change,
+and have no trial for which `W3 > W2 && W4 > W3`. One late-growing class rejects the candidate. A
+stable command above `C_raw` also remains ineligible. Aggregation processes candidate decisions in
+the proven ascending execution order and accepts missing higher/remaining acquisition only when the
+first rejected candidate carries the complete retained stop-tail record defined in section 8.3.
 
 The selected preliminary cap, if any, is the largest exact tested non-zero `c` that is eligible,
 `c <= C_raw`, and `c < 0.0005`. No class vote, average, interpolation, extrapolation, or favorable
-subset is allowed. Missing any member of `K`, an undeclared class, duplicate class ID, class/motif
-digest drift, or omitted unfavorable record is systemic `G1_C1_REQUIRED_CLASS_MISSING` or
-`G1_C1_CLASS_PROVENANCE_MISMATCH`.
+subset is allowed. Missing acquisition without retained stop-tail provenance, an eligible candidate
+with an incomplete matrix, an undeclared/duplicate class ID, class/motif digest drift, or an omitted
+acquired unfavorable record is systemic `G1_C1_REQUIRED_CLASS_MISSING` or
+`G1_C1_CLASS_PROVENANCE_MISMATCH`. A well-formed rejected stop-tail is candidate-local and never
+removes an otherwise complete lower candidate.
 
 ## 10. Diagnostic record schema
 
@@ -455,6 +502,8 @@ float32.
 | `starting_pose_id`, `starting_pose_sha256` | string/64-char hex | C2a | required/must equal qualified pose; `G1_C1_POSE_UNQUALIFIED` | readiness/samples/trials |
 | `requested_action_7d`, `requested_vector_m` | float64 `[7]`, `[3]` | world delta | required; `G1_C1_DIAGNOSTIC_MISSING` | samples |
 | `requested_norm_m`, `nominal_command_m` | float64 scalar | m | required/finite/non-negative; same blocker | samples |
+| `canonical_segment_length_m`, `canonical_command_m`, `exact_remainder_m`, `exact_requested_norm_m` | canonical decimal strings | exact scalar schedule in metres | required for phase-shaped non-zero; `G1_C1_MOTIF_DECIMAL_PROVENANCE` | samples/trials |
+| `scalar_schedule_sha256`, `scalar_action`, `endpoint_after_action`, `reversal_before_action` | 64-char hex/string/bool/bool | exact schedule provenance | required for phase-shaped non-zero; same blocker | samples/trials |
 | `direction_world`, `direction_reversed` | float64 `[3]`, bool | world | required/unit for non-zero; same blocker | samples |
 | `pre_q`, `post_q` | float64 `[N]` | articulation order | required; `G1_C1_DIAGNOSTIC_MISSING` | samples |
 | `pre_qd`, `post_qd` | float64 `[N]` | joint units/s | required; same blocker | samples |
@@ -508,7 +557,9 @@ Candidate-local messages use this fixed content contract:
 ```text
 <code>: command=<nominal decimal>; class=<class_id>; scene=<scene_id>;
 action=<index|null>; window=<index|null>; requested_m=<value|null>;
-observed_m=<value|null>; retained_samples=<integer>; detail=<non-empty text>
+observed_m=<value|null>; retained_samples=<integer>;
+skipped_remaining_classes=<ordered list>; skipped_remaining_scenes=<ordered list>;
+skipped_higher_commands=<ordered list>; detail=<non-empty text>
 ```
 
 An aggregation-level no-cap failure is `G1_C1_NO_ELIGIBLE_COMMAND` with a non-empty summary and the
@@ -574,7 +625,7 @@ joint expansion falls back by index, or provider is not Lula finite-difference t
 ### Task 3 — Require the full per-action diagnostic schema
 
 **Files:** extend `tests/test_g1_nonzero_kernel.py`, `tests/test_g1_tracking_envelope.py`, and
-`isaac_tactile_libero/runtime/g1_tracking.py`.
+`isaac_tactile_libero/runtime/g1_tracking.py` for schema validation.
 
 - [ ] Add parameterized `test_formal_c1_rejects_missing_diagnostic_field` over every field in section
   10 and shape/frame tests for q, qd, Jacobian, target, drive, motif, and projection fields.
@@ -636,8 +687,8 @@ tracking/velocity threshold appears, or an abort permits another send.
   require its pre-task node IDs/status to remain unchanged rather than making C2b GREEN.
 
 **Evidence:** offline candidate fixtures. **Commit:** `feat(g1): define static task-pose qualification`.
-**Stop:** candidate source changes, index fallback occurs, or a static pose is described as reset
-accepted.
+**Stop:** candidate source changes, index fallback occurs, or static-pose evidence claims reset
+acceptance.
 
 ### Task 6 — Add the C2a static scene runner
 
@@ -665,47 +716,58 @@ reachable, or any no-claim flag can be true.
 
 ### Task 7 — Define all six deterministic trajectory classes
 
-**Files:** extend `tests/test_g1_tracking_envelope.py` and
-`isaac_tactile_libero/runtime/g1_tracking.py`.
+**Files:** extend `tests/test_g1_tracking_envelope.py` for trajectory contracts and
+`isaac_tactile_libero/runtime/g1_tracking.py` for motif generation.
 
 - [ ] Add exact class-ID/order, local sign schedule/radius, reflected phase motif/remainder,
   256-action continuity, 4x64 reporting, no settle/window reset, route exclusion, and three-scene
-  completeness tests.
+  completeness tests. Add exact future contracts
+  `test_exact_divisible_segment_produces_no_phantom_remainder`,
+  `test_non_divisible_segment_records_exact_positive_remainder`,
+  `test_phase_motif_256_actions_and_reversals_are_deterministic`, and
+  `test_motif_digest_changes_with_canonical_scalar_schedule`.
 - [ ] Run RED:
 
   ```bash
   python -m pytest -q tests/test_g1_tracking_envelope.py -k 'trajectory_class or local_round_trip or phase_motif'
   ```
 
-  Expected RED: class definitions/generators do not exist and current plan has one fixed direction.
-- [ ] Implement pure geometry/motif generation exactly as section 8; do not change the command matrix.
+  Expected RED: class definitions/generators and canonical decimal schedule do not exist; current
+  plan has one fixed direction and binary float would decide endpoint remainder.
+- [ ] Implement pure geometry/motif generation exactly as section 8, using canonical decimal/exact
+  integer scalar state until float64 materialization; do not change the command matrix.
 - [ ] Run focused GREEN plus current strict late-window nodes.
 
 **Evidence:** deterministic motif digests and action-vector fixtures. **Commit:**
 `feat(g1): define task-shaped C1 trajectories`. **Stop:** runtime outcome selects length/direction,
-window reset occurs, a route is shortened, or any class is optional.
+binary float decides endpoint/reversal, a phantom/zero remainder appears, window reset occurs, a
+route is shortened, or any class is optional.
 
 ### Task 8 — Extend aggregation across classes
 
-**Files:** extend `tests/test_g1_tracking_envelope.py` and modify
-`isaac_tactile_libero/runtime/g1_tracking.py`.
+**Files:** extend `tests/test_g1_tracking_envelope.py` for aggregation contracts and modify
+`isaac_tactile_libero/runtime/g1_tracking.py` for aggregation.
 
 - [ ] Add exact formula tests for section 9, class-local `G_scene`, global `G_data`, trial-local
   `G_time`, all-class `G_command`, required-class omission, one-class late growth, governor
-  intervention, retained failed samples, and tested-only selection.
+  intervention, retained failed samples, and tested-only selection. Add exact future contracts
+  `test_rejected_candidate_stop_tail_does_not_invalidate_complete_lower_candidate` and
+  `test_missing_scene_without_retained_rejection_is_systemic`.
 - [ ] Run RED:
 
   ```bash
   python -m pytest -q tests/test_g1_tracking_envelope.py -k 'multiclass or required_class or class_local_scene'
   ```
 
-  Expected RED: current aggregation has no class dimension and may accept a single trajectory family.
+  Expected RED: current aggregation has no class dimension or stop-tail provenance and may treat a
+  rejected candidate's missing scene as systemic against a complete lower candidate.
 - [ ] Implement the exact formulas and failure taxonomy; do not alter `0.0005`, late growth, or matrix.
 - [ ] Run the complete tracking-envelope suite GREEN.
 
 **Evidence:** hand-computed multi-class fixture. **Commit:**
-`feat(g1): aggregate complete task-pose envelope`. **Stop:** a missing/unfavorable class is ignored,
-classes are mixed in `G_scene`, or a governor-modified candidate is eligible.
+`feat(g1): aggregate complete task-pose envelope`. **Stop:** unexplained missing acquisition is
+accepted, a proven rejected stop-tail clears a lower candidate, an incomplete scene group is padded
+or enters `G_scene`, classes are mixed in `G_scene`, or a governor-modified candidate is eligible.
 
 ### Task 9 — Integrate the shared kernel into C1 and the physical runner
 
@@ -911,8 +973,13 @@ Stop immediately and preserve evidence if any of the following occurs:
   ambiguous;
 - any static scene has Contact, unsafe collision, invalid penetration provenance, button motion,
   non-finite state, force/wrench truth violation, or post-abort actuation;
-- C1 does not use the C2a pose hash or any required class/scene/action is absent;
+- C1 does not use the C2a pose hash; the zero matrix is incomplete; an eligible candidate lacks any
+  required class/scene/action; or missing acquisition lacks a retained first-rejection stop-tail with
+  provable ascending execution/skipped provenance;
 - local radius, fixed motif, phase route, reversal, or 4x64 continuity changes after data inspection;
+- binary float decides a phase endpoint/reversal, an exact-divisible segment produces a phantom
+  remainder, a non-divisible remainder is not an exact positive canonical decimal, a zero-length
+  non-zero action is sent, or a scalar-schedule change does not change the motif digest;
 - public compatibility evidence enters cap aggregation or C1/physical qualifying kernels diverge;
 - target recurrence accumulates previous accepted targets or a governor adds/tunes a threshold;
 - governor changes execution while leaving a candidate eligible;
@@ -936,4 +1003,6 @@ docs(g1): plan task-pose tracking qualification
 ```
 
 That commit changes Markdown only. Implementation uses the per-task commits above; do not squash
-RED evidence into GREEN commits. `tasks.md` remains unchanged pending a separate task review.
+RED evidence into GREEN commits. Canonical ownership is Phase 7A T139-T151 in `tasks.md`; all remain
+unchecked until their exact completion rules are satisfied, and T070 depends on the entire recovery
+chain plus passing C1/C2b/C3 prerequisites.

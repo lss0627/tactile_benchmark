@@ -167,7 +167,7 @@ success from observed task state and immediate abort on unsafe behavior.
 - [x] T067 [US2] Refactor approach/press/hold/release/retract control into `isaac_tactile_libero/tasks/press_button_runtime.py` with safe stop/abort from every state and no post-abort actuation (FR-007-FR-010; depends on T059, T063-T066).
 - [x] T068 [P] [US2] Bind physical contact/force capability to the actual PressButton scene in `isaac_tactile_libero/envs/isaacsim_contact_force.py` and `isaac_tactile_libero/sensors/runtime_tactile_adapter.py`, leaving masks false unless a valid force source is read (FR-006; depends on T060).
 - [x] T069 [US2] Replace `scripts/run_fr3_press_button_press_smoke.py` with the state-machine runner, enforce CLI budgets, and emit current-code evidence through `isaac_tactile_libero/evidence/` (FR-007-FR-011; depends on T061, T067, T068).
-- [ ] T070 [US2] Execute 10 consecutive physical press/release/retract episodes with `scripts/run_fr3_press_button_press_smoke.py --config configs/tasks/press_button_physical.yaml --episodes 10 --output outputs/evidence/G1/physical-press-button`; review `manifest.json`, episode JSONL, safety report, task-state trace, and video/screenshots, then update gate status (SC-003, SC-004; all US2 scenarios; expected `PASS_BENCHMARK` or `BLOCKED`).
+- [ ] T070 [US2] After T139-T151 and passing C1/C2b/C3 prerequisites, execute 10 consecutive physical press/release/retract episodes with `scripts/run_fr3_press_button_press_smoke.py --config configs/tasks/press_button_physical.yaml --episodes 10 --output outputs/evidence/G1/physical-press-button`; review `manifest.json`, episode JSONL, safety report, task-state trace, and video/screenshots, then update gate status (SC-003, SC-004; all US2 scenarios; expected `PASS_BENCHMARK` or `BLOCKED`; depends on the complete Phase 7A recovery chain and cannot run directly from T069).
 
 **Stop rule**: Any stale manifest, missing task-state signal, force provenance error, safety event,
 failed release/reset, or exceeded budget blocks G1 and every later physical-data task.
@@ -178,6 +178,46 @@ and executed 182 actions before the measured Cartesian step (`0.0005005338 m`) e
 `0.0005 m` bound and raised `PER_STEP_MOTION_LIMIT`. The runner retained the failed episode,
 reported zero post-abort actuation, and did not execute the 3- or 10-episode stages. The configured
 driver remains `UNVALIDATED`; G2-G6 remain blocked.
+
+---
+
+## Phase 7A — G1 control qualification recovery
+
+**Goal**: Recover G1 from the retained attempt-03 non-zero envelope blocker through a task-ready
+static pose, one shared qualifying controller kernel, complete task-shaped C1 evidence, and explicit
+approval gates without changing the exact observed-motion limit or selecting an untested cap.
+
+**Dependency**: T055-T069 remain the implemented physical-loop foundation. This recovery phase must
+complete before T070. C2a is preliminary static qualification only and never means C2 passed.
+
+**Canonical plan**: Every task below maps to the correspondingly numbered task in
+`g1-c1-nonzero-envelope-implementation-plan.md`. T139-T148 are RED-to-GREEN implementation tasks;
+their checkboxes remain open after a RED-only commit and close only after the corresponding GREEN
+implementation and verification pass. T149-T151 are separately approval-gated and also remain open
+until their own evidence/review conditions pass.
+
+### RED-to-GREEN implementation recovery
+
+- [ ] T139 [US2] Preserve non-empty systemic failure code/message byte-identically through plan result, aggregation, report, manifest, and blocker presentation; implement only after valid behavior-specific RED (implementation plan Task 1; FR-011; SC-003, SC-004; AS-US2-4).
+- [ ] T140 [US2] Implement the shared observed-q-based qualifying Lula finite-difference translation kernel and exact solver/target provenance for C1 and the physical runner, without previous-target accumulation (implementation plan Task 2; FR-009; SC-003, SC-004; AS-US2-2).
+- [ ] T141 [US2] Require the complete per-action diagnostic schema, including controller, Jacobian, q/qd, target, drive, motif, safety, force-truth, and eligibility provenance (implementation plan Task 3; FR-006, FR-009, FR-011; SC-003, SC-004; AS-US2-2/3/4).
+- [ ] T142 [US2] Implement the fail-closed non-zero governor using only existing safety thresholds; any intervention rejects eligibility and any abort latches zero post-abort actuation (implementation plan Task 4; FR-009; SC-003, SC-004; AS-US2-2).
+- [ ] T143 [US2] Implement C2a offline Lula FK/IK candidate records, exact joint-name expansion, residual/frame/unit/workspace/limit/digest checks, and static-pose selection without actuation or a C2 claim (implementation plan Task 5; FR-007, FR-009, FR-011; SC-003, SC-004; AS-US2-1/2/4).
+- [ ] T144 [US2] Implement the C2a pre-Play authored static scene runner with three fresh scenes, exact 64-action zero readiness, Contact/collision/penetration/button/force truth, immutable evidence, and no non-zero path (implementation plan Task 6; FR-006, FR-007, FR-009, FR-011; SC-003, SC-004; AS-US2-1/2/3/4).
+- [ ] T145 [US2] Implement all six deterministic local/phase-shaped trajectory classes with canonical decimal endpoint/reversal schedules, exact remainder provenance, 256 actions, and four ordered 64-action windows (implementation plan Task 7; FR-009; SC-003, SC-004; AS-US2-2).
+- [ ] T146 [US2] Implement class-aware conservative aggregation, ascending command execution, retained candidate-local stop-tail decisions, strict late growth, exact N/G/C_raw formulas, and tested-only selection (implementation plan Task 8; FR-006, FR-009, FR-011; SC-003, SC-004; AS-US2-2/3/4).
+- [ ] T147 [US2] Integrate the same qualifying kernel into C1 and the physical PressButton runner while preserving state machine, budgets, safety, Contact, evidence, and public 7D action semantics (implementation plan Task 9; FR-006, FR-009-FR-011; SC-003, SC-004; AS-US2-2/3/4).
+- [ ] T148 [US2] Mark the experimental public Jacobian controller as `controller_qualification=compatibility_smoke` and `benchmark_cap_eligible=false`, forward the metadata, and prohibit its samples from C1 cap evidence (implementation plan Task 10; FR-011; SC-003, SC-004; AS-US2-4).
+
+### Approval-gated recovery evidence and review
+
+- [ ] T149 [US2] After T139-T148 are GREEN, verified, committed, pushed, and separately approved for one run, produce and review one immutable C2a preliminary evidence directory at clean E; stop on any result and do not claim controlled arrival, reset repeatability, C2, G1, or T070 (implementation plan Task 11; FR-011, FR-028; SC-003, SC-004; AS-US2-2/4).
+- [ ] T150 [US2] Review the unchanged command matrix against passing C2a evidence and obtain separate approval before any exact lower-candidate extension; do not infer a value from C_raw or select a cap in advance (implementation plan Task 12; FR-009, FR-011, FR-028; SC-003, SC-004; AS-US2-2/4).
+- [ ] T151 [US2] Verify the complete attempt-04 prerequisite review at the clean evidence-producing SHA, including RED/GREEN ownership, C2a pose/hash, six routes, matrix decision, exact limits/formulas/truth, future-RED inventory, absent immutable output path, and explicit one-run approval; this task prepares but does not execute attempt-04 (implementation plan Task 13; FR-011, FR-027, FR-028; SC-003, SC-004; AS-US2-2/4).
+
+**T070 dependency**: T139-T151 must all be complete, pose-conditioned C1 must produce an eligible
+tested cap, C2b controlled arrival/direct-reset repeatability must pass, and C3 combined trajectory/
+budget proof must pass before T070 can execute. A RED-only checkpoint does not complete T139-T148.
 
 ---
 
@@ -334,16 +374,17 @@ their frozen formal datasets; single-task pipeline validation may remain explici
 P0/US0 -> G-1A/US0 -> G0 foundation -> G0/US1 -> G-1B/US0 -> cutover
                                                                  |
                                                                  v
-                        G1/US2 -> G2/US3 -> G3/US3 -> G4/US4 dataset+replay
-                                                               |             |
-                                                               v             v
-                                                        G5/US4 evaluation  core-suite expansion
-                                                               |             |
-                                                               +------v------+
-                                                                      G6/US5
-                                                                         |
-                                                                         v
-                                                            synchronization/traceability
+              G1 foundation T055-T069 -> G1 recovery T139-T151 -> T070/US2
+                                                                  |
+                                                                  v
+                              G2/US3 -> G3/US3 -> G4/US4 dataset+replay
+                                                        /                     \
+                                             G5/US4 evaluation       core-suite expansion
+                                                        \                     /
+                                                                 G6/US5
+                                                                    |
+                                                                    v
+                                                       synchronization/traceability
 ```
 
 - `[P]` means different files and no hidden predecessor beyond the containing phase.
@@ -353,6 +394,9 @@ P0/US0 -> G-1A/US0 -> G0 foundation -> G0/US1 -> G-1B/US0 -> cutover
   blocked gate cannot be bypassed by marking later tasks complete.
 - T001-T016 are compatibility prechecks; T017-T040 complete G0; T041-T054 are forbidden until G0
   passes and perform repository integration/cutover without creating a new formal Gate.
+- T139-T148 require valid RED followed by GREEN implementation and verification; a RED-only commit
+  does not complete them. T149-T151 require separate approvals and evidence/review. T070 cannot run
+  until all T139-T151 plus passing C1/C2b/C3 prerequisites are complete.
 - T110-T117 begin only after G4. No 20-30 task expansion exists in this feature.
 - T125-T131 begin only after G5; benchmark comparisons require the applicable accepted tasks and
   formal datasets, not the diagnostic mini pipeline alone.
@@ -366,12 +410,12 @@ P0/US0 -> G-1A/US0 -> G0 foundation -> G0/US1 -> G-1B/US0 -> cutover
 | FR-003 | T020, T026, T032, T036-T039, T128 |
 | FR-004 | T026, T027, T032, T036, T039, T128 |
 | FR-005 | T019, T022-T025, T040, T133, T137, T138 |
-| FR-006 | T060, T068, T075, T082, T083, T087 |
-| FR-007 | T055, T059, T062, T063, T067, T069, T070 |
+| FR-006 | T060, T068, T075, T082, T083, T087, T141, T144, T146, T147 |
+| FR-007 | T055, T059, T062, T063, T067, T069, T070, T143, T144 |
 | FR-008 | T056, T064, T067, T070 |
-| FR-009 | T057, T062, T065, T067, T069, T070 |
-| FR-010 | T058, T062, T066, T067, T069, T070 |
-| FR-011 | T019, T022, T023, T029, T039, T061, T069, T135-T138 |
+| FR-009 | T057, T062, T065, T067, T069, T070, T140-T147, T150 |
+| FR-010 | T058, T062, T066, T067, T069, T070, T147 |
+| FR-011 | T019, T022, T023, T029, T039, T061, T069, T135-T139, T141, T143, T144, T146-T151 |
 | FR-012 | T071, T074, T079-T081, T084-T086 |
 | FR-013 | T018, T072, T077, T086 |
 | FR-014 | T018, T073, T078, T086 |
@@ -387,8 +431,8 @@ P0/US0 -> G-1A/US0 -> G0 foundation -> G0/US1 -> G-1B/US0 -> cutover
 | FR-024 | T119, T123-T126, T131 |
 | FR-025 | T120, T127-T131 |
 | FR-026 | T031, T040, T116, T132, T133, T137 |
-| FR-027 | T021, T039, T134-T138 |
-| FR-028 | T024, T025, T040, T061, T070, T080, T087, T092, T098, T101, T104, T107, T109, T117, T121, T124, T131, T137, T138 |
+| FR-027 | T021, T039, T134-T138, T151 |
+| FR-028 | T024, T025, T040, T061, T070, T080, T087, T092, T098, T101, T104, T107, T109, T117, T121, T124, T131, T137, T138, T149-T151 |
 | FR-029 | T001-T003, T008-T010, T041-T043, T052-T054 |
 | FR-030 | T004, T006, T015, T054 |
 | FR-031 | T001, T003, T006, T015, T053, T054 |
@@ -401,8 +445,8 @@ P0/US0 -> G-1A/US0 -> G0 foundation -> G0/US1 -> G-1B/US0 -> cutover
 | FR-038 | T012, T014, T045, T054 |
 | SC-001 | T033, T037-T040 |
 | SC-002 | T032, T036, T039, T040 |
-| SC-003 | T055-T070 |
-| SC-004 | T057-T070 |
+| SC-003 | T055-T070, T139-T151 |
+| SC-004 | T057-T070, T139-T151 |
 | SC-005 | T076-T086 |
 | SC-006 | T088-T101 |
 | SC-007 | T102-T109 |
@@ -429,10 +473,10 @@ P0/US0 -> G-1A/US0 -> G0 foundation -> G0/US1 -> G-1B/US0 -> cutover
 | AS-US1-1 | T030, T031, T033-T040 |
 | AS-US1-2 | T032, T036, T038-T040 |
 | AS-US1-3 | T022, T023, T029, T039, T040 |
-| AS-US2-1 | T055, T056, T063, T064, T067, T070 |
-| AS-US2-2 | T057-T059, T065-T070 |
-| AS-US2-3 | T060, T068, T070 |
-| AS-US2-4 | T061, T069, T070 |
+| AS-US2-1 | T055, T056, T063, T064, T067, T070, T143, T144 |
+| AS-US2-2 | T057-T059, T065-T070, T140-T147, T149-T151 |
+| AS-US2-3 | T060, T068, T070, T141, T144, T146, T147 |
+| AS-US2-4 | T061, T069, T070, T139, T141, T143, T144, T146-T151 |
 | AS-US3-1 | T071, T074, T079-T081, T084-T086 |
 | AS-US3-2 | T072, T077, T086 |
 | AS-US3-3 | T073, T078, T086 |

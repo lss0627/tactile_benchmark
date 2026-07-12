@@ -139,7 +139,9 @@ The diagnostic retains Cartesian command norms `0`, `0.00025`, `0.00035`, `0.000
 `0.00045 m`; this review does not extend the matrix. Every command runs in each of six required
 classes—three local round trips and continuous APPROACH-, PRESS/RELEASE-, and RETRACT-shaped legs—
 with three independently created scenes per class/command. Every scene starts from the same
-C2a-qualified pose hash and deterministic seed.
+C2a-qualified pose hash and deterministic seed. Commands execute in ascending order; a retained
+candidate-local rejection stops the rest of that candidate and every higher command as specified in
+the linked implementation plan.
 
 Each trial executes 256 continuous public actions divided only for reporting into four consecutive
 64-action windows. It is preceded by a separate fixed 64-action zero readiness interval. Local
@@ -184,7 +186,8 @@ For zero-command trials:
 For each non-zero sample, `gain = observed_norm / requested_norm`:
 
 - `G_data` is the maximum gain across every required class, command, scene, sample, and window;
-- `G_scene` is the maximum, over class/command pairs, of the range of per-scene maximum gains;
+- `G_scene` is the maximum, over class/command pairs that actually complete all three fresh scenes,
+  of the range of per-scene maximum gains; an incomplete rejected stop-tail is never padded with zero;
 - `G_time` is the maximum positive increase between adjacent 64-action window maxima within each
   uninterrupted trial;
 - for each command, `G_command_max` is its maximum gain across all classes, scenes, and windows;
@@ -218,19 +221,21 @@ Continued late-window zero-command growth is systemic unbounded noise/drift and 
 A non-zero command candidate is rejected, while its retained pre-abort samples still contribute to
 the conservative upper bounds, when any of the following applies only to that candidate:
 
-- one or more of its six-class/three-fresh-scene trials is incomplete;
 - any required class has unresolved late-window growth;
 - it produces Contact, a safety event, or an observed hard-limit abort;
 - its trial evidence is non-finite or lacks a required sample/provenance field.
 
-Rejecting one command does not fail C1 if lower non-zero candidates remain complete and safe.
+The first such failure retains the trial, rejects that command, skips its remaining classes/scenes,
+and skips every higher command. Complete lower commands remain eligible. Retained finite gains from
+the rejected command continue into `G_data`, available-window `G_time`, and `G_command`; only real
+completed three-scene class/command groups enter `G_scene`.
 
-C1 as a whole fails when a required class is omitted, `H <= N_upper`, `G_upper` is non-finite, no
-tested non-zero command remains eligible and satisfies the strict formula, a zero-command trial is
-invalid/unsafe/incomplete or has continued late-window growth, any diagnostic records post-abort
-actuation, or the diagnostic cannot prove fresh-scene isolation. A post-abort actuation is systemic
-rather than candidate-local. If C1 fails, C2b and production changes stop; retained C2a evidence is
-not promoted.
+C1 as a whole fails when the zero matrix is incomplete; missing non-zero acquisition has no explicit
+retained rejection; an eligible command lacks its complete six-class/three-scene matrix; the safe
+ascending stop-tail cannot be proven; `H <= N_upper`; `G_upper` is non-finite; no tested non-zero
+command remains eligible and satisfies the strict formula; any diagnostic records post-abort
+actuation; or fresh-scene isolation cannot be proven. A post-abort actuation is systemic rather than
+candidate-local. If C1 fails, C2b and production changes stop; retained C2a evidence is not promoted.
 
 ## Gate C2b — controlled arrival and direct-reset qualification
 
