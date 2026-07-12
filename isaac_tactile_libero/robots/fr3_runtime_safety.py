@@ -256,7 +256,7 @@ class FR3RuntimeSafety:
             )
 
         step_motion = float(np.linalg.norm(np.asarray(sample.observed_delta, dtype=float)))
-        if step_motion > self.limits.max_step_motion_m + 1.0e-12:
+        if step_motion > self.limits.max_step_motion_m:
             return self._abort(
                 SafetyViolation(
                     "PER_STEP_MOTION_LIMIT", step_motion, self.limits.max_step_motion_m, sample.phase
@@ -284,4 +284,7 @@ def load_fr3_runtime_safety(path: str | Path) -> FR3SafetyLimits:
         payload = yaml.safe_load(stream) or {}
     if not isinstance(payload, Mapping):
         raise ValueError(f"{path} must contain a mapping")
+    observed_limit = float(payload["motion"]["max_translation_per_step_m"])
+    if observed_limit != 0.0005:
+        raise ValueError("physical observed hard limit must be exactly 0.0005 m")
     return FR3SafetyLimits.from_mapping(payload)
