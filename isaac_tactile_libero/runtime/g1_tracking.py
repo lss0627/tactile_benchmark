@@ -1096,6 +1096,349 @@ def build_g1_multiclass_tracking_plan(*, seed: int) -> dict[str, Any]:
     }
 
 
+def _multiclass_systemic(code: str, message: str) -> dict[str, Any]:
+    return {
+        "systemic_failure": True,
+        "systemic_failure_code": code,
+        "systemic_failure_message": message,
+    }
+
+
+def _multiclass_candidate_message(
+    *,
+    code: str,
+    command: float,
+    row: Mapping[str, Any] | None,
+    retained_samples: int,
+) -> str:
+    row = row or {}
+    maxima = list(row.get("window_maxima", ()))
+    action = row.get("failure_action_index")
+    window = row.get("failure_window_index")
+    if window is None and maxima:
+        window = len(maxima) - 1
+    return (
+        f"{code}: command={command}; class={row.get('class_id', '')}; "
+        f"scene={row.get('scene_id', '')}; action={action}; window={window}; "
+        f"requested_m={row.get('requested_m', command)}; "
+        f"observed_m={row.get('observed_m')}; retained_samples={retained_samples}; "
+        f"skipped_remaining_classes={list(row.get('skipped_remaining_classes', ())) }; "
+        f"skipped_remaining_scenes={list(row.get('skipped_remaining_scenes', ())) }; "
+        f"skipped_higher_commands={list(row.get('skipped_higher_commands', ())) }; "
+        f"detail={row.get('failure_detail', code)}"
+    )
+
+
+def aggregate_g1_multiclass_tracking_envelope(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    observed_hard_limit_m: float,
+    tested_commands_m: Sequence[float],
+    required_class_ids: Sequence[str],
+) -> dict[str, Any]:
+    """Aggregate the exact class-aware section-9 envelope and stop-tail truth."""
+
+    evidence = tuple(dict(row) for row in rows)
+    hard_limit = float(observed_hard_limit_m)
+    tested = tuple(float(value) for value in tested_commands_m)
+    required = tuple(str(value) for value in required_class_ids)
+    if hard_limit != 0.0005:
+        raise G1ValidationError("G1_C1_HARD_LIMIT_INVALID", "hard limit must be exactly 0.0005 m")
+    if tested != (0.00025, 0.00035, 0.00040, 0.00045):
+        raise G1ValidationError("G1_C1_COMMAND_MATRIX_INVALID", "tested command matrix changed")
+    if required != G1_TRAJECTORY_CLASS_IDS:
+        raise G1ValidationError(
+            "G1_C1_CLASS_PROVENANCE_MISMATCH", "required class order differs from the six-class contract"
+        )
+
+    grouped: dict[tuple[str, float], list[dict[str, Any]]] = {}
+    for row in evidence:
+        class_id = str(row.get("class_id", ""))
+        try:
+            command = float(row.get("command_m"))
+        except (TypeError, ValueError):
+            raise G1ValidationError(
+                "G1_C1_CLASS_PROVENANCE_MISMATCH", "multiclass row command is invalid"
+            ) from None
+        if class_id not in required or not math.isfinite(command) or command < 0.0:
+            raise G1ValidationError(
+                "G1_C1_CLASS_PROVENANCE_MISMATCH", "multiclass row class/command is invalid"
+            )
+        grouped.setdefault((class_id, command), []).append(row)
+
+    systemic: dict[str, Any] = {
+        "systemic_failure": False,
+        "systemic_failure_code": None,
+        "systemic_failure_message": None,
+    }
+    zero_displacements: list[float] = []
+    zero_scene_ranges: list[float] = []
+    for class_id in required:
+        class_rows = grouped.get((class_id, 0.0), [])
+        scene_ids = [str(row.get("scene_id", "")) for row in class_rows]
+        valid_zero = (
+            len(class_rows) == 3
+            and len(set(scene_ids)) == 3
+            and all(row.get("complete") is True for row in class_rows)
+        )
+        class_maxima: list[float] = []
+        if valid_zero:
+            for row in class_rows:
+                values = [float(value) for value in row.get("zero_displacements_m", ())]
+                windows = [float(value) for value in row.get("window_maxima", ())]
+                if (
+                    len(values) != 256
+                    or any(not math.isfinite(value) or value < 0.0 for value in values)
+                    or len(windows) != 4
+                    or classify_g1_late_window_growth(windows)["growing"]
+                ):
+                    valid_zero = False
+                    break
+                zero_displacements.extend(values)
+                class_maxima.append(max(values))
+        if not valid_zero:
+            systemic = _multiclass_systemic(
+                "G1_C1_ZERO_COMMAND_INVALID",
+                f"zero-command matrix is incomplete or invalid for class {class_id}",
+            )
+            break
+        zero_scene_ranges.append(_decimal_range(class_maxima))
+
+    n_data = max(zero_displacements, default=0.0)
+    n_scene = max(zero_scene_ranges, default=0.0)
+    n_upper = n_data + n_scene
+    all_gains: list[float] = []
+    adjacent_growth: list[float] = []
+    command_maxima: dict[float, float] = {}
+    scene_ranges: list[float] = []
+    g_scene_groups: list[list[str]] = []
+    candidate_decisions: dict[str, dict[str, Any]] = {}
+    eligible_commands: list[float] = []
+    failed_samples_retained = False
+
+    for command in tested:
+        command_rows = [row for row in evidence if float(row.get("command_m", -1.0)) == command]
+        if not command_rows:
+            continue
+        candidate_gains: list[float] = []
+        complete_matrix = True
+        first_failure: Mapping[str, Any] | None = None
+        late_growth = False
+        governor_intervention = False
+        for class_id in required:
+            class_rows = grouped.get((class_id, command), [])
+            complete_group = (
+                len(class_rows) == 3
+                and len({str(row.get("scene_id", "")) for row in class_rows}) == 3
+                and all(row.get("complete") is True for row in class_rows)
+            )
+            if complete_group:
+                scene_maxima: list[float] = []
+                for row in class_rows:
+                    gains = [float(value) for value in row.get("retained_gains", ())]
+                    windows = [float(value) for value in row.get("window_maxima", ())]
+                    if not gains or len(windows) != 4 or any(
+                        not math.isfinite(value) for value in (*gains, *windows)
+                    ):
+                        complete_matrix = False
+                        first_failure = first_failure or row
+                        continue
+                    candidate_gains.extend(gains)
+                    scene_maxima.append(max(gains))
+                    adjacent_growth.extend(
+                        max(0.0, float(Decimal(str(later)) - Decimal(str(earlier))))
+                        for earlier, later in zip(windows, windows[1:])
+                    )
+                    late_growth = late_growth or bool(
+                        classify_g1_late_window_growth(windows)["growing"]
+                    )
+                    governor_intervention = governor_intervention or bool(
+                        row.get("governor_activated")
+                    )
+                    if row.get("failure_code") and first_failure is None:
+                        first_failure = row
+                if len(scene_maxima) == 3:
+                    scene_ranges.append(_decimal_range(scene_maxima))
+                    g_scene_groups.append([class_id, f"{command:.8f}"])
+            else:
+                complete_matrix = False
+                if class_rows and first_failure is None:
+                    first_failure = next(
+                        (row for row in class_rows if row.get("failure_code")),
+                        class_rows[0],
+                    )
+            for row in class_rows:
+                gains = [float(value) for value in row.get("retained_gains", ())]
+                finite_gains = [value for value in gains if math.isfinite(value)]
+                all_gains.extend(finite_gains)
+                candidate_gains.extend(
+                    value for value in finite_gains if value not in candidate_gains
+                )
+                windows = [float(value) for value in row.get("window_maxima", ())]
+                adjacent_growth.extend(
+                    max(0.0, float(Decimal(str(later)) - Decimal(str(earlier))))
+                    for earlier, later in zip(windows, windows[1:])
+                    if math.isfinite(earlier) and math.isfinite(later)
+                )
+                if row.get("retained_rejection") is True:
+                    failed_samples_retained = True
+                    if first_failure is None:
+                        first_failure = row
+
+        if candidate_gains:
+            command_maxima[command] = max(candidate_gains)
+        code = "G1_C1_CANDIDATE_ELIGIBLE"
+        eligible = complete_matrix
+        if governor_intervention:
+            code = "G1_C1_GOVERNOR_INTERVENTION"
+            eligible = False
+        elif late_growth:
+            code = "G1_C1_CANDIDATE_LATE_WINDOW_GROWTH"
+            eligible = False
+        elif first_failure is not None and first_failure.get("failure_code"):
+            code = str(first_failure["failure_code"])
+            eligible = False
+        elif not complete_matrix:
+            code = "G1_C1_CANDIDATE_INCOMPLETE"
+            eligible = False
+
+        retained_rejection = next(
+            (row for row in command_rows if row.get("retained_rejection") is True),
+            None,
+        )
+        if not complete_matrix:
+            proven_stop_tail = False
+            if retained_rejection is not None:
+                failed_class = str(retained_rejection.get("class_id", ""))
+                failed_index = required.index(failed_class) if failed_class in required else -1
+                proven_stop_tail = (
+                    isinstance(retained_rejection.get("skipped_remaining_classes"), list)
+                    and retained_rejection.get("skipped_remaining_classes")
+                    == list(required[failed_index + 1 :])
+                    and isinstance(retained_rejection.get("skipped_remaining_scenes"), list)
+                    and bool(retained_rejection.get("skipped_remaining_scenes"))
+                    and retained_rejection.get("skipped_higher_commands")
+                    == [value for value in tested if value > command]
+                )
+            if any(row.get("candidate_eligible") is True for row in command_rows):
+                systemic = _multiclass_systemic(
+                    "G1_C1_REQUIRED_CLASS_MISSING",
+                    f"candidate {command} is marked eligible with an incomplete class matrix",
+                )
+            elif retained_rejection is not None and not proven_stop_tail:
+                systemic = _multiclass_systemic(
+                    "G1_C1_CLASS_PROVENANCE_MISMATCH",
+                    f"candidate {command} retained rejection lacks a proven safe stop-tail",
+                )
+            elif retained_rejection is None:
+                systemic = _multiclass_systemic(
+                    "G1_C1_REQUIRED_CLASS_MISSING",
+                    f"candidate {command} is incomplete without a retained rejection",
+                )
+        decision: dict[str, Any] = {"eligible": eligible, "code": code, "command_m": command}
+        if not eligible:
+            decision["message"] = _multiclass_candidate_message(
+                code=code,
+                command=command,
+                row=first_failure,
+                retained_samples=sum(
+                    len(row.get("retained_gains", ())) for row in command_rows
+                ),
+            )
+        candidate_decisions[f"{command:.8f}"] = decision
+        if eligible:
+            eligible_commands.append(command)
+
+    g_data = max(all_gains, default=0.0)
+    g_scene = max(scene_ranges, default=0.0)
+    g_time = max(adjacent_growth, default=0.0)
+    g_command = _decimal_range(list(command_maxima.values()))
+    g_upper = max(1.0, g_data + g_scene + g_time + g_command)
+    c_raw = (hard_limit - n_upper) / g_upper
+    selected: float | None = None
+    if systemic["systemic_failure"] is False:
+        try:
+            selected = select_g1_tested_command_cap(
+                c_raw_m=c_raw,
+                eligible_commands_m=eligible_commands,
+                tested_commands_m=tested,
+                observed_hard_limit_m=hard_limit,
+            )
+        except G1ValidationError as error:
+            systemic = _multiclass_systemic(error.code, error.message)
+    return {
+        "N_data": n_data,
+        "N_scene": n_scene,
+        "N_upper": n_upper,
+        "G_data": g_data,
+        "G_scene": g_scene,
+        "G_time": g_time,
+        "G_command": g_command,
+        "G_upper": g_upper,
+        "C_raw": c_raw,
+        "G_scene_groups": g_scene_groups,
+        "candidate_decisions": candidate_decisions,
+        "eligible_commands_m": eligible_commands,
+        "selected_command_cap_m": selected,
+        "failed_samples_retained": failed_samples_retained,
+        **systemic,
+    }
+
+
+def run_g1_multiclass_tracking_plan(
+    plan: Mapping[str, Any],
+    *,
+    trial_runner: Any,
+) -> dict[str, Any]:
+    """Execute ascending commands and retain the first candidate rejection stop-tail."""
+
+    retained: list[dict[str, Any]] = []
+    stopped_command: float | None = None
+    skipped_classes: list[str] = []
+    skipped_scenes: list[int] = []
+    trials = list(plan.get("trials", ()))
+    for index, spec in enumerate(trials):
+        command = float(spec["command_m"])
+        if stopped_command is not None and command >= stopped_command:
+            break
+        result = dict(trial_runner(dict(spec)))
+        retained.append({**dict(spec), **result})
+        if result.get("failure_code"):
+            stopped_command = command
+            remaining_same_command = [
+                future
+                for future in trials[index + 1 :]
+                if float(future["command_m"]) == command
+            ]
+            skipped_classes = list(
+                dict.fromkeys(str(future["class_id"]) for future in remaining_same_command)
+            )
+            skipped_scenes = list(
+                dict.fromkeys(int(future["scene_index"]) for future in remaining_same_command)
+            )
+            break
+    skipped_higher = (
+        [value for value in plan.get("commands_m", ()) if float(value) > stopped_command]
+        if stopped_command is not None
+        else []
+    )
+    zero_systemic = stopped_command == 0.0
+    return {
+        "trials": retained,
+        "stopped_after_command_m": stopped_command,
+        "skipped_remaining_classes": skipped_classes,
+        "skipped_remaining_scenes": skipped_scenes,
+        "skipped_higher_commands": skipped_higher,
+        "systemic_failure": zero_systemic,
+        "systemic_failure_code": "G1_C1_ZERO_COMMAND_INVALID" if zero_systemic else None,
+        "systemic_failure_message": (
+            "zero-command multiclass matrix failed before non-zero acquisition"
+            if zero_systemic
+            else None
+        ),
+    }
+
+
 __all__ = [
     "ACTIONS_PER_TRIAL",
     "G1TrackingSample",
@@ -1107,11 +1450,13 @@ __all__ = [
     "WINDOW_SIZE",
     "G1_TRAJECTORY_CLASS_IDS",
     "aggregate_g1_tracking_envelope",
+    "aggregate_g1_multiclass_tracking_envelope",
     "build_g1_local_round_trip_motif",
     "build_g1_multiclass_tracking_plan",
     "build_g1_phase_reflected_motif",
     "classify_g1_late_window_growth",
     "g1_trajectory_class_definitions",
+    "run_g1_multiclass_tracking_plan",
     "select_g1_tested_command_cap",
     "validate_g1_command_cap",
     "validate_g1_tracking_trials",
