@@ -337,8 +337,9 @@ Split reset qualification:
 
 1. `C2a` performs offline FK/IK and fresh-scene **static spawn-time pose qualification** before
    non-zero task actuation. The candidate is authored/set before active motion, then undergoes a
-   fixed zero-target readiness interval with joint/workspace/Contact/collision/penetration/finite
-   checks. It consumes no command cap and makes no final reset claim.
+   predeclared 64-action zero-only readiness interval with
+   joint/workspace/Contact/collision/penetration/finite checks. It consumes no command cap and makes
+   no final reset claim.
 2. Pose-conditioned C1 runs at the qualified pose and produces a preliminary cap only if all
    reserve and late-growth rules pass.
 3. `C2b` consumes that cap for controlled motion and ten-reset repeatability/margin validation.
@@ -439,10 +440,11 @@ C2a offline + static spawn-time task-ready pose qualification
 
 ### Shared governed non-zero kernel
 
-One target-construction contract must be used by C1 and the physical PressButton runner. The public
-real-FR3 compatibility path must either use the same kernel/Jacobian provider or explicitly remain
-non-qualifying compatibility smoke; two undisclosed real-FR3 semantics under one public 7D action
-schema are not acceptable.
+One target-construction contract must be used by C1 and the physical PressButton runner: the Lula
+finite-difference translation kernel. The public `IsaacSim6FR3Controller` experimental-Jacobian path
+remains compatibility smoke with `controller_qualification=compatibility_smoke` and
+`benchmark_cap_eligible=false`; its samples cannot enter formal C1 cap evidence. Two undisclosed
+real-FR3 semantics under one public 7D action schema remain unacceptable.
 
 The kernel receives current observed q/qd, requested Cartesian delta, current Jacobian identity,
 the previous accepted target, and safety/governor state. It emits raw/clipped dq, predicted delta,

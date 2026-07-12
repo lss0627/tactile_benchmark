@@ -104,26 +104,50 @@ complete architecture correction.
 
 Option C separates four concerns:
 
-1. an isolated tracking-envelope diagnostic derives the command cap;
-2. an offline FK/IK reset diagnostic finds candidate joint poses without actuation;
-3. a controlled no-contact pre-position run validates scene safety before direct reset is allowed;
+1. `C2a` uses offline FK/IK and pre-Play static pose authoring plus fixed zero-action readiness to
+   qualify a task-ready starting pose without non-zero actuation or a reset claim;
+2. pose-conditioned `C1` uses the shared qualifying Lula finite-difference kernel to derive a tested
+   command cap from local and phase-shaped classes;
+3. `C2b` consumes a passing C1 cap for controlled no-contact arrival, direct reset, measured settle
+   and margin, and ten-scene repeatability;
 4. the task runner starts from the validated reset and executes only the bounded task trajectory.
 
-Option C is selected conditionally. Tracking, reset, and combined validation are sequential hard
-gates. Failure of any component stops work; no fifth speculative patch is permitted.
+Option C is selected conditionally. `C2a -> C1 -> C2b -> C3` is the sole dependency order. Failure
+of any component stops work; no fifth speculative patch is permitted. The detailed implementation
+contract is [G1 C1 Task-Pose Non-Zero Envelope Implementation Plan](g1-c1-nonzero-envelope-implementation-plan.md).
+
+## Gate C2a — offline/static task-ready pose qualification
+
+Real Lula FK/IK evaluates the existing pre-approach candidates `[0.55, 0, 0.55]`,
+`[0.55, 0, 0.54]`, and `[0.55, 0, 0.53] m`, preserving the hashed fresh asset-default tool
+orientation. Before timeline Play, a fresh stage authors the candidate articulation state and zero
+velocity. After Play it performs only a fixed 64-action zero-target readiness interval and validates
+joint identity/limits, FK residual, frames/transforms, units/up axis, workspace, finite state, CPU
+Contact, collision/penetration provenance, button release/reset, false force/wrench masks, and zero
+post-abort actuation.
+
+Spawn-time authored initial pose before Play is not active-runtime teleport. It also does not prove
+controlled arrival, direct reset, reset repeatability, a command cap, C2 completion, or T070. C2a
+evidence is preliminary and claim-ineligible. If pre-Play authoring or that distinction cannot be
+proved, implementation stops rather than overriding the constitution or specification.
 
 ## Gate C1 — no-contact tracking envelope
 
 ### Execution matrix
 
-The diagnostic tests Cartesian command norms `0`, `0.00025`, `0.00035`, `0.00040`, and
-`0.00045 m`. Each command is run in at least three independently created scenes. Every scene starts
-from a newly loaded FR3 asset and the same deterministic seed.
+The diagnostic retains Cartesian command norms `0`, `0.00025`, `0.00035`, `0.00040`, and
+`0.00045 m`; this review does not extend the matrix. Every command runs in each of six required
+classes—three local round trips and continuous APPROACH-, PRESS/RELEASE-, and RETRACT-shaped legs—
+with three independently created scenes per class/command. Every scene starts from the same
+C2a-qualified pose hash and deterministic seed.
 
-Each trial executes 256 public actions, divided into four consecutive 64-action windows. Non-zero
-actions point from the asset-default TCP toward the existing APPROACH target. Even the largest trial
-commands at most `0.1152 m`, leaving the TCP well outside the no-contact exclusion radius around the
-button. A zero-command trial holds current joint targets and measures additive TCP noise/drift.
+Each trial executes 256 continuous public actions divided only for reporting into four consecutive
+64-action windows. It is preceded by a separate fixed 64-action zero readiness interval. Local
+motifs have a predeclared radius/reversal schedule; phase-shaped motifs have predeclared segment
+geometry and endpoint reflection. No window reset, adaptive duration, favorable direction choice,
+or post-run path shortening is allowed. Exact class IDs and formulas are owned by the linked
+implementation plan. Zero-command measurement exists for every class and measures additive TCP
+noise/drift.
 
 Every action uses three physics substeps and the existing exact `0.0005 m` observed guard. The
 diagnostic stops the current trial on any safety violation and records zero post-abort actuation.
@@ -152,16 +176,18 @@ Let `H = 0.0005 m` exactly.
 
 For zero-command trials:
 
-- `N_data` is the maximum observed displacement across all zero-command samples;
-- `N_scene` is the range of per-scene zero-command maxima;
+- `N_data` is the maximum observed displacement across all zero-command samples and required classes;
+- `N_scene` is the maximum within-class range of per-scene zero-command maxima; different classes
+  are never mixed as scene noise;
 - `N_upper = N_data + N_scene`.
 
 For each non-zero sample, `gain = observed_norm / requested_norm`:
 
-- `G_data` is the maximum gain across every command, scene, sample, and window;
-- `G_scene` is the maximum, over commands, of the range of per-scene maximum gains;
-- `G_time` is the maximum positive increase between adjacent 64-action window maxima;
-- for each command, `G_command_max` is its maximum gain across scenes and windows;
+- `G_data` is the maximum gain across every required class, command, scene, sample, and window;
+- `G_scene` is the maximum, over class/command pairs, of the range of per-scene maximum gains;
+- `G_time` is the maximum positive increase between adjacent 64-action window maxima within each
+  uninterrupted trial;
+- for each command, `G_command_max` is its maximum gain across all classes, scenes, and windows;
 - `G_command` is the range of `G_command_max` across the tested non-zero command magnitudes;
 - `G_upper = max(1.0, G_data + G_scene + G_time + G_command)`.
 
@@ -179,7 +205,7 @@ rounding upward, or an untested cap is forbidden.
 
 ### Late-window growth rejection
 
-For each scene/command trial, let `W1` through `W4` be the maximum gain in its four ordered
+For each class/scene/command trial, let `W1` through `W4` be the maximum gain in its four ordered
 64-action windows. A non-zero command has unresolved late-window growth when both strict comparisons
 `W3 > W2` and `W4 > W3` are true. No epsilon or approximate comparison is allowed. That command is
 not eligible for cap selection because its envelope is still expanding at the end of 256 actions.
@@ -192,36 +218,34 @@ Continued late-window zero-command growth is systemic unbounded noise/drift and 
 A non-zero command candidate is rejected, while its retained pre-abort samples still contribute to
 the conservative upper bounds, when any of the following applies only to that candidate:
 
-- one or more of its three fresh-scene trials is incomplete;
-- it has unresolved late-window growth;
+- one or more of its six-class/three-fresh-scene trials is incomplete;
+- any required class has unresolved late-window growth;
 - it produces Contact, a safety event, or an observed hard-limit abort;
 - its trial evidence is non-finite or lacks a required sample/provenance field.
 
 Rejecting one command does not fail C1 if lower non-zero candidates remain complete and safe.
 
-C1 as a whole fails when `H <= N_upper`, `G_upper` is non-finite, no tested non-zero command remains
-eligible and satisfies the strict formula, a zero-command trial is invalid/unsafe/incomplete or has
-continued late-window growth, any diagnostic records post-abort actuation, or the diagnostic cannot
-prove fresh-scene isolation. A post-abort actuation is systemic rather than candidate-local. If C1
-fails, reset diagnosis and production changes stop.
+C1 as a whole fails when a required class is omitted, `H <= N_upper`, `G_upper` is non-finite, no
+tested non-zero command remains eligible and satisfies the strict formula, a zero-command trial is
+invalid/unsafe/incomplete or has continued late-window growth, any diagnostic records post-abort
+actuation, or the diagnostic cannot prove fresh-scene isolation. A post-abort actuation is systemic
+rather than candidate-local. If C1 fails, C2b and production changes stop; retained C2a evidence is
+not promoted.
 
-## Gate C2 — task-ready reset pose
+## Gate C2b — controlled arrival and direct-reset qualification
 
-### Offline candidate search
+### Qualified C2a input
 
-After C1 passes, real Lula FK/IK evaluates pre-approach TCP candidates above the button at
-`[0.55, 0, 0.55]`, `[0.55, 0, 0.54]`, and `[0.55, 0, 0.53] m`, preserving the observed safe tool
-orientation. The highest-clearance candidate that passes all checks and the budget proof is chosen.
-
-For each candidate, the diagnostic records the solver frame, exact solver joint names/order, warm
-start, solver joint target, expanded articulation joint names/order and target, FK TCP pose, joint
-limits, workspace decision, and finite-state decision. It then propagates named joint state and FK
-through the complete reset/APPROACH/PRESS/HOLD/RELEASE/RETRACT path rather than reusing one initial
-Jacobian.
+C2b begins only after C2a selected a static-qualified pose/hash and pose-conditioned C1 selected a
+tested cap. It consumes those exact immutable inputs. The original solver frame, joint-name/order,
+warm-start, expanded articulation target, FK residual, joint-limit, workspace, finite-state, asset,
+configuration, and transform provenance remain mandatory. Named joint state and FK are propagated
+through controlled arrival and the complete reset/APPROACH/PRESS/HOLD/RELEASE/RETRACT path rather
+than reusing one initial Jacobian.
 
 ### Controlled validation before direct reset
 
-No candidate may be teleported during initial validation. The robot first follows a safety-governed,
+No candidate may be teleported during C2b validation. The robot first follows a safety-governed,
 no-contact, segmented pre-position trajectory using the C1 command cap:
 
 1. move at high clearance toward a waypoint above the button;
@@ -310,8 +334,8 @@ Every reset artifact includes:
 - cross-scene joint/TCP repeatability statistics;
 - hashes for configuration, traces, reports, and media index.
 
-C2 fails on any missing provenance field, failed candidate/trajectory/reset check, or fewer than ten
-complete fresh-scene reset trials. If C2 fails, combination and production changes stop.
+C2b fails on any missing provenance field, failed candidate/trajectory/reset check, or fewer than ten
+complete fresh-scene reset trials. C2 remains incomplete and combination/production changes stop.
 
 ## Gate C3 — combined trajectory and measured budget proof
 
@@ -387,12 +411,14 @@ acceptable RED.
 
 After architecture and RED-test commits:
 
-1. implement and verify C1 tracking diagnostics;
-2. run C1 in a new immutable evidence directory;
-3. stop if C1 fails;
-4. implement and verify C2 reset diagnostics;
-5. run offline candidates, controlled validation, and ten fresh-scene resets;
-6. stop if C2 fails;
+1. implement and verify C2a offline/static records and the pre-Play/zero-readiness runner;
+2. after separate approval, run C2a in a new immutable preliminary evidence directory and stop if it
+   does not produce one static-qualified pose/hash;
+3. implement and verify the shared qualifying kernel and pose-conditioned C1 diagnostics;
+4. resolve the separately approved command-matrix decision, then run C1 once only after explicit
+   authorization; stop if C1 fails;
+5. implement and verify C2b controlled-arrival/direct-reset diagnostics;
+6. run controlled validation and ten fresh-scene resets; stop if C2b fails;
 7. implement and verify C3 combined configuration/runner integration;
 8. run focused tests, Phase 7 tests, full pytest, and deprecated import scan;
 9. run one immutable approach-only episode;
@@ -409,13 +435,14 @@ The architecture uses a two-commit evidence closure:
 
 1. **Implementation commit E** contains the tested diagnostic/runtime machinery but no measured
    projection values. The worktree is clean at E.
-2. C1/C2 preliminary evidence is generated in immutable directories whose manifests identify E.
+2. C2a/C1/C2b preliminary evidence is generated in dependency order in immutable directories whose
+   manifests identify E (or a reviewed E2 after an approved matrix change).
    It is preliminary only and cannot satisfy final G1 freshness.
-3. **Projection commit P** versions the command cap, selected reset pose, complete reset provenance
-   references/hashes, measured budget projection, and current blocked task/gate documentation derived
-   from E evidence. P contains no unmeasured value.
-4. All final C1/C2/C3, staged G1, G0, and affected G-1B evidence is generated from a clean P checkout.
-   Every final manifest/report repository commit must equal P.
+3. **Projection commit P** versions the command cap, selected reset pose, complete C2a/C2b reset
+   provenance references/hashes, measured budget projection, and current blocked task/gate
+   documentation derived from E evidence. P contains no unmeasured value.
+4. All final C2a/C1/C2b/C3, staged G1, G0, and affected G-1B evidence is generated from a clean P
+   checkout. Every final manifest/report repository commit must equal P.
 
 No tracked code, configuration, task, acceptance, implementation, or architecture document may
 change after P and before final evidence review. Any tracked change creates a new projection HEAD

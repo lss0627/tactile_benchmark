@@ -1,23 +1,29 @@
 # G1 Control Architecture Implementation Plan
 
-> **Execution contract:** implement this plan task by task with test-driven development. Do not run a later C1/C2/C3 component after an earlier component fails. T070 remains unchecked until ten consecutive physical episodes pass at the same final projection HEAD.
+> **Execution contract:** implement this plan task by task with test-driven development. The sole dependency order is C2a static qualification, pose-conditioned C1, C2b controlled/reset qualification, then C3. Do not run a later component after an earlier component fails. T070 remains unchecked until ten consecutive physical episodes pass at the same final projection HEAD.
 
 **Goal:** Replace the zero-reserve PressButton approach with a measured command reserve and a validated task-ready reset while preserving the exact `0.0005 m` observed public-action displacement limit, truthful Contact/force semantics, hard budgets, and immutable evidence freshness.
 
-**Architecture:** Pure-Python modules own records, formulas, rejection decisions, provenance validation, and budget proof. Thin Isaac Sim diagnostic scripts only collect measurements and serialize those records. The existing PressButton runner consumes one validated, hashed cap/reset bundle and does not reimplement C1/C2 formulas. Evidence moves through implementation commit E, retained preliminary measurements, projection commit P, and full final evidence regenerated from clean P.
+**Architecture:** Pure-Python modules own records, formulas, rejection decisions, provenance validation, and budget proof. Thin Isaac Sim diagnostic scripts only collect measurements and serialize those records. C2a authors a task-ready candidate before Play and performs only zero readiness; C1 and the physical runner share one qualifying Lula finite-difference non-zero kernel; C2b consumes the passing cap for controlled arrival and reset qualification. Evidence moves through implementation commit E, retained preliminary measurements, projection commit P, and full final evidence regenerated from clean P.
 
 **Runtime boundary:** Python 3.12, Isaac Sim 6.0.1, CPU physics Contact, GPU RTX rendering permitted, driver `550.144.03` remains `UNVALIDATED`. Native GPU Contact remains blocked. Force-vector and wrench masks remain false. The observed hard limit is exactly `0.0005 m`; no epsilon, `isclose`, tolerance, or threshold expansion is permitted.
+
+**Non-zero repair task order:** [G1 C1 Task-Pose Non-Zero Envelope Implementation Plan](g1-c1-nonzero-envelope-implementation-plan.md) is authoritative for the C2a/shared-kernel/pose-conditioned-C1/C2b split and tasks required after attempt-03. The earlier task sections below retain historical RED/GREEN ownership but must not be read as authorizing the former C1-before-all-C2 order.
 
 ## Module boundaries and single responsibilities
 
 | Future file | Single responsibility |
 |---|---|
 | `isaac_tactile_libero/runtime/g1_tracking.py` | Immutable C1 sample/trial records, completeness checks, four-window growth, conservative noise/gain aggregation, candidate-local rejection, systemic failure, and tested-cap selection. No Isaac imports. |
+| `isaac_tactile_libero/runtime/g1_nonzero_kernel.py` | Import-safe shared qualifying-kernel records and fail-closed governor decisions. |
+| `isaac_tactile_libero/runtime/g1_static_pose.py` | C2a offline/static candidate, readiness, truth, and immutable evidence validation; no C2b claims. |
 | `isaac_tactile_libero/runtime/g1_reset.py` | Immutable C2 solver/reset records, joint-name expansion validation, measured settle/margin formulas, ten-scene repeatability, candidate rejection, and reset provenance validation. No Isaac imports. |
 | `isaac_tactile_libero/runtime/g1_budget.py` | C3 measured-progress lower bounds and complete action/time ledger validation against existing budgets. No Isaac imports. |
 | `isaac_tactile_libero/runtime/g1_bundle.py` | Schema and digest verification for the accepted cap/reset/budget bundle consumed by the production runner. No Isaac imports. |
 | `isaac_tactile_libero/evidence/g1_closure.py` | E/preliminary/P/final-HEAD evidence classification and freshness decisions; PR metadata is explicitly non-semantic. No Isaac imports. |
 | `isaac_tactile_libero/robots/fr3_reset_diagnostic.py` | FR3-specific Lula joint-name/order expansion and runtime-independent candidate record assembly. Isaac/Lula objects are injected rather than imported at module import time. |
+| `isaac_tactile_libero/robots/fr3_static_pose_diagnostic.py` | C2a Lula candidate assembly and pre-Play joint-state authoring; no non-zero trajectory. |
+| `scripts/run_g1_static_pose_qualification.py` | C2a static scene and fixed zero-readiness acquisition with preliminary/no-claim evidence. |
 | `scripts/run_g1_tracking_envelope.py` | Thin Isaac entry point for fresh-scene, no-contact C1 acquisition and immutable evidence emission. No cap formula duplication. |
 | `scripts/run_g1_task_ready_reset.py` | Thin Isaac entry point for offline candidate evaluation, controlled segmented pre-position, settle acquisition, ten fresh-scene resets, and immutable evidence emission. No reset acceptance formula duplication. |
 | `scripts/run_fr3_press_button_press_smoke.py` | Load and verify the accepted bundle, delegate budget proof, and record the bundle in evidence. Existing state machine remains the sole task actuator. |
@@ -136,11 +142,12 @@ python -m pytest -q tests/test_g1_tracking_envelope.py
 
 **Evidence:** preliminary E: `outputs/evidence/G1/c1-tracking-preliminary-<E-sha>/`; final P: `outputs/evidence/G1/c1-tracking-final-<P-sha>/`.
 
-**Stop:** any trial/systemic C1 failure. Do not begin C2.
+**Stop:** any trial/systemic C1 failure. Do not begin C2b. C2a must already have passed under the
+authoritative non-zero repair plan.
 
 **Commit boundary:** `feat(g1): add no-contact tracking diagnostic` (implementation commit E may include this task and Tasks 5-9 after all unit tests pass).
 
-## Task 5 — Define C2 solver records and exact joint expansion
+## Task 5 — Define C2a offline solver records and exact joint expansion
 
 **Files:**
 
@@ -154,17 +161,17 @@ python -m pytest -q tests/test_g1_tracking_envelope.py
 
 **Expected RED:** existing robot/runtime modules expose no reset-candidate record or validator callable.
 
-**Minimal implementation:** injected FK/IK adapter records and pure validators; every articulation joint is mapped exactly once in declared order. No actuation.
+**Minimal implementation:** injected FK/IK adapter records and pure validators; every articulation joint is mapped exactly once in declared order. C2a may later author the candidate before Play and run zero readiness, but this task performs no actuation and makes no controlled-arrival/direct-reset claim.
 
 **Focused GREEN:** `python -m pytest -q tests/test_g1_task_ready_reset.py -k 'solver or joint or fk or candidate'`.
 
-**Evidence:** `outputs/evidence/G1/c2-reset-preliminary-<E-sha>/offline-candidates.json`.
+**Evidence:** `outputs/evidence/G1/c2a-static-preliminary-<E-sha>/offline_candidates.jsonl`.
 
 **Stop:** frame/residual/workspace/finite/limit failure, name mismatch, incomplete expansion, or missing digest/provenance.
 
 **Commit boundary:** `feat(g1): validate task-ready reset candidates`.
 
-## Task 6 — Implement measured settle and joint-margin validation
+## Task 6 — Implement C2b measured settle and joint-margin validation
 
 **Files:**
 
@@ -187,7 +194,7 @@ python -m pytest -q tests/test_g1_tracking_envelope.py
 
 **Commit boundary:** `feat(g1): validate measured reset settling and margin`.
 
-## Task 7 — Validate ten fresh-scene resets and complete provenance
+## Task 7 — Validate C2b controlled arrival, ten fresh-scene resets, and complete provenance
 
 **Files:**
 
@@ -201,7 +208,7 @@ python -m pytest -q tests/test_g1_tracking_envelope.py
 
 **Expected RED:** no ten-reset/provenance bundle validator or reset diagnostic CLI exists.
 
-**Minimal implementation:** controlled high-clearance segmented pre-position first, then direct-reset trials only after controlled arrival passes. Record all ten failures rather than filtering them. Delegate acceptance to `g1_reset.py`.
+**Minimal implementation:** consume the C2a-qualified pose hash and the passing pose-conditioned C1 cap. Run controlled high-clearance segmented pre-position first, then direct-reset trials only after controlled arrival passes. Record all ten failures rather than filtering them. Delegate acceptance to `g1_reset.py`. Pre-Play C2a authoring is not evidence for either controlled arrival or direct reset.
 
 **Focused GREEN:** the complete reset test file.
 
@@ -303,11 +310,11 @@ python -m pytest -q
 python scripts/check_isaacsim6_imports.py --deprecated-as-error
 ```
 
-**Minimal implementation:** none beyond Tasks 1-10. Commit clean tested machinery as E. Run C1 preliminary. Only if C1 passes, run C2 preliminary. Only if C2 passes, produce C3 projection proof.
+**Minimal implementation:** none beyond the approved tasks. Commit clean tested machinery as E. After separate execution approval, run C2a preliminary first. Only if C2a passes, run pose-conditioned C1 under its own one-run approval. Only if C1 passes, run C2b preliminary. Only if C2b passes, produce C3 projection proof.
 
-**Evidence:** `outputs/evidence/G1/{c1-tracking,c2-reset,c3-budget}-preliminary-<E-sha>/`, each labelled preliminary and recording E.
+**Evidence:** `outputs/evidence/G1/{c2a-static,c1-tracking,c2b-reset,c3-budget}-preliminary-<E-sha>/`, each labelled preliminary and recording E (or a reviewed E2 after an approved matrix change).
 
-**Stop:** any test/import failure or any C1/C2/C3 runtime stop condition. Preserve all failed artifacts. T070 remains unchecked.
+**Stop:** any test/import failure or any C2a/C1/C2b/C3 runtime stop condition. Preserve all failed artifacts. T070 remains unchecked.
 
 **Commit boundary:** `feat(g1): implement measured control and reset diagnostics` (E).
 
@@ -326,7 +333,7 @@ python scripts/check_isaacsim6_imports.py --deprecated-as-error
 
 **Expected RED:** projection configuration does not yet identify the validated bundle.
 
-**Minimal implementation:** copy only measured values and hashes from retained E evidence, commit clean P, then regenerate C1/C2/C3 from P. No tracked change is allowed after P without creating P2 and refreshing all affected evidence.
+**Minimal implementation:** copy only measured values and hashes from retained E evidence, commit clean P, then regenerate C2a/C1/C2b/C3 from P. No tracked change is allowed after P without creating P2 and refreshing all affected evidence.
 
 **Focused GREEN:** focused suites, Phase 7 suite, full pytest, and import scan at clean P.
 
@@ -341,9 +348,9 @@ python scripts/run_isaacsim6_g1b.py --cycles 100 --steps 500 \
   --output outputs/evidence/G-1B/control-architecture-$final_sha/report.json
 ```
 
-Then run final C1, C2, C3 and staged physical execution: approach-only, one press, three consecutive, and only then ten consecutive. Every final manifest must record exact P, semantic hashes at P, CPU Contact/GPU rendering boundary, false force/wrench validity, and the unvalidated driver blocker.
+Then run final C2a, C1, C2b, C3 and staged physical execution: approach-only, one press, three consecutive, and only then ten consecutive. Every final manifest must record exact P, semantic hashes at P, CPU Contact/GPU rendering boundary, false force/wrench validity, and the unvalidated driver blocker.
 
-**Stop:** any G0/G-1B/C1/C2/C3/staged physical failure; any tracked change after P; any safety, release/reset, budget, force-truth, or freshness violation. Preserve failures and leave T070 unchecked.
+**Stop:** any G0/G-1B/C2a/C1/C2b/C3/staged physical failure; any tracked change after P; any safety, release/reset, budget, force-truth, or freshness violation. Preserve failures and leave T070 unchecked.
 
 **Commit boundary:** `chore(g1): project measured control reset bundle` (P). If later tracked status changes are required, that commit is P2 and triggers the complete affected refresh loop.
 
