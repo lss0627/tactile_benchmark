@@ -31,23 +31,32 @@ All structured validation failures use a dedicated `G1ValidationError` carrying 
 **Files:**
 
 - Modify `tests/test_fr3_runtime_safety.py`
-- Modify `tests/test_g1_press_button_runner_evidence.py`
-- Later modify `isaac_tactile_libero/robots/fr3_runtime_safety.py`
-- Later modify `isaac_tactile_libero/runtime/g1_bundle.py`
+- Modify `isaac_tactile_libero/robots/fr3_runtime_safety.py`
+- Retain the eight bundle/evidence RED nodes in `tests/test_g1_press_button_runner_evidence.py`
+  for Task 9; they are not owned by Task 1 and are not required to turn green here.
 
-**First failing tests:** exact `0.0005 m` observed displacement passes; `math.nextafter(0.0005, math.inf)` aborts with `PER_STEP_MOTION_LIMIT`; source/config policy rejects epsilon/`isclose` and any observed limit other than exact `0.0005`; a production command cap must be strictly below the observed limit.
+**First failing tests:** exact `0.0005 m` observed displacement passes; `math.nextafter(0.0005, math.inf)` aborts with `PER_STEP_MOTION_LIMIT`; source/config policy rejects epsilon/`isclose` and any observed limit other than exact `0.0005`.
 
 **RED command:**
 
 ```bash
-python -m pytest -q tests/test_fr3_runtime_safety.py tests/test_g1_press_button_runner_evidence.py
+python -m pytest -q \
+  tests/test_fr3_runtime_safety.py::test_observed_public_action_displacement_equal_to_exact_hard_limit_passes \
+  tests/test_fr3_runtime_safety.py::test_nextafter_above_exact_observed_hard_limit_aborts_without_epsilon \
+  tests/test_fr3_runtime_safety.py::test_observed_hard_limit_comparison_source_has_no_epsilon_or_isclose \
+  tests/test_fr3_runtime_safety.py::test_physical_safety_config_requires_exact_observed_hard_limit
 ```
 
-**Expected RED:** current safety code adds `1.0e-12`, so `nextafter` is incorrectly accepted; the runner has no accepted-bundle/cap validation capability.
+**Expected RED:** current safety code adds `1.0e-12`, so `nextafter` is incorrectly accepted; the
+loader also does not yet enforce the immutable exact physical observed-limit value. The runner
+bundle/evidence failures remain intentionally RED until Task 9.
 
-**Minimal implementation:** remove only the epsilon from the observed step comparison, expose the immutable hard-limit policy, and validate `command_cap_m < 0.0005` without changing the hard limit or any unrelated tolerance.
+**Minimal implementation:** remove only the epsilon from the observed step comparison and enforce
+the exact physical observed-limit value without changing any other joint/float32 tolerance. Do not
+implement command-cap or bundle validation in Task 1.
 
-**Focused GREEN:** the same command above.
+**Focused GREEN:** only the four node IDs in the RED command above. The whole runner evidence file
+is not a Task 1 GREEN target.
 
 **Evidence:** unit-test log under preliminary E verification; no physical evidence.
 
