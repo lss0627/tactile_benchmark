@@ -6,6 +6,8 @@
 **Evidence baseline**: `single-cadence-fix-4151837a15c1`  
 **Decision**: Conditional option C — measured command reserve plus a validated task-ready reset pose
 
+**C1 zero-command addendum**: [Zero-Command Root-Cause and Repair Architecture Review](g1-c1-zero-command-root-cause-review.md)
+
 ## Status and immutable boundaries
 
 T055-T069 are implemented. T070 remains incomplete and G1 remains `BLOCKED`. This review does not
