@@ -157,9 +157,27 @@ def _requested_vector(scene: Any, command_magnitude_m: float) -> tuple[float, fl
     return tuple(float(value) for value in requested)
 
 
+def tracking_collision_fields(collision_report: Mapping[str, Any]) -> dict[str, Any]:
+    """Map monitor output without inferring provenance from a zero penetration value."""
+
+    valid = collision_report.get("valid") is True
+    return {
+        "collision": bool(collision_report.get("unsafe_collision", False)),
+        "penetration_m": float(collision_report.get("max_penetration_m", 0.0)),
+        "penetration_provenance_valid": valid,
+        "collision_report_valid": valid,
+        "collision_monitor_error": collision_report.get("error"),
+    }
+
+
 def _trial_failure_code(step: Mapping[str, Any]) -> str | None:
     if bool(step.get("contact")) or int(step.get("raw_contact_count", 0)) > 0:
         return "G1_C1_CANDIDATE_CONTACT"
+    if (
+        "penetration_provenance_valid" in step
+        and step.get("penetration_provenance_valid") is not True
+    ):
+        return "G1_C1_CANDIDATE_PENETRATION_PROVENANCE"
     if bool(step.get("force_vector_valid")) or bool(step.get("wrench_valid")):
         return "G1_C1_CANDIDATE_FAKE_FORCE"
     if step.get("finite") is not True:
@@ -227,6 +245,8 @@ def _tracking_sample(
         "penetration_provenance_valid": bool(
             step.get("penetration_provenance_valid", False)
         ),
+        "collision_report_valid": step.get("collision_report_valid") is True,
+        "collision_monitor_error": step.get("collision_monitor_error"),
         "finite": bool(step.get("finite", False)),
         "safety_events": list(step.get("safety_events", [])),
         "post_abort_actuation_count": int(step.get("post_abort_actuation_count", 0)),
@@ -246,7 +266,11 @@ def _execute_tracking_trial(spec: Mapping[str, Any], scene: Any) -> dict[str, An
     failure_code: str | None = None
     post_abort_actuation_count = 0
     target_latch_provenance: dict[str, Any] = {}
-    supports_readiness = "phase" in inspect.signature(scene.step).parameters
+    step_parameters = inspect.signature(scene.step).parameters.values()
+    supports_readiness = any(
+        parameter.name == "phase" or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in step_parameters
+    )
     if supports_readiness:
         readiness_requested = (0.0, 0.0, 0.0)
         for action_index in range(READINESS_ACTIONS):
@@ -328,6 +352,7 @@ def run_g1_tracking_plan(
     retained: list[dict[str, Any]] = []
     stop_after_command: float | None = None
     systemic_failure_code: str | None = None
+    systemic_failure_message: str | None = None
     for spec in plan["trials"]:
         command = float(spec["command_magnitude_m"])
         if stop_after_command is not None and command > stop_after_command:
@@ -341,6 +366,9 @@ def run_g1_tracking_plan(
         if trial["failure_code"] is not None:
             if str(trial["failure_code"]).startswith("G1_C1_READINESS_"):
                 systemic_failure_code = str(trial["failure_code"])
+                systemic_failure_message = (
+                    f"C1 readiness failed before measurement: {systemic_failure_code}"
+                )
             stop_after_command = command
             break
     return {
@@ -356,6 +384,7 @@ def run_g1_tracking_plan(
         "stopped_after_command_m": stop_after_command,
         "systemic_failure": systemic_failure_code is not None,
         "systemic_failure_code": systemic_failure_code,
+        "systemic_failure_message": systemic_failure_message,
     }
 
 
@@ -566,16 +595,23 @@ def orchestrate_g1_tracking_diagnostic(
         try:
             factory = factory_builder()
             result = plan_runner(plan, scene_factory=factory)
-            try:
-                aggregation = dict(
-                    aggregator(
-                        result.get("trials", []),
-                        observed_hard_limit_m=OBSERVED_HARD_LIMIT_M,
-                        tested_commands_m=NONZERO_TRACKING_COMMANDS_M,
+            if result.get("systemic_failure") is True:
+                aggregation = {
+                    "systemic_failure": True,
+                    "systemic_failure_code": result.get("systemic_failure_code"),
+                    "systemic_failure_message": result.get("systemic_failure_message"),
+                }
+            else:
+                try:
+                    aggregation = dict(
+                        aggregator(
+                            result.get("trials", []),
+                            observed_hard_limit_m=OBSERVED_HARD_LIMIT_M,
+                            tested_commands_m=NONZERO_TRACKING_COMMANDS_M,
+                        )
                     )
-                )
-            except Exception as error:
-                aggregation = dict(failure_builder(error))
+                except Exception as error:
+                    aggregation = dict(failure_builder(error))
         except Exception as error:
             aggregation = dict(failure_builder(error))
 
@@ -875,6 +911,7 @@ class _IsaacTrackingScene:
         observed_delta = after_tcp - before_tcp
         contact = self.contact_sensor.read(action_index + 1)
         collision = self.collision_monitor.read()
+        collision_fields = tracking_collision_fields(collision)
         button = self.mechanism.read_stage(runtime.ik_runtime.ee_controller.controller.stage)
         if not self._aborted:
             post_sample = FR3SafetySample(
@@ -885,8 +922,8 @@ class _IsaacTrackingScene:
                 joint_velocities=tuple(float(value) for value in joint_after.joint_velocities),
                 requested_delta=tuple(float(value) for value in requested),
                 observed_delta=tuple(float(value) for value in observed_delta),
-                collision=bool(collision["unsafe_collision"]),
-                penetration_m=float(collision["max_penetration_m"]),
+                collision=bool(collision_fields["collision"]),
+                penetration_m=float(collision_fields["penetration_m"]),
                 stop_requested=False,
                 phase="APPROACH",
             )
@@ -911,9 +948,7 @@ class _IsaacTrackingScene:
             "joint_velocities_rad_s": list(joint_after.joint_velocities),
             "contact": bool(contact.in_contact),
             "raw_contact_count": len(contact.raw_contacts),
-            "collision": bool(collision["unsafe_collision"]),
-            "penetration_m": float(collision["max_penetration_m"]),
-            "penetration_provenance_valid": True,
+            **collision_fields,
             "finite": finite,
             "safety_events": safety_events,
             "post_abort_actuation_count": 0,
