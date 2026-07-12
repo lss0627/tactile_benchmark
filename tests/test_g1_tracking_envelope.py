@@ -915,6 +915,22 @@ class _FakeLifecycleFactory:
         self.events.append("shutdown")
 
 
+class _ReadinessLifecycleFactory(_FakeLifecycleFactory):
+    def __init__(self, events: list[str], *, failure_kind: str) -> None:
+        super().__init__(events)
+        self.failure_kind = failure_kind
+        self.scenes: list[_ReadinessTrackingScene] = []
+
+    def __call__(self, **spec):
+        scene = _ReadinessTrackingScene(
+            scene_id=spec["scene_id"],
+            command_magnitude_m=spec["command_magnitude_m"],
+            fail_readiness_as=self.failure_kind,
+        )
+        self.scenes.append(scene)
+        return scene
+
+
 def _lifecycle_kwargs(tmp_path: Path, **changes: Any) -> dict[str, Any]:
     runner = _tracking_runner()
     payload: dict[str, Any] = {
@@ -925,6 +941,155 @@ def _lifecycle_kwargs(tmp_path: Path, **changes: Any) -> dict[str, Any]:
     }
     payload.update(changes)
     return payload
+
+
+def test_c1_orchestration_preserves_readiness_systemic_failure_without_reaggregation(
+    tmp_path: Path,
+) -> None:
+    runner, orchestrate = _tracking_lifecycle()
+    output = tmp_path / "readiness-contact"
+    events: list[str] = []
+    factory = _ReadinessLifecycleFactory(events, failure_kind="contact")
+    aggregator_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    def forbidden_aggregator(*args, **kwargs):
+        aggregator_calls.append((args, kwargs))
+        raise AssertionError("measurement aggregator must not run after readiness failure")
+
+    outcome = orchestrate(
+        **_lifecycle_kwargs(tmp_path, output=output),
+        factory_builder=lambda: factory,
+        aggregator=forbidden_aggregator,
+    )
+
+    report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    exact_code = "G1_C1_READINESS_CONTACT"
+    assert aggregator_calls == []
+    assert outcome["aggregation"]["systemic_failure"] is True
+    assert outcome["aggregation"]["systemic_failure_code"] == exact_code
+    assert report["systemic_failure_code"] == exact_code
+    assert report["aggregation"]["systemic_failure_code"] == exact_code
+    assert manifest["systemic_failure_code"] == exact_code
+    assert exact_code in manifest["blockers"]
+    assert outcome["exit_code"] == 1
+    assert factory.close_exit_codes == [1]
+    assert factory.close_count == 1
+    assert len(factory.scenes) == 1
+    assert factory.scenes[0].measurement_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("collision_report", "expected_valid", "expected_penetration", "expected_error"),
+    [
+        pytest.param(
+            {"valid": True, "max_penetration_m": 0.0013, "error": None},
+            True,
+            0.0013,
+            None,
+            id="valid",
+        ),
+        pytest.param(
+            {"valid": False, "max_penetration_m": 0.0, "error": "contact report unavailable"},
+            False,
+            0.0,
+            "contact report unavailable",
+            id="invalid",
+        ),
+        pytest.param(
+            {"max_penetration_m": 0.0, "error": "validity missing"},
+            False,
+            0.0,
+            "validity missing",
+            id="missing-valid",
+        ),
+    ],
+)
+def test_c1_collision_report_validity_controls_penetration_provenance(
+    collision_report: dict[str, Any],
+    expected_valid: bool,
+    expected_penetration: float,
+    expected_error: str | None,
+) -> None:
+    runner = _tracking_runner()
+    mapper = getattr(runner, "tracking_collision_fields", None)
+    assert callable(mapper), "C1 runner missing conservative collision provenance mapping"
+
+    fields = mapper(collision_report)
+
+    assert fields["penetration_provenance_valid"] is expected_valid
+    assert fields["collision_report_valid"] is expected_valid
+    assert fields["penetration_m"] == expected_penetration
+    assert fields["collision_monitor_error"] == expected_error
+
+
+def test_c1_invalid_collision_report_blocks_readiness_with_exact_provenance_code(
+    tmp_path: Path,
+) -> None:
+    runner, orchestrate = _tracking_lifecycle()
+    output = tmp_path / "readiness-penetration-provenance"
+    factory = _ReadinessLifecycleFactory([], failure_kind="invalid_penetration")
+    aggregator_calls = 0
+
+    def forbidden_aggregator(*args, **kwargs):
+        nonlocal aggregator_calls
+        aggregator_calls += 1
+        raise AssertionError("measurement aggregator must not run after readiness failure")
+
+    outcome = orchestrate(
+        **_lifecycle_kwargs(tmp_path, output=output),
+        factory_builder=lambda: factory,
+        aggregator=forbidden_aggregator,
+    )
+
+    report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    exact_code = "G1_C1_READINESS_PENETRATION_PROVENANCE"
+    assert aggregator_calls == 0
+    assert outcome["aggregation"]["systemic_failure_code"] == exact_code
+    assert report["systemic_failure_code"] == exact_code
+    assert manifest["systemic_failure_code"] == exact_code
+    assert outcome["exit_code"] == 1
+    assert factory.close_exit_codes == [1]
+    assert factory.close_count == 1
+    assert factory.scenes[0].measurement_calls == 0
+
+
+def test_c1_invalid_collision_report_blocks_measurement_evidence() -> None:
+    runner = _tracking_runner()
+    scenes: list[_ReadinessTrackingScene] = []
+
+    class MeasurementInvalidCollisionScene(_ReadinessTrackingScene):
+        def step(self, **kwargs):
+            sample = super().step(**kwargs)
+            if kwargs.get("phase") == "measurement" and kwargs["action_index"] == 5:
+                sample["penetration_provenance_valid"] = False
+                sample["collision_report_valid"] = False
+                sample["collision_monitor_error"] = "contact report unavailable"
+            return sample
+
+    def factory(**spec):
+        scene = MeasurementInvalidCollisionScene(
+            scene_id=spec["scene_id"],
+            command_magnitude_m=spec["command_magnitude_m"],
+        )
+        scenes.append(scene)
+        return scene
+
+    result = runner.run_g1_tracking_plan(
+        runner.build_g1_tracking_plan(seed=20260712), scene_factory=factory
+    )
+
+    assert len(result["trials"]) == 1
+    failed = result["trials"][0]
+    assert failed["failure_code"] == "G1_C1_CANDIDATE_PENETRATION_PROVENANCE"
+    assert failed["complete"] is False
+    assert len(failed["readiness_samples"]) == 64
+    assert len(failed["samples"]) == 6
+    assert failed["samples"][-1]["penetration_provenance_valid"] is False
+    assert failed["samples"][-1]["collision_report_valid"] is False
+    assert failed["samples"][-1]["collision_monitor_error"] == "contact report unavailable"
+    assert scenes[0].measurement_calls == 6
 
 
 def test_c1_runtime_failure_writes_evidence_before_shutdown(tmp_path: Path) -> None:
