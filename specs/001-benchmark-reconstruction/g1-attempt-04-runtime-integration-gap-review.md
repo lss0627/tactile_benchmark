@@ -19,6 +19,12 @@
 
 **Runtime decision**: `ATTEMPT_04_PROHIBITED`
 
+**Contact-exclusion schema dependency**: see
+[`g1-contact-exclusion-schema-review.md`](g1-contact-exclusion-schema-review.md). T152 remains
+blocked pending separate approval and a RED schema-correction checkpoint; after the approved
+geometry schema changes config/code provenance, current C2a evidence must be refreshed under
+`CURRENT_C2A_REFRESH_REQUIRED_AFTER_GEOMETRY_SCHEMA_CHANGE`.
+
 ## 1. Scope and binding status
 
 This is a pure-document review. It accepts the recommendation in

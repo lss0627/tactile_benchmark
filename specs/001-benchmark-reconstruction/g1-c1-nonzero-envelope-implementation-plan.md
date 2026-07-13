@@ -397,6 +397,11 @@ workspace and outside button/contact exclusion. If any selected pose cannot supp
 the pose is not C1-qualified; the route is never shortened after inspection. Phase segment indices,
 endpoint remainders, reversals, and motif digest are recorded in every sample.
 
+The authoritative TCP-point contact-exclusion geometry, continuous-segment mathematics, truth
+boundary, and post-schema C2a freshness requirement are fixed by
+[`g1-contact-exclusion-schema-review.md`](g1-contact-exclusion-schema-review.md); the former
+single-sphere RED fixture is not a production geometry contract.
+
 The zero command is executed for every required class and three fresh scenes; its trajectory
 generator returns exactly zero for all 256 measurement actions. Thus the declared unchanged matrix
 is `6 classes x 5 current commands x 3 fresh scenes`, subject only to the fail-closed stop-tail in

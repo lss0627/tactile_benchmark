@@ -220,6 +220,12 @@ evidence/review conditions pass.
 
 - [ ] T152 [US2] 将 C2a selected pose/hash、pre-Play fresh-scene authoring、六类 trajectory motifs、shared qualifying kernel、multiclass aggregation 及 immutable evidence 接入真实 `run_g1_tracking_envelope.py` CLI。 This task requires an approved RED-only checkpoint followed by a separately reviewed GREEN implementation and complete verification; the attempt-04 runtime integration gap review does not complete it (FR-009, FR-011, FR-027, FR-028; SC-003, SC-004; AS-US2-2/4).
 
+**T152 contact-exclusion blocker**: [`g1-contact-exclusion-schema-review.md`](g1-contact-exclusion-schema-review.md)
+defines the approved shared analytic solids and `0.005 m` TCP-point clearance. It requires a
+separate RED schema-correction checkpoint before GREEN. Once geometry config/parser changes land,
+`CURRENT_C2A_REFRESH_REQUIRED_AFTER_GEOMETRY_SCHEMA_CHANGE` blocks T151 and attempt-04 until a
+separately approved fresh C2a run and review at the final implementation commit.
+
 **T070 dependency**: T139-T152 must all be complete, pose-conditioned C1 must produce an eligible
 tested cap, C2b controlled arrival/direct-reset repeatability must pass, and C3 combined trajectory/
 budget proof must pass before T070 can execute. A RED-only checkpoint does not complete T139-T148
