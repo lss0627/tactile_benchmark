@@ -31,6 +31,8 @@ from isaac_tactile_libero.robots.fr3_static_pose_diagnostic import (
 from isaac_tactile_libero.runtime.g1_static_pose import (
     C2A_ARTICULATION_JOINT_NAMES,
     C2A_CANDIDATES,
+    C2A_ORIENTATION_RESIDUAL_LIMIT_RAD,
+    C2A_POSITION_RESIDUAL_LIMIT_M,
     select_c2a_static_pose,
     validate_c2a_offline_record,
     validate_c2a_readiness_sample,
@@ -44,6 +46,23 @@ C2A_PHYSICS_SUBSTEPS = 3
 DEFAULT_TASK_CONFIG = "configs/tasks/press_button_physical.yaml"
 DEFAULT_ROBOT_CONFIG = "configs/robots/fr3_press_button_safe.yaml"
 PRELIMINARY_BLOCKER = "C2A_PRELIMINARY_NOT_GATE_EVIDENCE"
+C2A_DIGEST_FIELDS = (
+    "solver_config_sha256",
+    "transform_sha256",
+    "asset_sha256",
+    "dependency_lock_sha256",
+    "task_config_sha256",
+    "robot_config_sha256",
+    "code_sha256",
+    "pose_list_sha256",
+    "orientation_source_sha256",
+)
+C2A_SHARED_FRAME_PROVENANCE_FIELDS = (
+    "target_orientation_xyzw",
+    "orientation_source",
+    "world_from_base",
+    "base_from_world",
+)
 
 
 def _utc_now() -> str:
@@ -183,31 +202,250 @@ def validate_c2a_reference_scene(reference: Mapping[str, Any]) -> dict[str, Any]
     return dict(reference)
 
 
+def _valid_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _validate_real_c2a_offline_failure_record(
+    record: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate a truthful, candidate-local Lula failure without invented solve output."""
+
+    required = (
+        "schema_version",
+        "candidate_id",
+        "candidate_order",
+        "target_position_world_m",
+        "target_orientation_xyzw",
+        "orientation_source",
+        "solver_identity",
+        "solver_config_sha256",
+        "solver_frame",
+        "base_frame",
+        "ee_frame",
+        "warm_start_joint_names",
+        "warm_start_joint_values",
+        "solver_joint_names",
+        "solver_joint_values",
+        "articulation_joint_names",
+        "articulation_joint_values",
+        "reference_finger_values",
+        "joint_lower",
+        "joint_upper",
+        "fk_position_world_m",
+        "fk_orientation_xyzw",
+        "ik_solution_valid",
+        "fk_residual_valid",
+        "ik_position_residual_m",
+        "ik_orientation_residual_rad",
+        "residual_limits",
+        "workspace_valid",
+        "stage_meters_per_unit",
+        "stage_up_axis",
+        "world_from_base",
+        "base_from_world",
+        "transform_sha256",
+        "finite",
+        "asset_sha256",
+        "dependency_lock_sha256",
+        "task_config_sha256",
+        "robot_config_sha256",
+        "code_sha256",
+        "pose_list_sha256",
+        "orientation_source_sha256",
+        "actuation_performed",
+        "selected_command_cap_m",
+        "direct_reset_qualified",
+        "reset_repeatability_qualified",
+        "offline_failure_code",
+        "offline_failure_message",
+        "scene_count",
+        "readiness_sample_count",
+    )
+    if not isinstance(record, Mapping) or any(field not in record for field in required):
+        _fail("G1_C2A_DIGEST_MISSING", "C2a offline failure record is incomplete")
+    code = record["offline_failure_code"]
+    message = record["offline_failure_message"]
+    if not isinstance(code, str) or not code.strip():
+        _fail("G1_C2A_IK_FAILED", "C2a offline failure code is empty")
+    if not isinstance(message, str) or not message.strip():
+        _fail("G1_C2A_IK_FAILED", "C2a offline failure message is empty")
+    if record["schema_version"] != "g1.c2a.static.v1":
+        _fail("G1_C2A_DIGEST_MISSING", "C2a offline failure schema is invalid")
+    try:
+        orientation = np.asarray(
+            record["target_orientation_xyzw"], dtype=np.float64
+        )
+    except (TypeError, ValueError):
+        _fail("G1_C2A_NONFINITE", "C2a offline failure orientation is not numeric")
+    if (
+        orientation.shape != (4,)
+        or not np.all(np.isfinite(orientation))
+        or abs(float(np.linalg.norm(orientation)) - 1.0) > 1e-12
+        or not isinstance(record["orientation_source"], Mapping)
+    ):
+        _fail("G1_C2A_FRAME", "C2a offline failure orientation provenance is invalid")
+    if (
+        record["solver_frame"] != "fr3_hand_tcp"
+        or record["base_frame"] != "fr3_link0"
+        or record["ee_frame"] != "/World/FR3/fr3_hand_tcp"
+    ):
+        _fail("G1_C2A_FRAME", "C2a offline failure frame identity is invalid")
+    if record["stage_meters_per_unit"] != 1.0 or record["stage_up_axis"] != "Z":
+        _fail("G1_C2A_STAGE_UNITS", "C2a stage must use metres and Z-up")
+    if record["workspace_valid"] is not True:
+        _fail("G1_C2A_WORKSPACE", "C2a failed candidate target is outside the workspace")
+    if record["finite"] is not True:
+        _fail("G1_C2A_NONFINITE", "C2a offline failure provenance is non-finite")
+
+    arm_names = C2A_ARTICULATION_JOINT_NAMES[:7]
+    try:
+        warm_start_names = tuple(
+            str(name) for name in record["warm_start_joint_names"]
+        )
+        solver_names = tuple(str(name) for name in record["solver_joint_names"])
+        articulation_names = tuple(
+            str(name) for name in record["articulation_joint_names"]
+        )
+    except TypeError:
+        _fail("G1_C2A_JOINT_IDENTITY", "C2a offline failure joint identity is invalid")
+    if (
+        warm_start_names != arm_names
+        or solver_names != arm_names
+        or articulation_names != C2A_ARTICULATION_JOINT_NAMES
+    ):
+        _fail("G1_C2A_JOINT_IDENTITY", "C2a offline failure joint identity is invalid")
+    try:
+        warm_start = np.asarray(record["warm_start_joint_values"], dtype=np.float64)
+        fingers = np.asarray(record["reference_finger_values"], dtype=np.float64)
+        lower = np.asarray(record["joint_lower"], dtype=np.float64)
+        upper = np.asarray(record["joint_upper"], dtype=np.float64)
+    except (TypeError, ValueError):
+        _fail("G1_C2A_NONFINITE", "C2a offline failure joint provenance is not numeric")
+    if (
+        warm_start.shape != (7,)
+        or fingers.shape != (2,)
+        or lower.shape != (9,)
+        or upper.shape != (9,)
+        or not np.all(np.isfinite([*warm_start, *fingers, *lower, *upper]))
+        or np.any(lower >= upper)
+    ):
+        _fail("G1_C2A_NONFINITE", "C2a offline failure joint provenance is invalid")
+    if (
+        record["ik_solution_valid"] is not False
+        or record["fk_residual_valid"] is not False
+        or record["solver_joint_values"] is not None
+        or record["articulation_joint_values"] is not None
+        or record["fk_position_world_m"] is not None
+        or record["fk_orientation_xyzw"] is not None
+        or record["ik_position_residual_m"] is not None
+        or record["ik_orientation_residual_rad"] is not None
+    ):
+        _fail("G1_C2A_IK_FAILED", "C2a failed solve contains fabricated solver/FK output")
+    limits = record["residual_limits"]
+    if (
+        not isinstance(limits, Mapping)
+        or limits.get("position_m") != C2A_POSITION_RESIDUAL_LIMIT_M
+        or limits.get("orientation_rad") != C2A_ORIENTATION_RESIDUAL_LIMIT_RAD
+    ):
+        _fail("G1_C2A_IK_RESIDUAL", "C2a failure record changed the residual limits")
+
+    try:
+        world_from_base = np.asarray(record["world_from_base"], dtype=np.float64)
+        base_from_world = np.asarray(record["base_from_world"], dtype=np.float64)
+    except (TypeError, ValueError):
+        _fail("G1_C2A_NONFINITE", "C2a offline failure transform is not numeric")
+    if (
+        world_from_base.shape != (4, 4)
+        or base_from_world.shape != (4, 4)
+        or not np.all(np.isfinite([*world_from_base.ravel(), *base_from_world.ravel()]))
+    ):
+        _fail("G1_C2A_NONFINITE", "C2a offline failure transform is invalid")
+    if not np.allclose(
+        world_from_base @ base_from_world,
+        np.eye(4),
+        rtol=0.0,
+        atol=1e-9,
+    ) or not np.allclose(
+        base_from_world @ world_from_base,
+        np.eye(4),
+        rtol=0.0,
+        atol=1e-9,
+    ):
+        _fail("G1_C2A_FRAME", "C2a offline failure transforms are not inverses")
+    for field in C2A_DIGEST_FIELDS:
+        if not _valid_sha256(record[field]):
+            _fail("G1_C2A_DIGEST_MISSING", f"C2a digest {field} is missing or invalid")
+    if (
+        record["actuation_performed"] is not False
+        or record["selected_command_cap_m"] is not None
+        or record["direct_reset_qualified"] is not False
+        or record["reset_repeatability_qualified"] is not False
+        or record["scene_count"] != 0
+        or record["readiness_sample_count"] != 0
+    ):
+        _fail("G1_C2A_FRAME", "C2a rejected candidate cannot claim scene work or actuation")
+    return dict(record)
+
+
+def _validate_shared_c2a_candidate_provenance(
+    records: Sequence[Mapping[str, Any]],
+) -> None:
+    baseline = records[0]
+    for field in C2A_DIGEST_FIELDS:
+        if any(record.get(field) != baseline.get(field) for record in records[1:]):
+            _fail("G1_C2A_DIGEST_MISSING", f"C2a digest provenance is inconsistent: {field}")
+    for field in C2A_SHARED_FRAME_PROVENANCE_FIELDS:
+        baseline_value = _jsonable(baseline.get(field))
+        if any(_jsonable(record.get(field)) != baseline_value for record in records[1:]):
+            _fail("G1_C2A_FRAME", f"C2a shared frame provenance is inconsistent: {field}")
+
+
 def validate_real_c2a_offline_candidates(
     records: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Reject fixture-provided passing records from the executable CLI path."""
+    """Validate fixed real records while retaining well-formed candidate-local failures."""
 
     if len(records) != len(C2A_CANDIDATES):
         _fail("G1_C2A_IK_FAILED", "C2a real Lula path must return all three candidates")
     validated: list[dict[str, Any]] = []
     for order, (record, (candidate_id, position)) in enumerate(zip(records, C2A_CANDIDATES)):
-        if record.get("offline_failure_code"):
-            _fail(
-                str(record["offline_failure_code"]),
-                str(record.get("offline_failure_message") or "C2a Lula offline candidate failed"),
-            )
+        if not isinstance(record, Mapping):
+            _fail("G1_C2A_NONFINITE", "C2a real offline record must be a mapping")
         if record.get("synthetic_test_double") is not False or record.get("real_runtime_truth") is not True:
             _fail("G1_C2A_SYNTHETIC_RUNTIME_FORBIDDEN", "synthetic offline candidate is forbidden")
+        try:
+            target_position = list(record.get("target_position_world_m", []))
+        except TypeError:
+            _fail("G1_C2A_FRAME", "C2a candidate target position is invalid")
         if (
             record.get("candidate_id") != candidate_id
             or record.get("candidate_order") != order
-            or list(record.get("target_position_world_m", [])) != list(position)
+            or target_position != list(position)
         ):
             _fail("G1_C2A_FRAME", "C2a candidate ID/order/position differs from the reviewed list")
-        if "lula" not in str(record.get("solver_identity", "")).lower():
+        if record.get("solver_identity") != "isaacsim_lula_fr3":
             _fail("G1_C2A_IK_FAILED", "C2a real offline record is not from Lula")
+        for field in C2A_DIGEST_FIELDS:
+            if field not in record or not _valid_sha256(record[field]):
+                _fail(
+                    "G1_C2A_DIGEST_MISSING",
+                    f"C2a digest {field} is missing or invalid",
+                )
+        if record.get("offline_failure_code") is not None:
+            validated.append(_validate_real_c2a_offline_failure_record(record))
+            continue
+        if (
+            record.get("ik_solution_valid") is not True
+            or record.get("fk_residual_valid") is not True
+        ):
+            _fail("G1_C2A_IK_FAILED", "C2a successful Lula record lacks valid solver/FK state")
         validated.append(validate_c2a_offline_record(record))
+    _validate_shared_c2a_candidate_provenance(validated)
     return validated
 
 
@@ -291,6 +529,28 @@ def validate_real_c2a_readiness_sample(sample: Mapping[str, Any]) -> dict[str, A
     return validate_c2a_readiness_sample(sample)
 
 
+def _c2a_readiness_failure_is_systemic(
+    sample: Mapping[str, Any], failure_code: str
+) -> bool:
+    """Separate untrusted runtime provenance from candidate-local physical rejection."""
+
+    if failure_code in {
+        "G1_C2A_RUNTIME_TRUTH_MISSING",
+        "G1_C2A_SYNTHETIC_RUNTIME_FORBIDDEN",
+        "G1_C2A_NONZERO_PATH_FORBIDDEN",
+        "G1_C2A_READINESS_INCOMPLETE",
+        "G1_C2A_TARGET_MUTATION",
+        "G1_C2A_PENETRATION_PROVENANCE",
+        "G1_C2A_FORCE_TRUTH",
+        "G1_C2A_NONFINITE",
+        "G1_C2A_POST_ABORT_ACTUATION",
+    }:
+        return True
+    if failure_code == "G1_C2A_CONTACT" and sample.get("contact_valid") is not True:
+        return True
+    return False
+
+
 def run_c2a_static_qualification(
     *,
     candidate_records: Sequence[Mapping[str, Any]],
@@ -304,6 +564,8 @@ def run_c2a_static_qualification(
     systemic_failure_code: str | None = None
     systemic_failure_message: str | None = None
     for candidate in candidate_records:
+        if systemic_failure_code is not None:
+            break
         for scene_index in range(3):
             scene_id = f"{candidate['candidate_id']}-scene-{scene_index}"
             token = f"c2a-{candidate['candidate_id']}-{scene_index}-{C2A_SEED}"
@@ -352,7 +614,9 @@ def run_c2a_static_qualification(
                     except Exception as error:
                         failure_code = str(getattr(error, "code", "G1_C2A_NONFINITE"))
                         failure_message = str(error)
-                        if systemic_failure_code is None:
+                        if _c2a_readiness_failure_is_systemic(
+                            sample, failure_code
+                        ) and systemic_failure_code is None:
                             systemic_failure_code = failure_code
                             systemic_failure_message = failure_message
                         break
@@ -405,6 +669,8 @@ def run_c2a_static_qualification(
                     "claim_eligible": False,
                 }
             )
+            if systemic_failure_code is not None:
+                break
     return {
         "scene_count": len(static_scenes),
         "fresh_scene_tokens": tokens,
@@ -592,8 +858,15 @@ def orchestrate_c2a_real_runtime(
             for record in factory.build_offline_candidates(reference=reference)
         ]
         offline_candidates = validate_real_c2a_offline_candidates(offline_candidates)
+        offline_valid_candidates = [
+            candidate
+            for candidate in offline_candidates
+            if candidate.get("ik_solution_valid") is True
+            and candidate.get("fk_residual_valid") is True
+            and candidate.get("offline_failure_code") is None
+        ]
         result = run_c2a_static_qualification(
-            candidate_records=offline_candidates,
+            candidate_records=offline_valid_candidates,
             scene_factory=factory.create_static_scene,
         )
         static_scenes = list(result["static_scenes"])
@@ -657,6 +930,9 @@ def orchestrate_c2a_real_runtime(
         systemic_failure_code = "G1_C2A_EVIDENCE_WRITE_FAILED"
         systemic_failure_message = str(error)
         exit_code = 1
+        destination = Path(output)
+        for invalid_claim_artifact in ("checksums.sha256", "manifest.json"):
+            (destination / invalid_claim_artifact).unlink(missing_ok=True)
         report.update(
             systemic_failure=True,
             systemic_failure_code=systemic_failure_code,

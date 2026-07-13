@@ -423,7 +423,12 @@ class C2ARealSceneFactory:
                         fk_position_world_m=np.asarray(fk_position, dtype=np.float64),
                         fk_orientation_xyzw=_rotation_matrix_to_xyzw(fk_rotation),
                     )
-                    record.update(**common, finite=True)
+                    record.update(
+                        **common,
+                        ik_solution_valid=True,
+                        fk_residual_valid=True,
+                        finite=True,
+                    )
                 except Exception as error:
                     failure_code = str(getattr(error, "code", "G1_C2A_IK_FAILED"))
                     failure_message = str(getattr(error, "message", str(error)))
@@ -431,16 +436,20 @@ class C2ARealSceneFactory:
                         **dict(base),
                         **common,
                         "solver_joint_names": list(solver_names),
-                        "solver_joint_values": warm_start.tolist(),
+                        "solver_joint_values": None,
                         "articulation_joint_names": list(joint_state.joint_names),
-                        "articulation_joint_values": list(joint_state.joint_positions),
-                        "fk_position_world_m": list(base["target_position_world_m"]),
-                        "fk_orientation_xyzw": list(base["target_orientation_xyzw"]),
-                        "ik_position_residual_m": 1.0,
-                        "ik_orientation_residual_rad": 1.0,
+                        "articulation_joint_values": None,
+                        "fk_position_world_m": None,
+                        "fk_orientation_xyzw": None,
+                        "ik_solution_valid": False,
+                        "fk_residual_valid": False,
+                        "ik_position_residual_m": None,
+                        "ik_orientation_residual_rad": None,
                         "finite": True,
                         "offline_failure_code": failure_code,
                         "offline_failure_message": failure_message,
+                        "scene_count": 0,
+                        "readiness_sample_count": 0,
                     }
                 records.append(record)
         finally:

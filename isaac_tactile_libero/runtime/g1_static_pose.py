@@ -209,7 +209,9 @@ def validate_c2a_offline_record(record: Mapping[str, Any]) -> dict[str, Any]:
         articulation_values[7:], fingers
     ):
         _fail("G1_C2A_JOINT_IDENTITY", "C2a name expansion/finger retention is invalid")
-    _finite_array(record["fk_position_world_m"], shape=(3,), field="fk_position_world_m")
+    fk_position = _finite_array(
+        record["fk_position_world_m"], shape=(3,), field="fk_position_world_m"
+    )
     try:
         position_residual = float(record["ik_position_residual_m"])
         orientation_residual = float(record["ik_orientation_residual_rad"])
@@ -217,6 +219,27 @@ def validate_c2a_offline_record(record: Mapping[str, Any]) -> dict[str, Any]:
         _fail("G1_C2A_NONFINITE", "C2a residual is not numeric")
     if not math.isfinite(position_residual) or not math.isfinite(orientation_residual):
         _fail("G1_C2A_NONFINITE", "C2a residual is non-finite")
+    measured_position_residual = float(np.linalg.norm(fk_position - target_position))
+    orientation_dot = min(
+        1.0,
+        max(
+            0.0,
+            abs(
+                float(
+                    np.dot(
+                        orientation / np.linalg.norm(orientation),
+                        fk_orientation / np.linalg.norm(fk_orientation),
+                    )
+                )
+            ),
+        ),
+    )
+    measured_orientation_residual = float(2.0 * math.acos(orientation_dot))
+    if (
+        abs(position_residual - measured_position_residual) > 1e-12
+        or abs(orientation_residual - measured_orientation_residual) > 1e-12
+    ):
+        _fail("G1_C2A_IK_RESIDUAL", "C2a residual does not match measured FK")
     limits = record["residual_limits"]
     if (
         not isinstance(limits, Mapping)
@@ -283,8 +306,14 @@ def select_c2a_static_pose(
             if scene.get("candidate_id") == expected["candidate_id"]
         ]
         scene_ids = [str(scene.get("scene_id", "")) for scene in scenes]
+        offline_valid = (
+            not candidate.get("offline_failure_code")
+            and candidate.get("ik_solution_valid") is not False
+            and candidate.get("fk_residual_valid") is not False
+        )
         if (
-            len(scenes) == 3
+            offline_valid
+            and len(scenes) == 3
             and len(set(scene_ids)) == 3
             and all(scene.get("passed") is True for scene in scenes)
             and selected is None
@@ -370,6 +399,8 @@ __all__ = [
     "C2A_ARTICULATION_JOINT_NAMES",
     "C2A_ARM_JOINT_NAMES",
     "C2A_CANDIDATES",
+    "C2A_ORIENTATION_RESIDUAL_LIMIT_RAD",
+    "C2A_POSITION_RESIDUAL_LIMIT_M",
     "C2A_SCHEMA_VERSION",
     "build_c2a_offline_records",
     "c2a_candidate_definitions",
