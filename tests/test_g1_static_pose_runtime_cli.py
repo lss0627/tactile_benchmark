@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import importlib
 import inspect
 import json
 import os
@@ -9,6 +10,7 @@ import subprocess
 import sys
 from typing import Any
 
+import numpy as np
 import pytest
 
 from isaac_tactile_libero.runtime.g1_tracking import G1ValidationError
@@ -17,6 +19,7 @@ from isaac_tactile_libero.runtime.g1_tracking import G1ValidationError
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER_PATH = ROOT / "scripts/run_g1_static_pose_qualification.py"
 DIAGNOSTIC_PATH = ROOT / "isaac_tactile_libero/robots/fr3_static_pose_diagnostic.py"
+REAL_RUNTIME_MODULE = "isaac_tactile_libero.robots.fr3_static_pose_runtime"
 ARM_NAMES = tuple(f"fr3_joint{index}" for index in range(1, 8))
 JOINT_NAMES = ARM_NAMES + ("fr3_finger_joint1", "fr3_finger_joint2")
 CANDIDATES = (
@@ -41,6 +44,12 @@ def _runner():
 
 def _diagnostic():
     return _load(DIAGNOSTIC_PATH, "fr3_static_pose_diagnostic_runtime_test")
+
+
+def _real_runtime_module():
+    spec = importlib.util.find_spec(REAL_RUNTIME_MODULE)
+    assert spec is not None, "T144 real runtime missing lazy C2a factory module"
+    return importlib.import_module(REAL_RUNTIME_MODULE)
 
 
 def _capability(module: Any, name: str):
@@ -117,6 +126,7 @@ def _real_sample(candidate_id: str, action_index: int) -> dict[str, Any]:
         "collision_report_valid": True,
         "collision": False,
         "penetration_m": 0.0,
+        "penetration_limit_m": 0.005,
         "penetration_provenance_valid": True,
         "collision_monitor_error": None,
         "button_released": True,
@@ -126,8 +136,14 @@ def _real_sample(candidate_id: str, action_index: int) -> dict[str, Any]:
         "post_q": target.copy(),
         "pre_qd": [0.0] * 9,
         "post_qd": [0.0] * 9,
+        "joint_lower": [-2.0] * 7 + [0.0, 0.0],
+        "joint_upper": [2.0] * 7 + [0.04, 0.04],
+        "joint_velocity_limits": [2.62] * 9,
+        "joint_comparison_tolerance": 0.000001,
         "pre_tcp": [0.55, 0.0, 0.55],
         "post_tcp": [0.55, 0.0, 0.55],
+        "workspace_min_m": [0.20, -0.30, 0.20],
+        "workspace_max_m": [0.70, 0.30, 0.90],
         "force_vector_valid": False,
         "wrench_valid": False,
         "raw_impulse_used_as_force": False,
@@ -313,6 +329,22 @@ def test_c2a_reference_scene_requires_orientation_joint_fingers_transforms_and_h
             validate(broken)
 
 
+def test_c2a_reference_scene_accepts_finite_nontrivial_inverse_transforms() -> None:
+    validate = _capability(_runner(), "validate_c2a_reference_scene")
+    reference = dict(_FakeFactory().reference)
+    angle = 0.31
+    cosine = float(np.cos(angle))
+    sine = float(np.sin(angle))
+    world_from_base = np.asarray(
+        [[cosine, -sine, 0.0, 0.123], [sine, cosine, 0.0, -0.087], [0.0, 0.0, 1.0, 0.456], [0.0, 0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+    reference["world_from_base"] = world_from_base.tolist()
+    reference["base_from_world"] = np.linalg.inv(world_from_base).tolist()
+    assert not np.array_equal(world_from_base @ np.linalg.inv(world_from_base), np.eye(4))
+    assert validate(reference)["real_runtime_truth"] is True
+
+
 def test_c2a_real_cli_accepts_only_lula_computed_three_candidate_records(tmp_path: Path) -> None:
     runner = _runner()
     validate = _capability(runner, "validate_real_c2a_offline_candidates")
@@ -322,6 +354,20 @@ def test_c2a_real_cli_accepts_only_lula_computed_three_candidate_records(tmp_pat
     with pytest.raises(Exception) as caught:
         validate(records)
     assert getattr(caught.value, "code", "") == "G1_C2A_SYNTHETIC_RUNTIME_FORBIDDEN"
+
+
+def test_c2a_real_offline_failure_record_preserves_exact_lula_blocker() -> None:
+    validate = _capability(_runner(), "validate_real_c2a_offline_candidates")
+    records = [_offline_record(candidate_id, order, position) for order, (candidate_id, position) in enumerate(CANDIDATES)]
+    records[0] = {
+        **records[0],
+        "offline_failure_code": "G1_C2A_IK_FAILED",
+        "offline_failure_message": "Lula failed task-ready-z-0p55",
+    }
+    with pytest.raises(Exception) as caught:
+        validate(records)
+    assert getattr(caught.value, "code", "") == "G1_C2A_IK_FAILED"
+    assert getattr(caught.value, "message", "") == "Lula failed task-ready-z-0p55"
 
 
 class _FakePrim:
@@ -389,6 +435,32 @@ def test_c2a_real_preplay_authoring_uses_injected_physx_adapter_before_play() ->
     assert result["authored_velocities"] == [0.0] * 9
 
 
+def test_c2a_preplay_authoring_rejects_real_timeline_is_playing_even_without_playing_attribute() -> None:
+    author = _capability(_diagnostic(), "author_c2a_joint_state_before_play")
+
+    class Timeline:
+        def is_playing(self):
+            return True
+
+    class Adapter:
+        def resolve_joint_prim_bijection(self, *, stage, joint_names):
+            return {name: f"/Resolved/{name}" for name in joint_names}
+
+        def author_joint(self, **item):
+            raise AssertionError("authoring must not begin on a playing timeline")
+
+    with pytest.raises(Exception) as caught:
+        author(
+            stage=object(),
+            timeline=Timeline(),
+            joint_names=JOINT_NAMES,
+            joint_positions=[0.1] * 7 + [0.02, 0.02],
+            joint_velocities=[0.0] * 9,
+            authoring_adapter=Adapter(),
+        )
+    assert getattr(caught.value, "code", "") == "G1_C2A_PREPLAY_AUTHORING_UNPROVEN"
+
+
 def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(tmp_path: Path) -> None:
     factory = _FakeFactory()
     outcome = _orchestrate(_runner(), tmp_path, factory)
@@ -416,8 +488,10 @@ def test_c2a_real_readiness_requires_complete_sensor_collision_button_state_and_
     assert validate(sample)["real_runtime_truth"] is True
     for field in (
         "contact_valid", "contact", "raw_contact_count", "collision_report_valid", "collision",
-        "penetration_m", "penetration_provenance_valid", "button_released", "button_reset",
+        "penetration_m", "penetration_limit_m", "penetration_provenance_valid", "button_released", "button_reset",
         "button_travel_m", "pre_q", "post_q", "pre_qd", "post_qd", "pre_tcp", "post_tcp",
+        "joint_lower", "joint_upper", "joint_velocity_limits", "joint_comparison_tolerance",
+        "workspace_min_m", "workspace_max_m",
         "force_vector_valid", "wrench_valid", "raw_impulse_used_as_force", "finite",
         "post_abort_actuation_count",
     ):
@@ -425,6 +499,26 @@ def test_c2a_real_readiness_requires_complete_sensor_collision_button_state_and_
         broken.pop(field)
         with pytest.raises(Exception):
             validate(broken)
+
+
+@pytest.mark.parametrize(
+    ("changes", "expected_code"),
+    [
+        ({"send_result": False}, "G1_C2A_TARGET_SEND_FAILED"),
+        ({"penetration_m": 0.0050001}, "G1_C2A_STATIC_COLLISION"),
+        ({"post_q": [2.1] + [0.1] * 6 + [0.02, 0.02]}, "G1_C2A_JOINT_LIMIT"),
+        ({"post_qd": [2.6201] + [0.0] * 8}, "G1_C2A_JOINT_LIMIT"),
+        ({"post_tcp": [0.7001, 0.0, 0.55]}, "G1_C2A_WORKSPACE"),
+    ],
+)
+def test_c2a_real_readiness_enforces_existing_send_penetration_joint_velocity_and_workspace_limits(
+    changes: dict[str, Any], expected_code: str
+) -> None:
+    validate = _capability(_runner(), "validate_real_c2a_readiness_sample")
+    sample = {**_real_sample(CANDIDATES[0][0], 0), **changes}
+    with pytest.raises(Exception) as caught:
+        validate(sample)
+    assert getattr(caught.value, "code", "") == expected_code
 
 
 def test_c2a_runtime_failure_preserves_exact_code_message_writes_before_shutdown(tmp_path: Path) -> None:
@@ -444,6 +538,27 @@ def test_c2a_runtime_failure_preserves_exact_code_message_writes_before_shutdown
     assert writes[0]["systemic_failure_message"] == outcome["systemic_failure_message"]
     assert factory.events.index("write-evidence") < factory.events.index("factory-close:1")
     assert factory.close_codes == [1]
+
+
+def test_c2a_offline_validation_failure_retains_all_raw_lula_records_for_evidence(tmp_path: Path) -> None:
+    factory = _FakeFactory()
+    original = factory.build_offline_candidates
+
+    def invalid_records(*, reference):
+        records = original(reference=reference)
+        records[0] = {**records[0], "synthetic_test_double": True}
+        return records
+
+    factory.build_offline_candidates = invalid_records  # type: ignore[method-assign]
+    writes: list[dict[str, Any]] = []
+
+    def writer(**payload: Any) -> dict[str, Any]:
+        writes.append(payload)
+        return {}
+
+    outcome = _orchestrate(_runner(), tmp_path, factory, evidence_writer=writer)
+    assert outcome["systemic_failure_code"] == "G1_C2A_SYNTHETIC_RUNTIME_FORBIDDEN"
+    assert len(writes[0]["offline_candidates"]) == 3
 
 
 def test_c2a_runtime_success_selects_highest_pose_but_retains_all_no_claim_flags(tmp_path: Path) -> None:
@@ -534,3 +649,33 @@ def test_c2a_runtime_has_no_reachable_nonzero_sender_method() -> None:
     assert all("nonzero" not in name.lower() for name in public_names)
     signature = inspect.signature(_capability(runner, "orchestrate_c2a_real_runtime"))
     assert all("nonzero" not in name.lower() for name in signature.parameters)
+    static_signature = inspect.signature(_capability(runner, "run_c2a_static_qualification"))
+    assert all("nonzero" not in name.lower() for name in static_signature.parameters)
+
+
+def test_c2a_real_runtime_module_exposes_import_safe_factory_and_scene() -> None:
+    module = _real_runtime_module()
+    factory = getattr(module, "C2ARealSceneFactory", None)
+    scene = getattr(module, "C2ARealStaticScene", None)
+    assert isinstance(factory, type)
+    assert isinstance(scene, type)
+
+
+def test_c2a_real_factory_exposes_reference_lula_and_fresh_static_scene_methods() -> None:
+    factory = _real_runtime_module().C2ARealSceneFactory
+    for name in ("build_reference_scene", "build_offline_candidates", "create_static_scene", "close"):
+        assert callable(getattr(factory, name, None)), f"T144 real factory missing method: {name}"
+
+
+def test_c2a_real_scene_source_has_only_zero_readiness_and_lazy_isaac_imports() -> None:
+    module = _real_runtime_module()
+    source = Path(module.__file__).read_text(encoding="utf-8")
+    top_level = "\n".join(line for line in source.splitlines() if not line.startswith(" "))
+    assert "from isaacsim" not in top_level
+    assert "import omni" not in top_level
+    assert "omni.isaac" not in source
+    assert "dynamic_control" not in source
+    assert "run_zero_readiness_action" in source
+    assert "send_nonzero" not in source
+    assert "nonzero_sender" not in source
+    assert "load_supported_lula_kinematics_solver_config" in source

@@ -313,12 +313,10 @@ def test_c2a_static_runner_uses_three_fresh_scenes_and_exact_zero_readiness() ->
     runner = _runner()
     run = getattr(runner, "run_c2a_static_qualification", None)
     assert callable(run), "T144 missing injected C2a static qualification runner"
-    nonzero_calls: list[Any] = []
 
     result = run(
         candidate_records=[_offline_record()],
         scene_factory=lambda **spec: {"scene": spec, "object_id": object()},
-        nonzero_sender=lambda *args, **kwargs: nonzero_calls.append((args, kwargs)),
     )
 
     assert result["scene_count"] == 3
@@ -331,7 +329,6 @@ def test_c2a_static_runner_uses_three_fresh_scenes_and_exact_zero_readiness() ->
         for scene in result["static_scenes"]
         for sample in scene["readiness_samples"]
     )
-    assert nonzero_calls == [], "T144 C2a must have no reachable non-zero method"
 
 
 @pytest.mark.parametrize(
