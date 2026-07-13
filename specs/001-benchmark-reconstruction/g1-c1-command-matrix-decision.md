@@ -12,8 +12,10 @@
 
 **Recommendation**: `NO_EXTENSION_BEFORE_POSE_CONDITIONED_ATTEMPT_04`
 
-**Task status**: decision record produced; T150 remains `[ ]` pending separate user approval of
-this recommendation. No matrix member or command cap is approved by this document.
+**Approval status**: the recommendation was separately approved in
+[`g1-attempt-04-runtime-integration-gap-review.md`](g1-attempt-04-runtime-integration-gap-review.md),
+so T150 is `[x]`. This approval preserves the matrix unchanged; no matrix member is preselected as a
+command cap and attempt-04 is not authorized.
 
 ## 1. Decision scope
 
@@ -134,15 +136,17 @@ The evidence-supported recommendation is:
 
 `NO_EXTENSION_BEFORE_POSE_CONDITIONED_ATTEMPT_04`
 
-This is a recommendation awaiting separate user approval, not an executed or accepted T150 matrix
-change. Therefore:
+This recommendation is now separately approved by the attempt-04 runtime integration gap review.
+It accepts no matrix change and authorizes no run. Therefore:
 
-- T150 remains `[ ]`;
+- T150 is `[x]` for the `NO_EXTENSION_BEFORE_POSE_CONDITIONED_ATTEMPT_04` decision only;
+- T152 remains `[ ]`;
 - T151 remains `[ ]`;
 - T070 remains `[ ]`;
 - `selected_command_cap_m` remains `null`;
 - no lower candidate is introduced;
 - attempt-04, C2b, C3, and PressButton episodes remain prohibited.
 
-Approval of this recommendation would mean only that attempt-04 prerequisites should retain the
-current complete matrix. It would not itself authorize attempt-04 or select a command cap.
+The approval means only that attempt-04 prerequisites must retain the current complete matrix. It
+does not authorize attempt-04 or select a command cap; T152 GREEN, the T151 prerequisite review,
+and separate one-run authorization are still required.
