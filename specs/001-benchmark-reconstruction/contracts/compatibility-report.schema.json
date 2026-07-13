@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://isaac-tactile-libero.local/schemas/compatibility-report-1.0.0.json",
+  "title": "Isaac Sim Compatibility Report",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "status",
+    "claim_class",
+    "compatibility_scope",
+    "runtime_support",
+    "compatibility_result",
+    "blocker_codes"
+  ],
+  "properties": {
+    "status": {"enum": ["PASS_SMOKE", "BLOCKED"]},
+    "claim_class": {"const": "runtime_smoke"},
+    "compatibility_scope": {
+      "enum": ["ENVIRONMENT", "ASSET_API", "REPOSITORY_INTEGRATION"]
+    },
+    "runtime_support": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "simulator",
+        "python",
+        "observed_driver",
+        "reference_driver",
+        "driver_validation"
+      ],
+      "properties": {
+        "simulator": {"const": "6.0.1"},
+        "python": {"type": "string", "pattern": "^3[.]12([.]|$)"},
+        "observed_driver": {"type": "string"},
+        "reference_driver": {"type": "string"},
+        "driver_validation": {"enum": ["UNVALIDATED", "VALIDATED"]}
+      }
+    },
+    "compatibility_result": {
+      "enum": ["PASS_ON_UNVALIDATED_DRIVER", "PASS_ON_VALIDATED_DRIVER", "FAILED"]
+    },
+    "blocker_codes": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "BLOCKED"}}},
+      "then": {
+        "properties": {
+          "compatibility_result": {"const": "FAILED"},
+          "blocker_codes": {"minItems": 1}
+        }
+      }
+    }
+  ]
+}

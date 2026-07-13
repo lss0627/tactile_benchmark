@@ -1,0 +1,32 @@
+robot_name: fr3_tactile
+robot_mode: real_fr3_articulation_planned
+use_real_fr3_usd: true
+fr3_usd_key: Robots/FrankaRobotics/FrankaFR3/fr3.usd
+fr3_usd_path: null
+gripper_usd_path: null
+gripper_embedded_in_fr3_usd: true
+tactile_mount_usd_path: null
+tactile_mounts_planned: true
+left_tactile_frame: left_tactile_mount
+right_tactile_frame: right_tactile_mount
+ee_frame: fr3_hand_tcp
+gripper_frame: fr3_hand
+base_frame: fr3_link0
+joint_names:
+  - fr3_joint1
+  - fr3_joint2
+  - fr3_joint3
+  - fr3_joint4
+  - fr3_joint5
+  - fr3_joint6
+  - fr3_joint7
+  - fr3_finger_joint1
+  - fr3_finger_joint2
+action_schema_version: 0.1.0
+control_mode: planned_delta_ee
+use_lightwheel_assets: false
+allow_noncommercial_assets: true
+asset_manifest: assets/asset_manifest.csv
+asset_source: Isaac Sim Assets
+benchmark_result: false
+not_for_paper_claims: true

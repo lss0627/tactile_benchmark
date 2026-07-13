@@ -77,14 +77,14 @@ def _import_simulation_app():
         return SimulationApp
     except Exception as first_error:
         try:
-            from omni.isaac.kit import SimulationApp  # type: ignore
+            from isaacsim import SimulationApp  # type: ignore
 
             return SimulationApp
         except Exception as second_error:
             raise RuntimeError(
                 "Isaac Sim SimulationApp could not be imported. "
                 "Run from Isaac Sim Python or install/configure the Isaac Sim runtime. "
-                f"isaacsim import error: {first_error}; omni.isaac.kit import error: {second_error}"
+                f"isaacsim import error: {first_error}; isaacsim import error: {second_error}"
             ) from second_error
 
 

@@ -1,0 +1,11 @@
+action_schema_version: 0.1.0
+control_mode: planned_delta_ee
+controller_connected: false
+sends_joint_commands: false
+max_delta_xyz: 0.05
+max_delta_rot: 0.25
+gripper_command_range:
+  - -1.0
+  - 1.0
+benchmark_result: false
+not_for_paper_claims: true

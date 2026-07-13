@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Repository Audit",
+  "type": "object",
+  "required": [
+    "tracked",
+    "modified",
+    "untracked_required",
+    "ignored_required",
+    "generated",
+    "external_assets",
+    "clean_checkout_ready"
+  ]
+}

@@ -19,6 +19,19 @@ import yaml
 import isaac_tactile_libero  # noqa: F401
 from isaac_tactile_libero.datasets.reader import HDF5DatasetReader
 from isaac_tactile_libero.datasets.replay import replay_episode as validate_replay_episode
+from isaac_tactile_libero.envs.isaacsim_backend_status import (
+    load_isaacsim_visual_smoke_config,
+    probe_isaacsim_visual_smoke,
+)
+from isaac_tactile_libero.envs.isaacsim_press_button_env import (
+    build_press_button_runtime_status,
+    default_robot_runtime_fields,
+    default_press_button_contact_metrics,
+    press_button_contact_status_fields,
+    random_press_button_action,
+    scripted_press_button_action,
+    write_json,
+)
 from isaac_tactile_libero.envs.make import make_env
 from isaac_tactile_libero.metrics.aggregation import aggregate_by, aggregate_episodes
 from isaac_tactile_libero.metrics.base import as_mock_episode_metrics
@@ -28,7 +41,16 @@ from isaac_tactile_libero.registry.tactile_registry import TACTILE_SENSOR_REGIST
 from isaac_tactile_libero.registry.task_registry import TASK_REGISTRY
 from isaac_tactile_libero.schemas.action import DEFAULT_ACTION_SCHEMA
 from isaac_tactile_libero.schemas.observation import assert_observation_schema
+from isaac_tactile_libero.sensors.runtime_tactile_adapter import (
+    adapt_press_button_runtime_tactile,
+    runtime_tactile_status_fields,
+)
 from isaac_tactile_libero.training.checkpoint import load_checkpoint_metadata
+
+
+RUNTIME_BACKEND = "isaacsim_press_button"
+RUNTIME_POLICIES = {"scripted", "random", "zero"}
+RUNTIME_TACTILE_MODES = {"none", "force_wrench"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,6 +66,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--episode-ids", nargs="+", help="Specific dataset episode ids for replay evaluation.")
     parser.add_argument("--max-episodes", type=int, help="Maximum replay dataset episodes.")
     parser.add_argument("--checkpoint", help="Optional checkpoint metadata path for policy loading.")
+    parser.add_argument("--backend", choices=("mock", RUNTIME_BACKEND), help="Evaluation backend. Defaults to mock.")
+    parser.add_argument("--dry-run-runtime", action="store_true", help="For runtime smoke backends, do not start Isaac Sim.")
+    parser.add_argument("--runtime-config", help="Isaac Sim runtime config path for optional runtime smoke.")
+    parser.add_argument("--max-steps", type=int, help="Maximum steps. Overrides config max_steps.")
+    parser.add_argument("--headless", action="store_true", default=None, help="Request headless runtime mode.")
+    parser.add_argument("--webrtc", action="store_true", default=None, help="Request WebRTC livestream runtime mode.")
+    parser.add_argument("--save-screenshot", action="store_true", help="Save a runtime viewport screenshot when available.")
+    parser.add_argument("--save-rollout-json", action="store_true", help="Record rollout JSON; runtime smoke writes it by default.")
+    parser.add_argument("--robot-mode", choices=("pusher", "ee_placeholder"), help="PressButton runtime robot placeholder mode.")
+    parser.add_argument("--robot-config", help="Optional robot placeholder config path for ee_placeholder mode.")
     return parser.parse_args()
 
 
@@ -72,6 +104,203 @@ def tactile_cfg_for_mode(eval_cfg: dict[str, Any], tactile_mode: str) -> dict[st
     calibration = load_yaml(calibration_path)
     mode_cfg = (calibration.get("modes") or {}).get(tactile_mode, {})
     return dict(mode_cfg)
+
+
+def press_button_runtime_task(args: argparse.Namespace, eval_cfg: dict[str, Any]) -> str:
+    if args.task:
+        selected = list(args.task)
+    elif eval_cfg.get("task"):
+        selected = [str(eval_cfg["task"])]
+    else:
+        selected = list(eval_cfg.get("tasks", ["PressButton"]))
+    if selected != ["PressButton"]:
+        raise SystemExit("backend=isaacsim_press_button only supports PressButton.")
+    return "PressButton"
+
+
+def runtime_seed(args: argparse.Namespace, eval_cfg: dict[str, Any]) -> int:
+    if args.seeds:
+        return int(args.seeds[0])
+    if "seed" in eval_cfg:
+        return int(eval_cfg["seed"])
+    seeds = eval_cfg.get("seeds", [0])
+    return int(seeds[0] if seeds else 0)
+
+
+def runtime_tactile_mode(args: argparse.Namespace, eval_cfg: dict[str, Any]) -> str:
+    if args.tactile:
+        selected = list(args.tactile)
+    elif eval_cfg.get("tactile_mode"):
+        selected = [str(eval_cfg["tactile_mode"])]
+    else:
+        modes = eval_cfg.get("tactile_modes")
+        selected = [str(modes[0])] if modes else ["none"]
+    if len(selected) != 1 or selected[0] not in RUNTIME_TACTILE_MODES:
+        available = ", ".join(sorted(RUNTIME_TACTILE_MODES))
+        raise SystemExit(f"backend=isaacsim_press_button supports exactly one tactile mode: {available}.")
+    return selected[0]
+
+
+def runtime_flagged_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    payload["backend"] = RUNTIME_BACKEND
+    payload["single_task_runtime_smoke"] = True
+    payload["benchmark_result"] = False
+    payload["not_for_paper_claims"] = True
+    payload["geometric_contact_proxy"] = True
+    payload["real_tactile_contact"] = False
+    payload["lightwheel_assets_used"] = False
+    return payload
+
+
+def select_runtime_action(
+    policy_name: str,
+    obs: dict[str, Any],
+    step: int,
+    max_steps: int,
+    rng,
+):
+    if policy_name == "scripted":
+        return scripted_press_button_action(obs, step, max_steps)
+    if policy_name == "random":
+        return random_press_button_action(rng)
+    if policy_name == "zero":
+        import numpy as np
+
+        return np.zeros(DEFAULT_ACTION_SCHEMA.dim, dtype=DEFAULT_ACTION_SCHEMA.dtype)
+    raise SystemExit(f"Unknown runtime smoke policy: {policy_name}. Available: random, scripted, zero")
+
+
+def runtime_observation_summary(obs: dict[str, Any]) -> dict[str, Any]:
+    runtime = obs["runtime"]
+    tactile = obs["tactile"]
+    return {
+        "timestep": int(obs["timestep"]),
+        "pusher_pose": runtime["pusher_pose"],
+        "ee_pose": runtime["ee_pose"],
+        "button_pose": runtime["button_pose"],
+        "robot_mode": runtime["robot_mode"],
+        "robot_name": runtime["robot_name"],
+        "robot_config_path": runtime["robot_config_path"],
+        "placeholder_robot": bool(runtime["placeholder_robot"]),
+        "placeholder_pusher": bool(runtime["placeholder_pusher"]),
+        "real_fr3_articulation": bool(runtime["real_fr3_articulation"]),
+        "real_fr3_control": bool(runtime["real_fr3_control"]),
+        "gripper_command": float(runtime["gripper_command"]),
+        "action_schema_version": runtime["action_schema_version"],
+        "button_pressed": bool(runtime["button_pressed"]),
+        "contact_proxy": bool(runtime["contact_proxy"]),
+        "geometric_contact_proxy": bool(runtime["geometric_contact_proxy"]),
+        "physics_contact_available": bool(runtime["physics_contact_available"]),
+        "contact_signal_seen": bool(runtime["contact_signal_seen"]),
+        "contact_force_available": bool(runtime["contact_force_available"]),
+        "contact_force_norm": float(runtime["contact_force_norm"]),
+        "max_contact_force_norm": float(runtime["max_contact_force_norm"]),
+        "mean_contact_force_norm": float(runtime["mean_contact_force_norm"]),
+        "contact_force_unit": runtime["contact_force_unit"],
+        "contact_force_source": runtime["contact_force_source"],
+        "contact_force_confirmed": bool(runtime["contact_force_confirmed"]),
+        "contact_probe_method": runtime["contact_probe_method"],
+        "contact_api_error": runtime["contact_api_error"],
+        "pusher_prim_path": runtime["pusher_prim_path"],
+        "button_prim_path": runtime["button_prim_path"],
+        "button_top_prim_path": runtime["button_top_prim_path"],
+        "button_displacement_available": bool(runtime["button_displacement_available"]),
+        "button_press_depth": float(runtime["button_press_depth"]),
+        "max_button_press_depth": float(runtime["max_button_press_depth"]),
+        "using_geometric_fallback": bool(runtime["using_geometric_fallback"]),
+        "success_source": runtime["success_source"],
+        "tactile_mode": tactile["tactile_mode"],
+        "tactile_schema_version": tactile["tactile_schema_version"],
+        "force_source": tactile["force_source"],
+        "contact_flag_source": tactile["contact_flag_source"],
+        "tactile_mask": {
+            "has_force": bool(tactile["mask"]["has_force"]),
+            "has_wrench": bool(tactile["mask"]["has_wrench"]),
+        },
+    }
+
+
+def runtime_default_metrics(
+    tactile_mode: str = "none",
+    *,
+    robot_mode: str = "pusher",
+    robot_config_path: str | None = None,
+) -> dict[str, Any]:
+    metrics = {
+        "success": False,
+        "num_steps": 0,
+        "completion_time": 0.0,
+        "min_distance_to_button": 0.0,
+        "max_press_depth": 0.0,
+        "contact_proxy_triggered": False,
+        "geometric_contact_proxy": True,
+    }
+    metrics.update(default_press_button_contact_metrics())
+    metrics.update(default_robot_runtime_fields(robot_mode=robot_mode, robot_config_path=robot_config_path))
+    metrics.update(runtime_tactile_status_fields(adapt_press_button_runtime_tactile(metrics, tactile_mode=tactile_mode)))
+    return metrics
+
+
+def runtime_episode_record(
+    *,
+    seed: int,
+    policy_name: str,
+    max_steps: int,
+    dry_run_runtime: bool,
+    runtime_status_path: Path,
+    rollout_path: Path,
+    num_steps: int,
+    success: bool,
+    button_pressed: bool,
+    metrics: dict[str, Any],
+    tactile_mode: str,
+    robot_mode: str = "pusher",
+    robot_config_path: str | None = None,
+    reward: float = 0.0,
+    terminated: bool = False,
+    truncated: bool = False,
+) -> dict[str, Any]:
+    episode = {
+        "episode_id": f"isaacsim-press-button-runtime-smoke-seed{seed}",
+        "task_name": "PressButton",
+        "suite_name": "single_task_runtime_smoke",
+        "tactile_mode": tactile_mode,
+        "seed": int(seed),
+        "split": "runtime_smoke",
+        "policy": policy_name,
+        "policy_name": policy_name,
+        "backend": RUNTIME_BACKEND,
+        "dry_run_runtime": bool(dry_run_runtime),
+        "single_task_runtime_smoke": True,
+        "benchmark_result": False,
+        "not_for_paper_claims": True,
+        "geometric_contact_proxy": True,
+        "real_tactile_contact": False,
+        "lightwheel_assets_used": False,
+        "robot_mode": robot_mode,
+        "robot_config_path": robot_config_path,
+        "placeholder_robot": bool(metrics.get("placeholder_robot", True)),
+        "placeholder_pusher": bool(metrics.get("placeholder_pusher", robot_mode == "pusher")),
+        "real_fr3_articulation": bool(metrics.get("real_fr3_articulation", False)),
+        "real_fr3_control": bool(metrics.get("real_fr3_control", False)),
+        "ee_pose": metrics.get("ee_pose"),
+        "gripper_command": float(metrics.get("gripper_command", 0.0)),
+        "action_schema_version": metrics.get("action_schema_version", "0.1.0"),
+        "num_steps": int(num_steps),
+        "max_steps": int(max_steps),
+        "control_frequency_hz": DEFAULT_ACTION_SCHEMA.control_frequency_hz,
+        "reward": float(reward),
+        "terminated": bool(terminated),
+        "truncated": bool(truncated),
+        "success": bool(success),
+        "button_pressed": bool(button_pressed),
+        "metrics": dict(metrics),
+        "runtime_status_path": str(runtime_status_path),
+        "rollout_path": str(rollout_path),
+        "mock_stub": True,
+    }
+    episode.update(press_button_contact_status_fields(metrics))
+    return as_mock_episode_metrics(episode)
 
 
 def run_episode(
@@ -119,6 +348,7 @@ def run_episode(
         "seed": seed,
         "episode_index": episode_index,
         "split": split,
+        "backend": eval_cfg.get("backend", "mock"),
         "policy": eval_cfg.get("policy", "random"),
         "policy_name": policy_name,
         "policy_metadata": policy_metadata,
@@ -272,6 +502,19 @@ SUMMARY_FIELDS = [
     "contact_loss_count",
     "jamming_count",
     "insertion_depth",
+    "physics_contact_available",
+    "contact_signal_seen",
+    "contact_force_available",
+    "max_contact_force_norm",
+    "mean_contact_force_norm",
+    "contact_force_source",
+    "contact_probe_method",
+    "contact_api_error",
+    "success_source",
+    "force_source",
+    "contact_flag_source",
+    "mask.has_force",
+    "mask.has_wrench",
 ]
 
 
@@ -284,15 +527,469 @@ def write_summary_csv(path: Path, overall: dict[str, Any], by_task_tactile: list
             writer.writerow({"group": "task_tactile", **row})
 
 
+def write_runtime_smoke_outputs(
+    *,
+    output_dir: Path,
+    args: argparse.Namespace,
+    eval_cfg: dict[str, Any],
+    episode_records: list[dict[str, Any]],
+    runtime_status: dict[str, Any],
+) -> None:
+    overall = aggregate_episodes(episode_records)
+    by_task = aggregate_by(episode_records, ["task_name"])
+    by_tactile = aggregate_by(episode_records, ["tactile_mode"])
+    by_task_tactile = aggregate_by(episode_records, ["task_name", "tactile_mode"])
+    payload = {
+        "mock_stub": True,
+        "backend": RUNTIME_BACKEND,
+        "single_task_runtime_smoke": True,
+        "benchmark_result": False,
+        "not_for_paper_claims": True,
+        "config": {
+            "config_path": str(args.config),
+            "backend": RUNTIME_BACKEND,
+            "task": "PressButton",
+            "policy_name": eval_cfg["policy"],
+            "tactile_mode": eval_cfg["tactile_mode"],
+            "runtime_config": str(eval_cfg["runtime_config"]),
+            "max_steps": int(eval_cfg["max_steps"]),
+            "dry_run_runtime": bool(eval_cfg["dry_run_runtime"]),
+            "headless": bool(eval_cfg.get("headless", True)),
+            "webrtc_enabled": bool(eval_cfg.get("webrtc", True)),
+            "save_screenshot": bool(eval_cfg.get("save_screenshot", False)),
+            "save_rollout_json": bool(eval_cfg.get("save_rollout_json", True)),
+            "robot_mode": str(eval_cfg.get("robot_mode", "pusher")),
+            "robot_config": eval_cfg.get("robot_config"),
+            "output_dir": str(output_dir),
+            "single_task_runtime_smoke": True,
+            "benchmark_result": False,
+            "not_for_paper_claims": True,
+            "dataset_path": None,
+        },
+        "runtime_status": runtime_status,
+        "overall": overall,
+        "by_task": by_task,
+        "by_tactile": by_tactile,
+        "by_task_tactile": by_task_tactile,
+        "episodes": episode_records,
+    }
+    payload.update(press_button_contact_status_fields(runtime_status))
+    write_metrics_json(output_dir / "metrics.json", payload)
+    runtime_overall = dict(overall)
+    runtime_overall.update(
+        {
+            key: runtime_status.get(key)
+            for key in (
+                "physics_contact_available",
+                "contact_signal_seen",
+                "contact_force_available",
+                "max_contact_force_norm",
+                "mean_contact_force_norm",
+                "contact_force_source",
+                "contact_probe_method",
+                "contact_api_error",
+                "success_source",
+                "force_source",
+                "contact_flag_source",
+            )
+        }
+    )
+    runtime_overall["mask.has_force"] = bool((runtime_status.get("mask") or {}).get("has_force", False))
+    runtime_overall["mask.has_wrench"] = bool((runtime_status.get("mask") or {}).get("has_wrench", False))
+    write_summary_csv(output_dir / "summary.csv", runtime_overall, by_task_tactile)
+
+
+def run_press_button_runtime_evaluation(*, args: argparse.Namespace, eval_cfg: dict[str, Any]) -> int:
+    task = press_button_runtime_task(args, eval_cfg)
+    del task
+    policy_name = str(eval_cfg.get("policy", "scripted"))
+    if policy_name not in RUNTIME_POLICIES:
+        available = ", ".join(sorted(RUNTIME_POLICIES))
+        raise SystemExit(f"Unknown runtime smoke policy: {policy_name}. Available: {available}")
+
+    output_dir = Path(args.output or eval_cfg.get("output_dir", "outputs/eval_press_button_runtime_smoke"))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    status_path = output_dir / "runtime_status.json"
+    rollout_path = output_dir / "rollout.json"
+    runtime_config_path = Path(eval_cfg["runtime_config"])
+    runtime_cfg = load_isaacsim_visual_smoke_config(runtime_config_path)
+    readiness = probe_isaacsim_visual_smoke(runtime_cfg).as_dict()
+    max_steps = int(eval_cfg.get("max_steps", 80))
+    seed = runtime_seed(args, eval_cfg)
+    tactile_mode = str(eval_cfg.get("tactile_mode", "none"))
+    robot_mode = str(eval_cfg.get("robot_mode", "pusher"))
+    robot_config_path = eval_cfg.get("robot_config")
+    dry_run_runtime = bool(eval_cfg.get("dry_run_runtime", False))
+    headless = bool(eval_cfg.get("headless", runtime_cfg.get("headless_streaming", True)))
+    webrtc = bool(eval_cfg.get("webrtc", runtime_cfg.get("webrtc_enabled", True)))
+    save_screenshot = bool(eval_cfg.get("save_screenshot", False))
+    save_rollout_json = bool(eval_cfg.get("save_rollout_json", True))
+    screenshot_path = output_dir / "press_button_runtime_eval.png"
+
+    if dry_run_runtime:
+        metrics = runtime_default_metrics(tactile_mode, robot_mode=robot_mode, robot_config_path=robot_config_path)
+        status = build_press_button_runtime_status(
+            ok=True,
+            dry_run=True,
+            runtime_started=False,
+            simulation_app_created=False,
+            scene_created_or_loaded=False,
+            runtime_loop_executed=False,
+            num_steps=0,
+            policy_name=policy_name,
+            success=False,
+            button_pressed=False,
+            metrics=metrics,
+            rollout_path=str(rollout_path),
+            errors=[],
+            warnings=list(readiness.get("warnings", [])),
+        )
+        runtime_flagged_payload(status)
+        status["runtime_ready"] = bool(readiness.get("ready_for_runtime", False))
+        status["headless"] = headless
+        status["webrtc_enabled"] = webrtc
+        status["max_steps"] = max_steps
+        status["runtime_config"] = str(runtime_config_path)
+        status["robot_config_path"] = robot_config_path
+        status["screenshot_requested"] = save_screenshot
+        status["save_rollout_json"] = save_rollout_json
+        rollout = runtime_flagged_payload(
+            {
+                "task_name": "PressButton",
+                "policy_name": policy_name,
+                "seed": seed,
+                "dry_run": True,
+                "dry_run_runtime": True,
+                "runtime_loop_executed": False,
+                **default_robot_runtime_fields(robot_mode=robot_mode, robot_config_path=robot_config_path),
+                "success": False,
+                "button_pressed": False,
+                "steps": [],
+                **press_button_contact_status_fields(metrics),
+            }
+        )
+        episode_records = [
+            runtime_episode_record(
+                seed=seed,
+                policy_name=policy_name,
+                max_steps=max_steps,
+                dry_run_runtime=True,
+                runtime_status_path=status_path,
+                rollout_path=rollout_path,
+                num_steps=0,
+                success=False,
+                button_pressed=False,
+                metrics=metrics,
+                tactile_mode=tactile_mode,
+                robot_mode=robot_mode,
+                robot_config_path=robot_config_path,
+            )
+        ]
+        write_json(status_path, status)
+        write_json(rollout_path, rollout)
+        write_runtime_smoke_outputs(
+            output_dir=output_dir,
+            args=args,
+            eval_cfg=eval_cfg,
+            episode_records=episode_records,
+            runtime_status=status,
+        )
+        print(f"Wrote single-task runtime smoke metrics.json: {output_dir / 'metrics.json'}")
+        print(f"Wrote single-task runtime smoke summary.csv: {output_dir / 'summary.csv'}")
+        print(f"Wrote single-task runtime smoke runtime_status.json: {status_path}")
+        print(f"Wrote single-task runtime smoke rollout.json: {rollout_path}")
+        return 0
+
+    if not readiness.get("ready_for_runtime", False):
+        errors = list(readiness.get("errors", [])) + list(readiness.get("blocking_conditions", []))
+        metrics = runtime_default_metrics(tactile_mode, robot_mode=robot_mode, robot_config_path=robot_config_path)
+        status = build_press_button_runtime_status(
+            ok=False,
+            dry_run=False,
+            runtime_started=False,
+            simulation_app_created=False,
+            scene_created_or_loaded=False,
+            runtime_loop_executed=False,
+            num_steps=0,
+            policy_name=policy_name,
+            success=False,
+            button_pressed=False,
+            metrics=metrics,
+            rollout_path=str(rollout_path),
+            errors=errors,
+            warnings=list(readiness.get("warnings", [])),
+        )
+        runtime_flagged_payload(status)
+        status["runtime_ready"] = False
+        status["headless"] = headless
+        status["webrtc_enabled"] = webrtc
+        status["max_steps"] = max_steps
+        status["runtime_config"] = str(runtime_config_path)
+        status["robot_config_path"] = robot_config_path
+        status["screenshot_requested"] = save_screenshot
+        status["save_rollout_json"] = save_rollout_json
+        rollout = runtime_flagged_payload(
+            {
+                "task_name": "PressButton",
+                "policy_name": policy_name,
+                "seed": seed,
+                "dry_run": False,
+                "dry_run_runtime": False,
+                "runtime_loop_executed": False,
+                **default_robot_runtime_fields(robot_mode=robot_mode, robot_config_path=robot_config_path),
+                "success": False,
+                "button_pressed": False,
+                "steps": [],
+                **press_button_contact_status_fields(metrics),
+            }
+        )
+        episode_records = [
+            runtime_episode_record(
+                seed=seed,
+                policy_name=policy_name,
+                max_steps=max_steps,
+                dry_run_runtime=False,
+                runtime_status_path=status_path,
+                rollout_path=rollout_path,
+                num_steps=0,
+                success=False,
+                button_pressed=False,
+                metrics=metrics,
+                tactile_mode=tactile_mode,
+                robot_mode=robot_mode,
+                robot_config_path=robot_config_path,
+            )
+        ]
+        write_json(status_path, status)
+        write_json(rollout_path, rollout)
+        write_runtime_smoke_outputs(
+            output_dir=output_dir,
+            args=args,
+            eval_cfg=eval_cfg,
+            episode_records=episode_records,
+            runtime_status=status,
+        )
+        print(json.dumps(status, indent=2, sort_keys=True))
+        return 1
+
+    import numpy as np
+
+    env = None
+    rollout_steps: list[dict[str, Any]] = []
+    final_info: dict[str, Any] = {
+        "success": False,
+        "button_pressed": False,
+        "metrics": runtime_default_metrics(tactile_mode, robot_mode=robot_mode, robot_config_path=robot_config_path),
+    }
+    reward = 0.0
+    terminated = truncated = False
+    warnings = list(readiness.get("warnings", []))
+    screenshot_saved = False
+    screenshot_warning: str | None = None
+    try:
+        env = make_env(
+            task="PressButton",
+            tactile=tactile_mode,
+            backend=RUNTIME_BACKEND,
+            cfg={
+                "runtime_config": runtime_cfg,
+                "robot_mode": robot_mode,
+                "robot_config_path": robot_config_path,
+            },
+            robot="fr3_tactile_placeholder" if robot_mode == "ee_placeholder" else "fr3_tactile",
+            seed=seed,
+            headless=headless,
+            webrtc=webrtc,
+            enable_runtime=True,
+        )
+        env.build()
+        obs = env.reset(seed=seed)
+        rng = np.random.default_rng(seed)
+        for step in range(max(0, max_steps)):
+            action = select_runtime_action(policy_name, obs, step, max_steps, rng)
+            next_obs, reward, terminated, truncated, info = env.step(action)
+            assert_observation_schema(next_obs)
+            rollout_steps.append(
+                {
+                    "step": int(step),
+                    "action": action.tolist(),
+                    "reward": float(reward),
+                    "terminated": bool(terminated),
+                    "truncated": bool(truncated),
+                    "success": bool(info["success"]),
+                    "button_pressed": bool(info["button_pressed"]),
+                    "success_source": info["metrics"].get("success_source", "none"),
+                    **press_button_contact_status_fields(info["metrics"]),
+                    "observation": runtime_observation_summary(next_obs),
+                    "metrics": info["metrics"],
+                }
+            )
+            obs = next_obs
+            final_info = info
+            if terminated or truncated:
+                break
+        metrics = dict(final_info.get("metrics", {}))
+        if save_screenshot and env is not None:
+            screenshot_saved, screenshot_warning = env.save_screenshot(screenshot_path)
+            if screenshot_warning:
+                warnings.append(screenshot_warning)
+        status = build_press_button_runtime_status(
+            ok=True,
+            dry_run=False,
+            runtime_started=bool(env.runtime_started),
+            simulation_app_created=bool(env.simulation_app_created),
+            scene_created_or_loaded=bool(env.scene_created_or_loaded),
+            runtime_loop_executed=True,
+            num_steps=len(rollout_steps),
+            policy_name=policy_name,
+            success=bool(final_info.get("success", False)),
+            button_pressed=bool(final_info.get("button_pressed", False)),
+            metrics=metrics,
+            screenshot_saved=screenshot_saved,
+            screenshot_path=str(screenshot_path) if save_screenshot else None,
+            rollout_path=str(rollout_path),
+            warnings=warnings + list(env.warnings),
+        )
+        runtime_flagged_payload(status)
+        status["runtime_ready"] = True
+        status["headless"] = headless
+        status["webrtc_enabled"] = webrtc
+        status["max_steps"] = max_steps
+        status["runtime_config"] = str(runtime_config_path)
+        status["screenshot_requested"] = save_screenshot
+        status["save_rollout_json"] = save_rollout_json
+        rollout = runtime_flagged_payload(
+            {
+                "task_name": "PressButton",
+                "policy_name": policy_name,
+                "seed": seed,
+                "dry_run": False,
+                "dry_run_runtime": False,
+                "runtime_loop_executed": True,
+                **default_robot_runtime_fields(
+                    robot_mode=robot_mode,
+                    robot_config_path=robot_config_path,
+                    ee_pose=metrics.get("ee_pose"),
+                    gripper_command=float(metrics.get("gripper_command", 0.0)),
+                ),
+                "success": bool(final_info.get("success", False)),
+                "button_pressed": bool(final_info.get("button_pressed", False)),
+                "steps": rollout_steps,
+                **press_button_contact_status_fields(metrics),
+            }
+        )
+        episode_records = [
+            runtime_episode_record(
+                seed=seed,
+                policy_name=policy_name,
+                max_steps=max_steps,
+                dry_run_runtime=False,
+                runtime_status_path=status_path,
+                rollout_path=rollout_path,
+                num_steps=len(rollout_steps),
+                success=bool(final_info.get("success", False)),
+                button_pressed=bool(final_info.get("button_pressed", False)),
+                metrics=metrics,
+                tactile_mode=tactile_mode,
+                robot_mode=robot_mode,
+                robot_config_path=robot_config_path,
+                reward=float(reward),
+                terminated=terminated,
+                truncated=truncated,
+            )
+        ]
+        write_json(status_path, status)
+        write_json(rollout_path, rollout)
+        write_runtime_smoke_outputs(
+            output_dir=output_dir,
+            args=args,
+            eval_cfg=eval_cfg,
+            episode_records=episode_records,
+            runtime_status=status,
+        )
+        print(f"Wrote single-task runtime smoke metrics.json: {output_dir / 'metrics.json'}")
+        print(f"Wrote single-task runtime smoke summary.csv: {output_dir / 'summary.csv'}")
+        print(f"Wrote single-task runtime smoke runtime_status.json: {status_path}")
+        print(f"Wrote single-task runtime smoke rollout.json: {rollout_path}")
+        return 0
+    except Exception as exc:
+        status = build_press_button_runtime_status(
+            ok=False,
+            dry_run=False,
+            runtime_started=bool(env and env.runtime_started),
+            simulation_app_created=bool(env and env.simulation_app_created),
+            scene_created_or_loaded=bool(env and env.scene_created_or_loaded),
+            runtime_loop_executed=bool(rollout_steps),
+            num_steps=len(rollout_steps),
+            policy_name=policy_name,
+            success=bool(final_info.get("success", False)),
+            button_pressed=bool(final_info.get("button_pressed", False)),
+            metrics=dict(
+                final_info.get(
+                    "metrics",
+                    runtime_default_metrics(tactile_mode, robot_mode=robot_mode, robot_config_path=robot_config_path),
+                )
+            ),
+            rollout_path=str(rollout_path),
+            errors=[str(exc)],
+            warnings=warnings,
+        )
+        runtime_flagged_payload(status)
+        status["runtime_ready"] = True
+        status["headless"] = headless
+        status["webrtc_enabled"] = webrtc
+        status["max_steps"] = max_steps
+        status["runtime_config"] = str(runtime_config_path)
+        status["robot_config_path"] = robot_config_path
+        status["screenshot_requested"] = save_screenshot
+        status["save_rollout_json"] = save_rollout_json
+        write_json(status_path, status)
+        print(json.dumps(status, indent=2, sort_keys=True))
+        return 1
+    finally:
+        if env is not None:
+            env.close()
+
+
 def main() -> int:
     args = parse_args()
     eval_cfg = load_yaml(args.config)
     checkpoint_metadata = load_checkpoint_metadata(args.checkpoint) if args.checkpoint else None
+    backend = args.backend or eval_cfg.get("backend", "mock")
+    eval_cfg = dict(eval_cfg)
+    eval_cfg["backend"] = backend
+    if args.max_steps is not None:
+        eval_cfg["max_steps"] = int(args.max_steps)
+    if backend == RUNTIME_BACKEND:
+        policy_name = args.policy or eval_cfg.get("policy", "scripted")
+        eval_cfg["policy"] = policy_name
+        eval_cfg["tactile_mode"] = runtime_tactile_mode(args, eval_cfg)
+        eval_cfg["runtime_config"] = args.runtime_config or eval_cfg.get(
+            "runtime_config", "configs/backend/isaacsim_visual_smoke.yaml"
+        )
+        eval_cfg["robot_mode"] = args.robot_mode or eval_cfg.get("robot_mode", "pusher")
+        eval_cfg["robot_config"] = args.robot_config or eval_cfg.get("robot_config")
+        eval_cfg["dry_run_runtime"] = bool(args.dry_run_runtime or eval_cfg.get("dry_run_runtime", False))
+        if args.headless is not None:
+            eval_cfg["headless"] = bool(args.headless)
+        elif "headless" not in eval_cfg:
+            eval_cfg["headless"] = bool(eval_cfg.get("headless_streaming", True))
+        if args.webrtc is not None:
+            eval_cfg["webrtc"] = bool(args.webrtc)
+        elif "webrtc" not in eval_cfg:
+            eval_cfg["webrtc"] = bool(eval_cfg.get("webrtc_enabled", True))
+        eval_cfg["save_screenshot"] = bool(args.save_screenshot or eval_cfg.get("save_screenshot", False))
+        eval_cfg["save_rollout_json"] = bool(args.save_rollout_json or eval_cfg.get("save_rollout_json", True))
+        if "max_steps" not in eval_cfg:
+            eval_cfg["max_steps"] = 80
+        return run_press_button_runtime_evaluation(args=args, eval_cfg=eval_cfg)
+    if backend != "mock":
+        raise SystemExit(f"Unknown backend: {backend}. Available: mock, {RUNTIME_BACKEND}")
+
     policy_name = args.policy or (checkpoint_metadata or {}).get("policy_name") or eval_cfg.get("policy", "random")
     if policy_name not in POLICY_REGISTRY.list():
         available = ", ".join(POLICY_REGISTRY.list())
         raise SystemExit(f"Unknown policy: {policy_name}. Available: {available}")
-    eval_cfg = dict(eval_cfg)
     eval_cfg["policy"] = policy_name
     if args.checkpoint:
         eval_cfg["checkpoint_path"] = args.checkpoint
@@ -315,7 +1012,7 @@ def run_random_evaluation(*, args: argparse.Namespace, eval_cfg: dict[str, Any])
     )
     seeds = args.seeds if args.seeds is not None else list(eval_cfg.get("seeds", [0, 1, 2]))
     episodes = int(args.episodes if args.episodes is not None else eval_cfg.get("episodes", 1))
-    max_steps = int(eval_cfg.get("max_steps", 20))
+    max_steps = int(args.max_steps if args.max_steps is not None else eval_cfg.get("max_steps", 20))
     output_dir = Path(args.output or eval_cfg.get("output_dir", "outputs/mock_eval"))
     split = str(eval_cfg.get("split", "test_seen"))
     policy_name = eval_cfg.get("policy", "random")
@@ -349,6 +1046,7 @@ def run_random_evaluation(*, args: argparse.Namespace, eval_cfg: dict[str, Any])
         "mock_stub": True,
         "config": {
             "config_path": str(args.config),
+            "backend": "mock",
             "tasks": tasks,
             "tactile_modes": tactile_modes,
             "seeds": seeds,

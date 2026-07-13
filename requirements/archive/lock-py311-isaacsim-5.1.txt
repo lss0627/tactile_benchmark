@@ -1,0 +1,10 @@
+# Archived reference baseline; no longer a development target after cutover.
+# Complete pip freeze captured externally under the migration evidence root.
+pip==26.0.1
+setuptools==80.10.2
+wheel==0.45.1
+numpy==1.26.0
+PyYAML==6.0.2
+h5py==3.16.0
+torch==2.7.0+cu128
+isaacsim==5.1.0.0

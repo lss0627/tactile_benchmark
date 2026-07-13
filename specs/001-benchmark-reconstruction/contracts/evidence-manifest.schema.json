@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://isaac-tactile-libero.local/schemas/evidence-manifest-1.0.0.json",
+  "title": "Evidence Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "gate_id",
+    "claim_class",
+    "status",
+    "repository",
+    "configuration",
+    "assets",
+    "environment",
+    "command",
+    "started_at",
+    "finished_at",
+    "artifacts"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "run_id": {"type": "string", "minLength": 1},
+    "gate_id": {"enum": ["G0", "G1", "G2", "G3", "G4", "G5", "G6"]},
+    "claim_class": {
+      "enum": ["mock", "dry_run", "runtime_smoke", "physical_runtime", "dataset", "evaluation", "benchmark", "release"]
+    },
+    "status": {"enum": ["BLOCKED", "PASS_SMOKE", "PASS_BENCHMARK"]},
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "dirty", "dirty_patch_sha256"],
+      "properties": {
+        "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "dirty": {"type": "boolean"},
+        "dirty_patch_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "configuration": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/digestedReference"}
+    },
+    "assets": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/digestedReference"}
+    },
+    "environment": {
+      "type": "object",
+      "required": ["python", "platform", "dependency_lock_sha256"],
+      "properties": {
+        "python": {"type": "string"},
+        "platform": {"type": "string"},
+        "isaac_sim": {"type": ["string", "null"]},
+        "gpu": {"type": ["string", "null"]},
+        "dependency_lock_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "command": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "started_at": {"type": "string", "format": "date-time"},
+    "finished_at": {"type": "string", "format": "date-time"},
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/digestedReference"}
+    },
+    "blockers": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "notes": {"type": "string"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "BLOCKED"}}},
+      "then": {"required": ["blockers"], "properties": {"blockers": {"minItems": 1}}}
+    },
+    {
+      "if": {"properties": {"status": {"const": "PASS_BENCHMARK"}}},
+      "then": {
+        "properties": {
+          "repository": {"properties": {"dirty": {"const": false}, "dirty_patch_sha256": {"type": "null"}}}
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "digestedReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "uri", "sha256"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "uri": {"type": "string", "minLength": 1},
+        "version": {"type": ["string", "null"]},
+        "license": {"type": ["string", "null"]},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

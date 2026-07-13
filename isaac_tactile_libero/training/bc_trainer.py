@@ -65,17 +65,30 @@ class BCTrainer:
             "checks": checks,
             "mock_or_stub": True,
         }
+        dataset_kind = dataset_info.get("dataset_kind", "mock_dataset")
+        runtime_smoke = dataset_kind == "runtime_smoke"
+        insufficient_real_episodes = bool(runtime_smoke)
         summary = {
             "status": "dry_run_complete",
             "total_steps": total_steps,
             "num_epochs": self.cfg.num_epochs,
+            "num_episodes": batch["num_episodes"],
             "dataset_episodes": batch["num_episodes"],
             "dataset_steps": batch["num_steps"],
+            "dataset_kind": dataset_kind,
+            "runtime_smoke": bool(runtime_smoke),
+            "robot_mode": dataset_info.get("robot_mode"),
+            "robot_config_path": dataset_info.get("robot_config_path"),
+            "placeholder_robot": dataset_info.get("placeholder_robot"),
+            "real_fr3_articulation": dataset_info.get("real_fr3_articulation"),
+            "insufficient_real_episodes": insufficient_real_episodes,
             "policy_name": self.cfg.policy_name,
             "batch_size": self.cfg.batch_size,
             "dry_run": True,
             "is_trained": False,
             "mock_or_stub": True,
+            "benchmark_result": False,
+            "not_for_paper_claims": True,
             "checkpoint_path": str(self.output_dir / "checkpoint_mock.json"),
             "log_path": str(self.output_dir / "train_log.jsonl"),
         }

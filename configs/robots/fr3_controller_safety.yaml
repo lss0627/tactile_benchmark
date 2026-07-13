@@ -1,0 +1,8 @@
+max_joint_delta_rad: 0.02
+max_steps: 50
+max_velocity_norm: 2.0
+max_joint_position_drift_rad: 0.1
+abort_on_nan: true
+abort_on_large_drift: true
+benchmark_result: false
+not_for_paper_claims: true

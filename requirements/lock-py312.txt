@@ -1,0 +1,3 @@
+# Promoted development lock. The candidate file is retained unchanged so the
+# exact G-1B environment remains reproducible.
+-r candidates/lock-py312-isaacsim-6.0.1.txt

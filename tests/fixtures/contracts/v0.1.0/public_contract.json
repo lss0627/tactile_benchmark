@@ -1,0 +1,70 @@
+{
+  "action": {
+    "dim": 7,
+    "dtype": "float32",
+    "control_frequency_hz": 20.0,
+    "position_clip_m": 0.05,
+    "rotation_clip_rad": 0.25,
+    "gripper_min": -1.0,
+    "gripper_max": 1.0,
+    "smoothing_alpha": 1.0,
+    "coordinate_frame": "end_effector_delta"
+  },
+  "observation": {
+    "rgb_shape": [64, 64, 3],
+    "joint_count": 9,
+    "ee_pose_shape": [7],
+    "gripper_state_shape": [1],
+    "tactile_mask_keys": [
+      "has_force",
+      "has_wrench",
+      "has_vt_rgb",
+      "has_vt_depth",
+      "has_force_field"
+    ]
+  },
+  "dataset": {
+    "schema_version": "0.1.0",
+    "action_dim": 7,
+    "required_episode_fields": [
+      "task_name", "suite_name", "instruction", "seed", "timestamps",
+      "observations", "actions", "rewards", "success", "contact_metrics", "metadata"
+    ],
+    "observation_paths": [
+      "observations/language",
+      "observations/rgb/front",
+      "observations/rgb/wrist",
+      "observations/state/joint_pos",
+      "observations/state/joint_vel",
+      "observations/state/ee_pose",
+      "observations/state/gripper_state",
+      "observations/time/step",
+      "observations/time/timestamp",
+      "observations/tactile/valid",
+      "observations/tactile/contact_flag_left",
+      "observations/tactile/contact_flag_right",
+      "observations/tactile/force_left",
+      "observations/tactile/force_right",
+      "observations/tactile/wrench_left",
+      "observations/tactile/wrench_right",
+      "observations/tactile/vt_rgb_left",
+      "observations/tactile/vt_rgb_right",
+      "observations/tactile/vt_depth_left",
+      "observations/tactile/vt_depth_right",
+      "observations/tactile/force_field_left",
+      "observations/tactile/force_field_right",
+      "observations/tactile/mask/has_force",
+      "observations/tactile/mask/has_wrench",
+      "observations/tactile/mask/has_vt_rgb",
+      "observations/tactile/mask/has_vt_depth",
+      "observations/tactile/mask/has_force_field"
+    ],
+    "timestamp_paths": [
+      "timestamps/sim_time",
+      "timestamps/control_step",
+      "timestamps/action_timestamp",
+      "timestamps/state_timestamp",
+      "timestamps/tactile_timestamp"
+    ]
+  }
+}

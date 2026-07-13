@@ -1,0 +1,35 @@
+backend: isaacsim_fr3_press_button
+task: PressButton
+simulator_version: "6.0.1"
+python_version: "3.12"
+observed_driver: "550.144.03"
+reference_driver: "595.58.03"
+driver_validation: UNVALIDATED
+compatibility_result: PASS_ON_UNVALIDATED_DRIVER
+
+physics_device: cpu
+rendering_device: cuda:0
+gpu_dynamics: false
+gpu_contact_status: BLOCKED_UNVALIDATED
+gpu_contact_blocker: GPU_CONTACT_NATIVE_INSTABILITY
+physics_dt: 0.016666666666666666
+rendering_dt: 0.05
+
+robot_config_path: configs/robots/fr3_real_articulation.yaml
+camera_resolution: [64, 64]
+camera_depth_clip_m: [0.05, 10.0]
+camera_min_valid_depth_ratio: 0.95
+max_sensor_skew_ticks: 1
+
+sensor_ready_timeout_steps: 5
+contact_onset_tolerance_steps: 2
+contact_release_timeout_steps: 5
+contact_stable_steps: 3
+force_zero_epsilon: 1.0e-4
+penetration_persistent_threshold_m: 0.001
+penetration_absolute_limit_m: 0.005
+penetration_max_stable_steps: 5
+
+claim_class: runtime_smoke
+benchmark_result: false
+not_for_paper_claims: true

@@ -5,9 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "isaac-tactile-libero"
 version = "0.1.0"
-description = "Phase 1 mock skeleton for the Isaac-Tactile-LIBERO benchmark contract."
+description = "Isaac-Tactile-LIBERO benchmark reconstruction library."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12,<3.13"
 dependencies = [
   "numpy>=1.23",
   "PyYAML>=6",

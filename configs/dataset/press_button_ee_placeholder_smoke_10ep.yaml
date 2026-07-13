@@ -1,0 +1,17 @@
+task: PressButton
+backend: isaacsim_press_button
+robot_mode: ee_placeholder
+robot_config: configs/robots/fr3_ee_placeholder.yaml
+dataset_kind: runtime_smoke
+num_episodes: 10
+seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+policy: scripted
+tactile: force_wrench
+max_steps: 80
+force_source: unavailable
+contact_force_available: false
+benchmark_result: false
+not_for_paper_claims: true
+placeholder_robot: true
+real_fr3_articulation: false
+output: outputs/press_button_ee_placeholder_dataset_smoke/press_button_ee_placeholder_10ep_gpu1.hdf5

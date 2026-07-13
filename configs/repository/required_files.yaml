@@ -1,0 +1,23 @@
+schema_version: 1.0.0
+required_patterns:
+  - pyproject.toml
+  - README.md
+  - isaac_tactile_libero/**/*.py
+  - isaac_tactile_libero/schemas/*.schema.json
+  - scripts/*.py
+  - configs/**/*.yaml
+  - requirements/**/*.txt
+  - requirements/**/*.md
+  - specs/001-benchmark-reconstruction/**/*.md
+  - specs/001-benchmark-reconstruction/contracts/*.json
+  - tests/**/*.py
+  - tests/fixtures/**/*.json
+generated_patterns:
+  - datasets/**
+  - outputs/**
+  - logs/**
+  - demos_output/**
+  - eval_logs/**
+  - rollouts/**
+external_asset_keys:
+  - Robots/FrankaRobotics/FrankaFR3/fr3.usd

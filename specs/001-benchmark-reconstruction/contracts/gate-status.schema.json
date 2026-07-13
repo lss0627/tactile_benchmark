@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://isaac-tactile-libero.local/schemas/gate-status-1.0.0.json",
+  "title": "Gate Status",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "feature", "updated_at", "gates"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "feature": {"const": "001-benchmark-reconstruction"},
+    "updated_at": {"type": "string", "format": "date-time"},
+    "gates": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "prefixItems": [
+        {"$ref": "#/$defs/g0"},
+        {"$ref": "#/$defs/g1"},
+        {"$ref": "#/$defs/g2"},
+        {"$ref": "#/$defs/g3"},
+        {"$ref": "#/$defs/g4"},
+        {"$ref": "#/$defs/g5"},
+        {"$ref": "#/$defs/g6"}
+      ],
+      "items": false
+    }
+  },
+  "$defs": {
+    "gate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["gate_id", "status", "claim_class", "predecessors", "requirements", "evidence", "blockers"],
+        "properties": {
+          "gate_id": {"enum": ["G0", "G1", "G2", "G3", "G4", "G5", "G6"]},
+          "status": {"enum": ["NOT_STARTED", "IN_PROGRESS", "BLOCKED", "PASS_SMOKE", "PASS_BENCHMARK"]},
+          "claim_class": {
+            "enum": ["mock", "dry_run", "runtime_smoke", "physical_runtime", "dataset", "evaluation", "benchmark", "release"]
+          },
+          "predecessors": {"type": "array", "uniqueItems": true, "items": {"enum": ["G0", "G1", "G2", "G3", "G4", "G5", "G6"]}},
+          "requirements": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^(FR|SC)-[0-9]{3}$"}},
+          "evidence": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+          "blockers": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+        }
+    },
+    "g0": {"allOf": [{"$ref": "#/$defs/gate"}, {"properties": {"gate_id": {"const": "G0"}}}]},
+    "g1": {"allOf": [{"$ref": "#/$defs/gate"}, {"properties": {"gate_id": {"const": "G1"}}}]},
+    "g2": {"allOf": [{"$ref": "#/$defs/gate"}, {"properties": {"gate_id": {"const": "G2"}}}]},
+    "g3": {"allOf": [{"$ref": "#/$defs/gate"}, {"properties": {"gate_id": {"const": "G3"}}}]},
+    "g4": {"allOf": [{"$ref": "#/$defs/gate"}, {"properties": {"gate_id": {"const": "G4"}}}]},
+    "g5": {"allOf": [{"$ref": "#/$defs/gate"}, {"properties": {"gate_id": {"const": "G5"}}}]},
+    "g6": {"allOf": [{"$ref": "#/$defs/gate"}, {"properties": {"gate_id": {"const": "G6"}}}]}
+  }
+}
