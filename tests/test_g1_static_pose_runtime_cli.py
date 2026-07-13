@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import importlib.util
 import importlib
+import hashlib
 import inspect
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import types
 from typing import Any
 
 import numpy as np
@@ -83,6 +85,8 @@ def _offline_record(candidate_id: str, order: int, position: list[float]) -> dic
         "joint_upper": [2.0] * 7 + [0.04, 0.04],
         "fk_position_world_m": position,
         "fk_orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "ik_solution_valid": True,
+        "fk_residual_valid": True,
         "ik_position_residual_m": 0.0,
         "ik_orientation_residual_rad": 0.0,
         "residual_limits": {"position_m": 0.0001, "orientation_rad": 0.0001},
@@ -106,6 +110,62 @@ def _offline_record(candidate_id: str, order: int, position: list[float]) -> dic
         "real_runtime_truth": True,
         "synthetic_test_double": False,
     }
+
+
+def _offline_failure_record(
+    candidate_id: str,
+    order: int,
+    position: list[float],
+    *,
+    message: str | None = None,
+) -> dict[str, Any]:
+    record = _offline_record(candidate_id, order, position)
+    record.update(
+        {
+            "ik_solution_valid": False,
+            "fk_residual_valid": False,
+            "solver_joint_values": None,
+            "articulation_joint_values": None,
+            "fk_position_world_m": None,
+            "fk_orientation_xyzw": None,
+            "ik_position_residual_m": None,
+            "ik_orientation_residual_rad": None,
+            "offline_failure_code": "G1_C2A_IK_FAILED",
+            "offline_failure_message": message or f"Lula failed candidate {candidate_id}",
+            "scene_count": 0,
+            "readiness_sample_count": 0,
+            "actuation_performed": False,
+        }
+    )
+    return record
+
+
+def _offline_records(states: tuple[str, str, str]) -> list[dict[str, Any]]:
+    assert len(states) == len(CANDIDATES)
+    records: list[dict[str, Any]] = []
+    for state, (candidate_id, position) in zip(states, CANDIDATES):
+        order = len(records)
+        if state == "valid":
+            records.append(_offline_record(candidate_id, order, position))
+        elif state == "failed":
+            records.append(_offline_failure_record(candidate_id, order, position))
+        else:
+            raise AssertionError(f"unsupported candidate fixture state: {state}")
+    return records
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+
+
+def _assert_checksum_file(output: Path) -> None:
+    entries = (output / "checksums.sha256").read_text(encoding="utf-8").splitlines()
+    assert entries
+    for entry in entries:
+        expected, name = entry.split(maxsplit=1)
+        artifact = output / name.strip()
+        assert artifact.is_file()
+        assert hashlib.sha256(artifact.read_bytes()).hexdigest() == expected
 
 
 def _real_sample(candidate_id: str, action_index: int) -> dict[str, Any]:
@@ -155,10 +215,18 @@ def _real_sample(candidate_id: str, action_index: int) -> dict[str, Any]:
 
 
 class _FakeScene:
-    def __init__(self, spec: dict[str, Any], events: list[str], *, fail_at: int | None = None) -> None:
+    def __init__(
+        self,
+        spec: dict[str, Any],
+        events: list[str],
+        *,
+        fail_at: int | None = None,
+        failure_changes: dict[str, Any] | None = None,
+    ) -> None:
         self.spec = spec
         self.events = events
         self.fail_at = fail_at
+        self.failure_changes = failure_changes or {"penetration_provenance_valid": False}
         self.close_count = 0
         scene_index = int(spec["scene_index"])
         self.provenance = {
@@ -188,7 +256,7 @@ class _FakeScene:
         self.events.append(f"step:{self.spec['scene_id']}:{action_index}")
         sample = _real_sample(self.spec["candidate_id"], action_index)
         if self.fail_at == action_index:
-            sample["penetration_provenance_valid"] = False
+            sample.update(self.failure_changes)
         return sample
 
     def close(self) -> None:
@@ -240,6 +308,35 @@ class _FakeFactory:
     def close(self, *, exit_code: int) -> None:
         self.close_codes.append(exit_code)
         self.events.append(f"factory-close:{exit_code}")
+
+
+class _CandidateOutcomeFactory(_FakeFactory):
+    def __init__(
+        self,
+        states: tuple[str, str, str],
+        *,
+        scene_failures: dict[tuple[str, int], dict[str, Any]] | None = None,
+    ) -> None:
+        super().__init__()
+        self.records = _offline_records(states)
+        self.scene_failures = scene_failures or {}
+
+    def build_offline_candidates(self, *, reference: dict[str, Any]) -> list[dict[str, Any]]:
+        assert reference["real_runtime_truth"] is True
+        self.events.append("lula-offline")
+        return json.loads(json.dumps(self.records))
+
+    def create_static_scene(self, **spec: Any) -> _FakeScene:
+        self.events.append(f"create:{spec['scene_id']}")
+        changes = self.scene_failures.get((str(spec["candidate_id"]), int(spec["scene_index"])))
+        scene = _FakeScene(
+            dict(spec),
+            self.events,
+            fail_at=0 if changes is not None else None,
+            failure_changes=changes,
+        )
+        self.scenes.append(scene)
+        return scene
 
 
 def _orchestrate(runner: Any, tmp_path: Path, factory: _FakeFactory, **changes: Any):
@@ -349,25 +446,76 @@ def test_c2a_real_cli_accepts_only_lula_computed_three_candidate_records(tmp_pat
     runner = _runner()
     validate = _capability(runner, "validate_real_c2a_offline_candidates")
     records = [_offline_record(candidate_id, order, position) for order, (candidate_id, position) in enumerate(CANDIDATES)]
-    assert [record["candidate_id"] for record in validate(records)] == [item[0] for item in CANDIDATES]
+    validated = validate(records)
+    assert [record["candidate_id"] for record in validated] == [item[0] for item in CANDIDATES]
+    for record in validated:
+        assert record["ik_solution_valid"] is True
+        assert record["fk_residual_valid"] is True
+        assert np.isfinite(record["solver_joint_values"]).all()
+        assert np.isfinite(record["fk_position_world_m"]).all()
+        assert np.isfinite(record["fk_orientation_xyzw"]).all()
+        assert record["residual_limits"] == {
+            "position_m": 0.0001,
+            "orientation_rad": 0.0001,
+        }
+        assert record["ik_position_residual_m"] <= record["residual_limits"]["position_m"]
+        assert record["ik_orientation_residual_rad"] <= record["residual_limits"]["orientation_rad"]
+    with pytest.raises(Exception) as wrong_count:
+        validate(records[:2])
+    assert getattr(wrong_count.value, "code", "")
+    assert str(wrong_count.value)
     records[0] = {**records[0], "synthetic_test_double": True}
     with pytest.raises(Exception) as caught:
         validate(records)
     assert getattr(caught.value, "code", "") == "G1_C2A_SYNTHETIC_RUNTIME_FORBIDDEN"
 
 
-def test_c2a_real_offline_failure_record_preserves_exact_lula_blocker() -> None:
+def test_c2a_candidate_local_rejection_preserves_exact_lula_blocker_without_systemic_raise(
+    tmp_path: Path,
+) -> None:
     validate = _capability(_runner(), "validate_real_c2a_offline_candidates")
-    records = [_offline_record(candidate_id, order, position) for order, (candidate_id, position) in enumerate(CANDIDATES)]
-    records[0] = {
-        **records[0],
-        "offline_failure_code": "G1_C2A_IK_FAILED",
-        "offline_failure_message": "Lula failed task-ready-z-0p55",
-    }
-    with pytest.raises(Exception) as caught:
-        validate(records)
-    assert getattr(caught.value, "code", "") == "G1_C2A_IK_FAILED"
-    assert getattr(caught.value, "message", "") == "Lula failed task-ready-z-0p55"
+    records = _offline_records(("valid", "failed", "failed"))
+    records[1]["offline_failure_message"] = "Lula failed task-ready-z-0p54: exact diagnostic"
+    records[2]["offline_failure_message"] = "Lula failed task-ready-z-0p53: exact diagnostic"
+    try:
+        validated = validate(records)
+    except Exception as error:
+        pytest.fail(f"well-formed candidate-local rejection became systemic: {error}")
+    assert [record["candidate_id"] for record in validated] == [item[0] for item in CANDIDATES]
+    assert validated[1]["offline_failure_code"] == "G1_C2A_IK_FAILED"
+    assert validated[1]["offline_failure_message"] == "Lula failed task-ready-z-0p54: exact diagnostic"
+    assert validated[2]["offline_failure_code"] == "G1_C2A_IK_FAILED"
+    assert validated[2]["offline_failure_message"] == "Lula failed task-ready-z-0p53: exact diagnostic"
+
+    wrong_count_factory = _CandidateOutcomeFactory(("valid", "valid", "valid"))
+    wrong_count_factory.records = wrong_count_factory.records[:2]
+    writes: list[dict[str, Any]] = []
+
+    def recording_writer(**payload: Any) -> dict[str, Any]:
+        writes.append(payload)
+        wrong_count_factory.events.append("write-evidence")
+        return {}
+
+    outcome = _orchestrate(
+        _runner(),
+        tmp_path,
+        wrong_count_factory,
+        evidence_writer=recording_writer,
+    )
+    assert outcome["exit_code"] == 1
+    assert outcome["systemic_failure_code"]
+    assert outcome["systemic_failure_message"]
+    assert wrong_count_factory.scenes == []
+    assert not any(
+        event.startswith(("create:", "step:"))
+        for event in wrong_count_factory.events
+    )
+    assert len(writes) == 1
+    assert len(writes[0]["offline_candidates"]) == 2
+    assert wrong_count_factory.events.index("write-evidence") < wrong_count_factory.events.index(
+        "factory-close:1"
+    )
+    assert wrong_count_factory.close_codes == [1]
 
 
 class _FakePrim:
@@ -559,6 +707,406 @@ def test_c2a_offline_validation_failure_retains_all_raw_lula_records_for_evidenc
     outcome = _orchestrate(_runner(), tmp_path, factory, evidence_writer=writer)
     assert outcome["systemic_failure_code"] == "G1_C2A_SYNTHETIC_RUNTIME_FORBIDDEN"
     assert len(writes[0]["offline_candidates"]) == 3
+
+
+def test_c2a_candidate_local_rejection_valid_failed_failed_runs_only_highest_candidate_lifecycle(
+    tmp_path: Path,
+) -> None:
+    runner = _runner()
+    factory = _CandidateOutcomeFactory(("valid", "failed", "failed"))
+    write = _capability(runner, "write_c2a_static_evidence")
+
+    def recording_writer(**payload: Any) -> dict[str, Any]:
+        factory.events.append("write-evidence")
+        report = write(**payload)
+        factory.events.append("evidence-complete")
+        return report
+
+    outcome = _orchestrate(runner, tmp_path, factory, evidence_writer=recording_writer)
+    output = tmp_path / "c2a"
+
+    assert outcome["exit_code"] == 0
+    assert outcome["systemic_failure"] is False
+    assert outcome["systemic_failure_code"] is None
+    assert outcome["systemic_failure_message"] is None
+    assert outcome["selected_pose_id"] == "task-ready-z-0p55"
+    assert outcome["selected_pose_sha256"] == runner._sha256_json(factory.records[0])
+    assert factory.close_codes == [0]
+    assert factory.events.index("evidence-complete") < factory.events.index("factory-close:0")
+
+    candidate_records = _read_jsonl(output / "offline_candidates.jsonl")
+    scenes = _read_jsonl(output / "static_scenes.jsonl")
+    samples = _read_jsonl(output / "readiness_samples.jsonl")
+    report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+    assert [record["candidate_id"] for record in candidate_records] == [item[0] for item in CANDIDATES]
+    assert len(candidate_records) == 3
+    assert len(scenes) == 3
+    assert len(samples) == 3 * 64 == 192
+    assert {scene["candidate_id"] for scene in scenes} == {"task-ready-z-0p55"}
+    assert len({scene["scene_id"] for scene in scenes}) == 3
+    assert len({scene["fresh_scene_token"] for scene in scenes}) == 3
+    assert all(scene["passed"] is True for scene in scenes)
+    assert all(sample["candidate_id"] == "task-ready-z-0p55" for sample in samples)
+    assert all(sample["requested_vector_m"] == [0.0, 0.0, 0.0] for sample in samples)
+    assert all(sample["post_abort_actuation_count"] == 0 for sample in samples)
+    assert not any("task-ready-z-0p54" in event or "task-ready-z-0p53" in event for event in factory.events if event.startswith(("create:", "step:")))
+    for rejected in candidate_records[1:]:
+        assert rejected["offline_failure_code"] == "G1_C2A_IK_FAILED"
+        assert rejected["offline_failure_message"]
+        assert rejected["solver_identity"] == "isaacsim_lula_fr3"
+        assert rejected["solver_frame"] == "fr3_hand_tcp"
+        assert rejected["solver_joint_names"] == list(ARM_NAMES)
+        assert rejected["articulation_joint_names"] == list(JOINT_NAMES)
+        for digest in (
+            "solver_config_sha256",
+            "transform_sha256",
+            "asset_sha256",
+            "dependency_lock_sha256",
+            "task_config_sha256",
+            "robot_config_sha256",
+            "code_sha256",
+            "pose_list_sha256",
+            "orientation_source_sha256",
+        ):
+            assert len(rejected[digest]) == 64
+        assert rejected["scene_count"] == 0
+        assert rejected["readiness_sample_count"] == 0
+        assert rejected["actuation_performed"] is False
+    assert report["offline_candidate_count"] == len(candidate_records)
+    assert report["static_scene_count"] == len(scenes)
+    assert report["readiness_sample_count"] == len(samples)
+    _assert_checksum_file(output)
+
+
+def test_c2a_candidate_local_rejection_failed_valid_failed_can_select_second_candidate(
+    tmp_path: Path,
+) -> None:
+    runner = _runner()
+    factory = _CandidateOutcomeFactory(("failed", "valid", "failed"))
+    outcome = _orchestrate(runner, tmp_path, factory)
+    output = tmp_path / "c2a"
+
+    assert outcome["exit_code"] == 0
+    assert outcome["systemic_failure_code"] is None
+    assert outcome["selected_pose_id"] == "task-ready-z-0p54"
+    assert outcome["selected_pose_sha256"] == runner._sha256_json(factory.records[1])
+    assert factory.close_codes == [0]
+    candidate_records = _read_jsonl(output / "offline_candidates.jsonl")
+    scenes = _read_jsonl(output / "static_scenes.jsonl")
+    samples = _read_jsonl(output / "readiness_samples.jsonl")
+    assert [record["candidate_id"] for record in candidate_records] == [item[0] for item in CANDIDATES]
+    assert len(scenes) == 3
+    assert len(samples) == 192
+    assert {scene["candidate_id"] for scene in scenes} == {"task-ready-z-0p54"}
+    assert {sample["candidate_id"] for sample in samples} == {"task-ready-z-0p54"}
+    assert not any("task-ready-z-0p55" in event or "task-ready-z-0p53" in event for event in factory.events if event.startswith(("create:", "step:")))
+    _assert_checksum_file(output)
+
+
+def test_c2a_candidate_local_rejection_all_failed_returns_no_qualified_pose_with_diagnostics(
+    tmp_path: Path,
+) -> None:
+    factory = _CandidateOutcomeFactory(("failed", "failed", "failed"))
+    factory.records[0]["offline_failure_message"] = "Lula exact failure at 0p55"
+    factory.records[1]["offline_failure_message"] = "Lula exact failure at 0p54"
+    factory.records[2]["offline_failure_message"] = "Lula exact failure at 0p53"
+    outcome = _orchestrate(_runner(), tmp_path, factory)
+    output = tmp_path / "c2a"
+
+    assert outcome["exit_code"] == 1
+    assert outcome["systemic_failure_code"] == "G1_C2A_NO_QUALIFIED_POSE"
+    assert outcome["systemic_failure_message"]
+    assert outcome["selected_pose_id"] is None
+    assert outcome["selected_pose_sha256"] is None
+    assert factory.scenes == []
+    assert not any(event.startswith(("create:", "step:")) for event in factory.events)
+    assert factory.close_codes == [1]
+    records = _read_jsonl(output / "offline_candidates.jsonl")
+    assert [record["candidate_id"] for record in records] == [item[0] for item in CANDIDATES]
+    assert [record["offline_failure_message"] for record in records] == [
+        "Lula exact failure at 0p55",
+        "Lula exact failure at 0p54",
+        "Lula exact failure at 0p53",
+    ]
+    assert all(record["offline_failure_code"] == "G1_C2A_IK_FAILED" for record in records)
+    assert all(record["scene_count"] == 0 for record in records)
+    assert all(record["readiness_sample_count"] == 0 for record in records)
+    assert all(record["actuation_performed"] is False for record in records)
+    assert _read_jsonl(output / "static_scenes.jsonl") == []
+    assert _read_jsonl(output / "readiness_samples.jsonl") == []
+    _assert_checksum_file(output)
+
+
+def test_c2a_candidate_local_rejection_failed_solve_has_no_fabricated_fk_or_residual() -> None:
+    validate = _capability(_runner(), "validate_real_c2a_offline_candidates")
+    records = _offline_records(("failed", "valid", "valid"))
+    warm_start = list(records[0]["warm_start_joint_values"])
+    try:
+        validated = validate(records)
+    except Exception as error:
+        pytest.fail(f"truthful candidate-local failure record became systemic: {error}")
+    failed = validated[0]
+    assert failed["ik_solution_valid"] is False
+    assert failed["fk_residual_valid"] is False
+    assert failed["solver_joint_values"] is None
+    assert failed["fk_position_world_m"] is None
+    assert failed["fk_orientation_xyzw"] is None
+    assert failed["ik_position_residual_m"] is None
+    assert failed["ik_orientation_residual_rad"] is None
+    assert failed["warm_start_joint_values"] == warm_start
+    assert failed["solver_joint_values"] != warm_start
+    assert all(record["ik_solution_valid"] is True for record in validated[1:])
+    assert all(record["fk_residual_valid"] is True for record in validated[1:])
+    successful_record = _offline_record(CANDIDATES[0][0], 0, CANDIDATES[0][1])
+    for invalid_success in (
+        {key: value for key, value in successful_record.items() if key != "ik_solution_valid"},
+        {key: value for key, value in successful_record.items() if key != "fk_residual_valid"},
+        {**successful_record, "ik_solution_valid": False},
+        {**successful_record, "fk_residual_valid": False},
+        {**successful_record, "solver_joint_values": [float("nan")] + [0.1] * 6},
+        {**successful_record, "fk_position_world_m": [float("inf"), 0.0, 0.55]},
+        {**successful_record, "ik_position_residual_m": 0.0001000001},
+        {**successful_record, "ik_orientation_residual_rad": 0.0001000001},
+    ):
+        with pytest.raises(Exception):
+            validate([invalid_success, *validated[1:]])
+
+
+def test_c2a_candidate_local_rejection_real_factory_failed_solve_emits_truthful_record(
+    monkeypatch,
+) -> None:
+    module = _real_runtime_module()
+    loader_module = types.ModuleType(
+        "isaacsim.robot_motion.motion_generation.interface_config_loader"
+    )
+    loader_module.load_supported_lula_kinematics_solver_config = lambda _name: {
+        "robot_description_path": "fake-fr3.yaml"
+    }
+    for name in (
+        "isaacsim",
+        "isaacsim.robot_motion",
+        "isaacsim.robot_motion.motion_generation",
+    ):
+        package = types.ModuleType(name)
+        package.__path__ = []  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, name, package)
+    monkeypatch.setitem(sys.modules, loader_module.__name__, loader_module)
+
+    solver_calls: list[str] = []
+
+    class Solver:
+        def compute_inverse_kinematics(self, _frame, _target, **_kwargs):
+            solver_calls.append("ik-failed")
+            return np.zeros(7, dtype=np.float64), False
+
+        def compute_forward_kinematics(self, *_args, **_kwargs):
+            raise AssertionError("failed IK must not fabricate an FK measurement")
+
+    joint_state = types.SimpleNamespace(
+        joint_names=JOINT_NAMES,
+        joint_positions=[0.0] * 7 + [0.02, 0.02],
+    )
+    runtime = types.SimpleNamespace(
+        ik_runtime=types.SimpleNamespace(kinematics_solver=Solver()),
+        solver_frame="fr3_hand_tcp",
+        solver_joint_names=ARM_NAMES,
+        read_joint_state=lambda: joint_state,
+        current_solver_joint_vector=lambda _state: np.zeros(7, dtype=np.float64),
+        close=lambda: solver_calls.append("runtime-close"),
+    )
+    reference = dict(_FakeFactory().reference)
+    factory = module.C2ARealSceneFactory.__new__(module.C2ARealSceneFactory)
+    factory._reference_runtime = runtime
+    factory._reference_record = reference
+    factory.robot = types.SimpleNamespace(
+        frames=types.SimpleNamespace(base_frame="fr3_link0", ee_frame="fr3_hand_tcp")
+    )
+    factory.robot_safe = {
+        "joint_limits": {
+            "lower_rad": [-2.0] * 7 + [0.0, 0.0],
+            "upper_rad": [2.0] * 7 + [0.04, 0.04],
+        },
+        "workspace": {"min_m": [0.2, -0.3, 0.2], "max_m": [0.7, 0.3, 0.9]},
+    }
+    factory.runtime_metadata = {
+        "asset_sha256": "4" * 64,
+        "dependency_lock_sha256": "5" * 64,
+        "task_config_sha256": "6" * 64,
+        "robot_config_sha256": "7" * 64,
+    }
+    factory._stop_timeline = lambda: solver_calls.append("timeline-stop")
+
+    records = factory.build_offline_candidates(reference=reference)
+    assert len(records) == 3
+    assert [record["candidate_id"] for record in records] == [item[0] for item in CANDIDATES]
+    assert solver_calls.count("ik-failed") == 3
+    assert solver_calls[-2:] == ["runtime-close", "timeline-stop"]
+    for record in records:
+        assert record.get("offline_failure_code") == "G1_C2A_IK_FAILED"
+        assert record.get("offline_failure_message")
+        assert record.get("ik_solution_valid") is False
+        assert record.get("fk_residual_valid") is False
+        assert record.get("solver_joint_values") is None
+        assert record.get("fk_position_world_m") is None
+        assert record.get("fk_orientation_xyzw") is None
+        assert record.get("ik_position_residual_m") is None
+        assert record.get("ik_orientation_residual_rad") is None
+        assert record.get("warm_start_joint_values") == [0.0] * 7
+        assert record.get("solver_joint_values") != record.get("warm_start_joint_values")
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_code", "message_fragment"),
+    [
+        ("synthetic", "G1_C2A_SYNTHETIC_RUNTIME_FORBIDDEN", "synthetic"),
+        ("candidate_order", "G1_C2A_FRAME", "candidate"),
+        ("candidate_id", "G1_C2A_FRAME", "candidate"),
+        ("candidate_position", "G1_C2A_FRAME", "candidate"),
+        ("solver_identity", "G1_C2A_IK_FAILED", "not from Lula"),
+        ("joint_order", "G1_C2A_JOINT_IDENTITY", "joint"),
+        ("frame", "G1_C2A_FRAME", "frame"),
+        ("digest_missing", "G1_C2A_DIGEST_MISSING", "digest"),
+        ("digest_inconsistent", "G1_C2A_DIGEST_MISSING", "digest"),
+        ("transform", "G1_C2A_NONFINITE", "world_from_base"),
+        ("unit", "G1_C2A_STAGE_UNITS", "metres"),
+    ],
+)
+def test_c2a_candidate_local_rejection_does_not_mask_systemic_provenance_fail_closed(
+    tmp_path: Path,
+    case: str,
+    expected_code: str,
+    message_fragment: str,
+) -> None:
+    records = _offline_records(("failed", "valid", "valid"))
+    candidate = records[1]
+    if case == "synthetic":
+        candidate["synthetic_test_double"] = True
+    elif case == "candidate_order":
+        candidate["candidate_order"] = 2
+    elif case == "candidate_id":
+        candidate["candidate_id"] = "unreviewed-candidate"
+    elif case == "candidate_position":
+        candidate["target_position_world_m"] = [0.55, 0.0, 0.541]
+    elif case == "solver_identity":
+        candidate["solver_identity"] = "not-lula"
+    elif case == "joint_order":
+        candidate["solver_joint_names"] = list(reversed(ARM_NAMES))
+    elif case == "frame":
+        candidate["solver_frame"] = "wrong_frame"
+    elif case == "digest_missing":
+        candidate.pop("solver_config_sha256")
+    elif case == "digest_inconsistent":
+        candidate["asset_sha256"] = "a" * 64
+    elif case == "transform":
+        candidate["world_from_base"] = [[1.0]]
+    elif case == "unit":
+        candidate["stage_meters_per_unit"] = 0.01
+    else:
+        raise AssertionError(f"unhandled systemic fixture case: {case}")
+
+    factory = _CandidateOutcomeFactory(("valid", "valid", "valid"))
+    factory.records = records
+    writes: list[dict[str, Any]] = []
+
+    def recording_writer(**payload: Any) -> dict[str, Any]:
+        writes.append(payload)
+        factory.events.append("write-evidence")
+        return {}
+
+    outcome = _orchestrate(_runner(), tmp_path, factory, evidence_writer=recording_writer)
+    assert outcome["exit_code"] == 1
+    assert outcome["systemic_failure_code"] == expected_code
+    assert outcome["systemic_failure_message"]
+    assert message_fragment.lower() in outcome["systemic_failure_message"].lower()
+    assert outcome["systemic_failure_message"] != records[0]["offline_failure_message"]
+    assert outcome["selected_pose_id"] is None
+    assert outcome["selected_pose_sha256"] is None
+    assert factory.scenes == []
+    assert not any(event.startswith(("create:", "step:")) for event in factory.events)
+    assert len(writes) == 1
+    assert len(writes[0]["offline_candidates"]) == 3
+    assert factory.events.index("write-evidence") < factory.events.index("factory-close:1")
+    assert factory.close_codes == [1]
+
+
+def test_c2a_candidate_local_rejection_static_failure_skips_selection_and_continues(
+    tmp_path: Path,
+) -> None:
+    runner = _runner()
+    factory = _CandidateOutcomeFactory(
+        ("valid", "valid", "failed"),
+        scene_failures={("task-ready-z-0p55", 0): {"collision": True}},
+    )
+    outcome = _orchestrate(runner, tmp_path, factory)
+    output = tmp_path / "c2a"
+
+    assert outcome["exit_code"] == 0
+    assert outcome["systemic_failure_code"] is None
+    assert outcome["selected_pose_id"] == "task-ready-z-0p54"
+    assert outcome["selected_pose_sha256"] == runner._sha256_json(factory.records[1])
+    scenes = _read_jsonl(output / "static_scenes.jsonl")
+    samples = _read_jsonl(output / "readiness_samples.jsonl")
+    assert len(scenes) == 6
+    assert len([scene for scene in scenes if scene["candidate_id"] == "task-ready-z-0p55"]) == 3
+    assert len([scene for scene in scenes if scene["candidate_id"] == "task-ready-z-0p54"]) == 3
+    assert any(scene["passed"] is False for scene in scenes if scene["candidate_id"] == "task-ready-z-0p55")
+    assert all(scene["passed"] is True for scene in scenes if scene["candidate_id"] == "task-ready-z-0p54")
+    assert len(samples) == 1 + 64 + 64 + 3 * 64
+    assert factory.close_codes == [0]
+    _assert_checksum_file(output)
+
+    incomplete_scenes = [
+        {
+            "candidate_id": candidate_id,
+            "scene_id": f"{candidate_id}-direct-{scene_index}",
+            "passed": True,
+        }
+        for candidate_id, scene_count in (
+            ("task-ready-z-0p55", 2),
+            ("task-ready-z-0p54", 3),
+        )
+        for scene_index in range(scene_count)
+    ]
+    direct_selection = runner.select_c2a_static_pose(
+        candidates=factory.records,
+        static_scenes=incomplete_scenes,
+    )
+    assert direct_selection["selected_pose_id"] == "task-ready-z-0p54"
+
+    no_qualified_factory = _CandidateOutcomeFactory(
+        ("valid", "failed", "failed"),
+        scene_failures={("task-ready-z-0p55", 0): {"collision": True}},
+    )
+    no_qualified = _orchestrate(runner, tmp_path / "no-qualified", no_qualified_factory)
+    assert no_qualified["exit_code"] == 1
+    assert no_qualified["systemic_failure_code"] == "G1_C2A_NO_QUALIFIED_POSE"
+    assert no_qualified["systemic_failure_message"]
+    assert no_qualified["selected_pose_id"] is None
+    assert no_qualified["selected_pose_sha256"] is None
+    assert no_qualified_factory.close_codes == [1]
+
+
+def test_c2a_candidate_local_rejection_writer_failure_has_no_pseudo_valid_manifest(
+    tmp_path: Path,
+) -> None:
+    factory = _CandidateOutcomeFactory(("valid", "failed", "failed"))
+    output = tmp_path / "c2a"
+
+    def failing_writer(**payload: Any) -> dict[str, Any]:
+        assert len(payload["offline_candidates"]) == 3
+        assert len(payload["static_scenes"]) == 3
+        assert len(payload["readiness_samples"]) == 192
+        factory.events.append("write-evidence")
+        raise OSError("injected evidence writer failure")
+
+    outcome = _orchestrate(_runner(), tmp_path, factory, evidence_writer=failing_writer)
+    assert outcome["exit_code"] == 1
+    assert outcome["systemic_failure_code"] == "G1_C2A_EVIDENCE_WRITE_FAILED"
+    assert "injected evidence writer failure" in outcome["systemic_failure_message"]
+    assert factory.events.index("write-evidence") < factory.events.index("factory-close:1")
+    assert factory.close_codes == [1]
+    assert not (output / "manifest.json").exists()
+    assert all(sample["post_abort_actuation_count"] == 0 for sample in outcome["result"]["readiness_samples"])
 
 
 def test_c2a_runtime_success_selects_highest_pose_but_retains_all_no_claim_flags(tmp_path: Path) -> None:
