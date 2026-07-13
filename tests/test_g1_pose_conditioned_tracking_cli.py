@@ -1236,3 +1236,753 @@ def test_t152_actuation_and_force_truth_fail_closed_before_cap_aggregation(
 
     assert caught.value.code == code
     assert caught.value.message.strip()
+
+
+def _sha256_path(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _records_for_selected_candidate(selected: Mapping[str, Any]) -> list[dict[str, Any]]:
+    records = [deepcopy(dict(selected))]
+    for candidate_id, order, z in (
+        ("task-ready-z-0p54", 1, 0.54),
+        ("task-ready-z-0p53", 2, 0.53),
+    ):
+        record = deepcopy(dict(selected))
+        record.update(
+            candidate_id=candidate_id,
+            candidate_order=order,
+            target_position_world_m=[0.55, 0.0, z],
+            ik_solution_valid=False,
+            fk_residual_valid=False,
+            solver_joint_values=None,
+            articulation_joint_values=None,
+            fk_position_world_m=None,
+            fk_orientation_xyzw=None,
+            ik_position_residual_m=None,
+            ik_orientation_residual_rad=None,
+            offline_failure_code="G1_C2A_IK_FAILED",
+            offline_failure_message=f"Lula failed candidate {candidate_id}",
+            scene_count=0,
+            readiness_sample_count=0,
+        )
+        records.append(record)
+    return records
+
+
+def _rewrite_c2a_checksums(evidence_dir: Path) -> None:
+    entries = [
+        f"{_sha256_path(evidence_dir / name)}  {name}"
+        for name in ("report.json", "offline_candidates.jsonl")
+    ]
+    (evidence_dir / "checksums.sha256").write_text(
+        "\n".join(entries) + "\n", encoding="utf-8"
+    )
+
+
+def _write_c2a_evidence_fixture(
+    root: Path,
+    *,
+    selected_candidate: Mapping[str, Any] | None = None,
+) -> tuple[Path, str]:
+    evidence_dir = root / "c2a-evidence"
+    evidence_dir.mkdir()
+    selected = deepcopy(
+        dict(selected_candidate) if selected_candidate is not None else _selected_candidate()
+    )
+    selected_sha256 = _canonical_sha256(selected)
+    report = _selection_report(
+        selected_pose_id=selected["candidate_id"],
+        selected_pose_sha256=selected_sha256,
+    )
+    (evidence_dir / "report.json").write_text(
+        json.dumps(report, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    records = _records_for_selected_candidate(selected)
+    (evidence_dir / "offline_candidates.jsonl").write_text(
+        "".join(json.dumps(record, sort_keys=True) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    _rewrite_c2a_checksums(evidence_dir)
+    return evidence_dir, selected_sha256
+
+
+def _current_input_fixture(
+    root: Path,
+) -> tuple[dict[str, Path], dict[str, Any], Path, str]:
+    input_dir = root / "current-inputs"
+    input_dir.mkdir()
+    paths = {
+        "task_config": input_dir / "press_button_physical.yaml",
+        "robot_config": input_dir / "fr3_press_button_safe.yaml",
+        "fr3_asset": input_dir / "fr3.usd",
+    }
+    paths["task_config"].write_text("runtime:\n  physics_device: cpu\n", encoding="utf-8")
+    paths["robot_config"].write_text("joint_limits:\n  names: []\n", encoding="utf-8")
+    paths["fr3_asset"].write_bytes(b"#usda 1.0\ndef Xform \"FR3\" {}\n")
+    selected = _selected_candidate()
+    selected["task_config_sha256"] = _sha256_path(paths["task_config"])
+    selected["robot_config_sha256"] = _sha256_path(paths["robot_config"])
+    selected["asset_sha256"] = _sha256_path(paths["fr3_asset"])
+    selected["orientation_source"]["asset_sha256"] = selected["asset_sha256"]
+    selected["orientation_source_sha256"] = _canonical_sha256(
+        selected["orientation_source"]
+    )
+    evidence_dir, selected_sha256 = _write_c2a_evidence_fixture(
+        root, selected_candidate=selected
+    )
+    return paths, selected, evidence_dir, selected_sha256
+
+
+class _CallProbe:
+    def __init__(self, result: Any = None) -> None:
+        self.result = result
+        self.calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        self.calls.append((args, kwargs))
+        return self.result
+
+
+class _FactoryBuilderProbe:
+    def __init__(self, factory: Any) -> None:
+        self.factory = factory
+        self.calls: list[dict[str, Any]] = []
+
+    def __call__(self, **kwargs: Any) -> Any:
+        self.calls.append(dict(kwargs))
+        return self.factory
+
+
+def _from_evidence_orchestration_kwargs(
+    tmp_path: Path,
+    *,
+    evidence_dir: Path | None,
+    selected_pose_sha256: str,
+    current_input_paths: Mapping[str, Path],
+    factory_builder: Any,
+    **changes: Any,
+) -> dict[str, Any]:
+    payload = _orchestration_kwargs(
+        tmp_path,
+        _FakeSceneFactory(),
+        selection_report=None,
+        candidate_records=None,
+        c2a_evidence_dir=evidence_dir,
+        expected_pose_sha256=selected_pose_sha256,
+        current_input_paths=dict(current_input_paths),
+        factory_builder=factory_builder,
+    )
+    payload.update(changes)
+    return payload
+
+
+def test_t152_cli_requires_explicit_c2a_evidence_directory(runner: Any, tmp_path: Path) -> None:
+    factory_builder = _FactoryBuilderProbe(_FakeSceneFactory())
+
+    with pytest.raises(SystemExit):
+        runner.parse_args(["--output", str(tmp_path / "output")])
+
+    args = runner.parse_args(
+        [
+            "--output",
+            str(tmp_path / "output"),
+            "--c2a-evidence",
+            str(tmp_path / "c2a-evidence"),
+        ]
+    )
+    assert Path(args.c2a_evidence) == tmp_path / "c2a-evidence"
+    assert factory_builder.calls == []
+
+
+def test_t152_main_loads_c2a_evidence_before_factory_builder(runner: Any) -> None:
+    tree = ast.parse(textwrap.dedent(inspect.getsource(runner.main)))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    ]
+    call_names = [node.func.id for node in calls]
+
+    assert "load_g1_c2a_selected_pose_evidence" in call_names
+    assert "_IsaacSceneFactory" in call_names
+    load_line = next(
+        node.lineno
+        for node in calls
+        if node.func.id == "load_g1_c2a_selected_pose_evidence"
+    )
+    factory_line = next(node.lineno for node in calls if node.func.id == "_IsaacSceneFactory")
+    assert load_line < factory_line
+    assert "args.c2a_evidence" in inspect.getsource(runner.main)
+
+
+def test_t152_loader_reads_checksums_report_candidates_and_recomputes_selected_hash(
+    runner: Any, tmp_path: Path
+) -> None:
+    load = _capability(runner, "load_g1_c2a_selected_pose_evidence")
+    evidence_dir, selected_sha256 = _write_c2a_evidence_fixture(tmp_path)
+
+    result = load(
+        evidence_dir=evidence_dir,
+        expected_pose_id=EXPECTED_POSE_ID,
+        expected_pose_sha256=selected_sha256,
+    )
+
+    assert result["selected_candidate"] == _selected_candidate()
+    assert result["selected_pose_sha256"] == EXPECTED_POSE_SHA256
+    assert result["selected_pose_sha256"] == _canonical_sha256(
+        result["selected_candidate"]
+    )
+    assert [record["candidate_id"] for record in result["candidate_records"]] == [
+        "task-ready-z-0p55",
+        "task-ready-z-0p54",
+        "task-ready-z-0p53",
+    ]
+    assert result["checksums_verified"] is True
+    assert result["source_paths"] == {
+        "report": str(evidence_dir / "report.json"),
+        "offline_candidates": str(evidence_dir / "offline_candidates.jsonl"),
+        "checksums": str(evidence_dir / "checksums.sha256"),
+    }
+
+
+def test_t152_loader_returns_jsonl_candidate_instead_of_hardcoded_pose(
+    runner: Any, tmp_path: Path
+) -> None:
+    load = _capability(runner, "load_g1_c2a_selected_pose_evidence")
+    _paths, selected, evidence_dir, selected_sha256 = _current_input_fixture(tmp_path)
+    assert selected_sha256 != EXPECTED_POSE_SHA256
+
+    result = load(
+        evidence_dir=evidence_dir,
+        expected_pose_id=EXPECTED_POSE_ID,
+        expected_pose_sha256=selected_sha256,
+    )
+
+    assert result["selected_candidate"] == selected
+    assert result["selected_pose_sha256"] == _canonical_sha256(selected)
+    assert result["selected_candidate"]["asset_sha256"] != _selected_candidate()[
+        "asset_sha256"
+    ]
+
+
+def test_t152_missing_evidence_argument_stops_before_factory_builder(
+    runner: Any, tmp_path: Path
+) -> None:
+    orchestrate = _capability(runner, "orchestrate_g1_pose_conditioned_tracking")
+    paths, _candidate, _evidence_dir, selected_sha256 = _current_input_fixture(tmp_path)
+    factory = _FakeSceneFactory()
+    factory_builder = _FactoryBuilderProbe(factory)
+
+    with pytest.raises(G1ValidationError) as caught:
+        orchestrate(
+            **_from_evidence_orchestration_kwargs(
+                tmp_path,
+                evidence_dir=None,
+                selected_pose_sha256=selected_sha256,
+                current_input_paths=paths,
+                factory_builder=factory_builder,
+            )
+        )
+
+    assert caught.value.code == "G1_C1_C2A_EVIDENCE_REQUIRED"
+    assert caught.value.message.strip()
+    assert factory_builder.calls == []
+    assert factory.scenes == []
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_directory",
+        "missing_checksums",
+        "missing_report",
+        "missing_offline_candidates",
+        "checksum_mismatch",
+        "report_tampered",
+        "candidates_tampered",
+        "duplicate_candidate",
+    ],
+)
+def test_t152_invalid_c2a_evidence_stops_before_factory_builder(
+    runner: Any, tmp_path: Path, mutation: str
+) -> None:
+    orchestrate = _capability(runner, "orchestrate_g1_pose_conditioned_tracking")
+    paths, _candidate, evidence_dir, selected_sha256 = _current_input_fixture(tmp_path)
+    if mutation == "missing_directory":
+        for path in evidence_dir.iterdir():
+            path.unlink()
+        evidence_dir.rmdir()
+    elif mutation == "missing_checksums":
+        (evidence_dir / "checksums.sha256").unlink()
+    elif mutation == "missing_report":
+        (evidence_dir / "report.json").unlink()
+    elif mutation == "missing_offline_candidates":
+        (evidence_dir / "offline_candidates.jsonl").unlink()
+    elif mutation == "checksum_mismatch":
+        (evidence_dir / "checksums.sha256").write_text(
+            "0" * 64 + "  report.json\n", encoding="utf-8"
+        )
+    elif mutation == "report_tampered":
+        with (evidence_dir / "report.json").open("a", encoding="utf-8") as stream:
+            stream.write(" \n")
+    elif mutation == "candidates_tampered":
+        with (evidence_dir / "offline_candidates.jsonl").open(
+            "a", encoding="utf-8"
+        ) as stream:
+            stream.write(" \n")
+    else:
+        selected_line = (evidence_dir / "offline_candidates.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()[0]
+        with (evidence_dir / "offline_candidates.jsonl").open(
+            "a", encoding="utf-8"
+        ) as stream:
+            stream.write(selected_line + "\n")
+        _rewrite_c2a_checksums(evidence_dir)
+    factory = _FakeSceneFactory()
+    factory_builder = _FactoryBuilderProbe(factory)
+
+    with pytest.raises(G1ValidationError) as caught:
+        orchestrate(
+            **_from_evidence_orchestration_kwargs(
+                tmp_path,
+                evidence_dir=evidence_dir,
+                selected_pose_sha256=selected_sha256,
+                current_input_paths=paths,
+                factory_builder=factory_builder,
+            )
+        )
+
+    assert caught.value.code in {
+        "G1_C1_C2A_EVIDENCE_REQUIRED",
+        "G1_C1_C2A_EVIDENCE_CHECKSUM_MISMATCH",
+        "G1_C1_SELECTED_POSE_INVALID",
+    }
+    assert caught.value.message.strip()
+    assert factory_builder.calls == []
+    assert factory.scenes == []
+    assert not (tmp_path / "pose-conditioned-c1" / "manifest.json").exists()
+
+
+@pytest.mark.parametrize("mismatch", ["task_config", "robot_config", "fr3_asset"])
+def test_t152_current_input_digest_mismatch_stops_before_runtime_creation(
+    runner: Any, tmp_path: Path, mismatch: str
+) -> None:
+    orchestrate = _capability(runner, "orchestrate_g1_pose_conditioned_tracking")
+    paths, selected, evidence_dir, selected_sha256 = _current_input_fixture(tmp_path)
+    assert _canonical_sha256(selected) == selected_sha256
+    assert json.loads((evidence_dir / "report.json").read_text(encoding="utf-8"))[
+        "selected_pose_sha256"
+    ] == selected_sha256
+    with paths[mismatch].open("ab") as stream:
+        stream.write(b"# current input changed after C2a evidence\n")
+    factory = _FakeSceneFactory()
+    factory_builder = _FactoryBuilderProbe(factory)
+
+    with pytest.raises(G1ValidationError) as caught:
+        orchestrate(
+            **_from_evidence_orchestration_kwargs(
+                tmp_path,
+                evidence_dir=evidence_dir,
+                selected_pose_sha256=selected_sha256,
+                current_input_paths=paths,
+                factory_builder=factory_builder,
+            )
+        )
+
+    assert caught.value.code == "G1_C1_SELECTED_POSE_PROVENANCE_MISMATCH"
+    assert mismatch in caught.value.message
+    assert factory_builder.calls == []
+    assert factory.scenes == []
+
+
+def _mutate_route(routes: list[dict[str, Any]], mutation: str) -> None:
+    if mutation == "missing":
+        routes.pop()
+    elif mutation == "reordered":
+        routes[0], routes[1] = routes[1], routes[0]
+    elif mutation == "partial":
+        routes[2]["route_complete"] = False
+    elif mutation == "nonfinite":
+        routes[3]["finite"] = False
+    elif mutation == "workspace":
+        routes[4]["workspace_valid"] = False
+    elif mutation == "contact_exclusion":
+        routes[5]["contact_exclusion_valid"] = False
+    else:
+        routes[1]["route_sha256"] = "0" * 64
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing",
+        "reordered",
+        "partial",
+        "nonfinite",
+        "workspace",
+        "contact_exclusion",
+        "digest_mismatch",
+    ],
+)
+def test_t152_orchestration_route_failure_blocks_factory_plan_and_success_evidence(
+    runner: Any, tmp_path: Path, mutation: str
+) -> None:
+    orchestrate = _capability(runner, "orchestrate_g1_pose_conditioned_tracking")
+    routes = _route_fixture()
+    _mutate_route(routes, mutation)
+    factory = _FakeSceneFactory()
+    factory_builder = _FactoryBuilderProbe(factory)
+    plan_runner = _CallProbe({"trials": []})
+    evidence_writer = _CallProbe(None)
+
+    with pytest.raises(G1ValidationError) as caught:
+        orchestrate(
+            **_orchestration_kwargs(
+                tmp_path,
+                factory,
+                routes=routes,
+                factory_builder=factory_builder,
+                plan_runner=plan_runner,
+                evidence_writer=evidence_writer,
+            )
+        )
+
+    assert caught.value.code == "G1_C1_ROUTE_PROVENANCE_INVALID"
+    assert caught.value.message.strip()
+    assert factory_builder.calls == []
+    assert factory.scenes == []
+    assert plan_runner.calls == []
+    assert evidence_writer.calls == []
+    manifest_path = tmp_path / "pose-conditioned-c1" / "manifest.json"
+    assert not manifest_path.exists() or json.loads(manifest_path.read_text(encoding="utf-8"))[
+        "status"
+    ] not in {"PASS", "SUCCESS"}
+
+
+def _route_derivation_inputs() -> dict[str, Any]:
+    selected = _selected_candidate()
+    return {
+        "selected_candidate": selected,
+        "task_geometry": {
+            "task_ready_world_m": list(selected["fk_position_world_m"]),
+            "approach_world_m": [0.55, 0.0, 0.50],
+            "press_world_m": [0.55, 0.0, 0.46],
+            "retract_world_m": [0.55, 0.0, 0.51],
+            "press_axis_world": [0.0, 0.0, -1.0],
+            "frame": selected["ee_frame"],
+        },
+        "workspace_limits": {
+            "lower_world_m": [0.30, -0.30, 0.30],
+            "upper_world_m": [0.80, 0.30, 0.80],
+        },
+        "contact_exclusion_geometry": {
+            "center_world_m": [0.55, 0.0, 0.43],
+            "radius_m": 0.01,
+            "required_clearance_m": 0.005,
+        },
+        "current_config_digests": {
+            "task_config_sha256": selected["task_config_sha256"],
+            "robot_config_sha256": selected["robot_config_sha256"],
+            "asset_sha256": selected["asset_sha256"],
+        },
+        "untrusted_claims": {
+            "workspace_valid": True,
+            "contact_exclusion_valid": True,
+        },
+    }
+
+
+def test_t152_route_builder_derives_all_six_records_from_pose_geometry_and_current_inputs(
+    runner: Any,
+) -> None:
+    derive = _capability(runner, "derive_g1_pose_conditioned_routes")
+    inputs = _route_derivation_inputs()
+
+    routes = derive(**inputs)
+
+    assert [route["class_id"] for route in routes] == list(G1_TRAJECTORY_CLASS_IDS)
+    assert all(route["selected_pose_id"] == EXPECTED_POSE_ID for route in routes)
+    assert all(
+        route["selected_fk_position_world_m"]
+        == inputs["selected_candidate"]["fk_position_world_m"]
+        for route in routes
+    )
+    assert all(
+        route["selected_frame"] == inputs["selected_candidate"]["ee_frame"]
+        for route in routes
+    )
+    assert all(route["task_geometry_sha256"] for route in routes)
+    assert all(route["workspace_limits_sha256"] for route in routes)
+    assert all(route["contact_exclusion_sha256"] for route in routes)
+    assert all(
+        route["current_config_digests"] == inputs["current_config_digests"]
+        for route in routes
+    )
+    assert all(
+        route["route_sha256"]
+        == _canonical_sha256(
+            {key: value for key, value in route.items() if key != "route_sha256"}
+        )
+        for route in routes
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation", ["selected_pose", "task_geometry", "workspace", "contact_exclusion"]
+)
+def test_t152_route_derivation_changes_digest_or_blocks_when_geometry_changes(
+    runner: Any, mutation: str
+) -> None:
+    derive = _capability(runner, "derive_g1_pose_conditioned_routes")
+    baseline_inputs = _route_derivation_inputs()
+    baseline = derive(**baseline_inputs)
+    changed_inputs = deepcopy(baseline_inputs)
+    if mutation == "selected_pose":
+        changed_inputs["selected_candidate"]["fk_position_world_m"][0] += 0.01
+    elif mutation == "task_geometry":
+        changed_inputs["task_geometry"]["approach_world_m"][2] -= 0.01
+    elif mutation == "workspace":
+        changed_inputs["workspace_limits"]["upper_world_m"][2] = 0.49
+    else:
+        changed_inputs["contact_exclusion_geometry"]["radius_m"] = 0.10
+
+    try:
+        changed = derive(**changed_inputs)
+    except G1ValidationError as error:
+        assert error.code in {
+            "G1_C1_ROUTE_PROVENANCE_INVALID",
+            "G1_C1_POSE_UNQUALIFIED",
+        }
+        assert error.message.strip()
+        return
+
+    assert [route["route_sha256"] for route in changed] != [
+        route["route_sha256"] for route in baseline
+    ]
+
+
+@pytest.mark.parametrize("invalid_geometry", ["workspace", "contact_exclusion"])
+def test_t152_route_derivation_ignores_caller_claimed_true_flags(
+    runner: Any, invalid_geometry: str
+) -> None:
+    derive = _capability(runner, "derive_g1_pose_conditioned_routes")
+    inputs = _route_derivation_inputs()
+    assert inputs["untrusted_claims"] == {
+        "workspace_valid": True,
+        "contact_exclusion_valid": True,
+    }
+    if invalid_geometry == "workspace":
+        inputs["workspace_limits"] = {
+            "lower_world_m": [0.54, -0.01, 0.52],
+            "upper_world_m": [0.56, 0.01, 0.56],
+        }
+    else:
+        inputs["contact_exclusion_geometry"] = {
+            "center_world_m": [0.55, 0.0, 0.50],
+            "radius_m": 0.20,
+            "required_clearance_m": 0.005,
+        }
+
+    with pytest.raises(G1ValidationError) as caught:
+        derive(**inputs)
+
+    assert caught.value.code in {
+        "G1_C1_ROUTE_PROVENANCE_INVALID",
+        "G1_C1_POSE_UNQUALIFIED",
+    }
+    assert caught.value.message.strip()
+
+
+class _LifecycleTimeline:
+    def __init__(self, events: list[str], *, playing: bool = False) -> None:
+        self.events = events
+        self.playing = playing
+
+    def is_playing(self) -> bool:
+        return self.playing
+
+    def play(self) -> None:
+        self.events.append("timeline:play")
+        self.playing = True
+
+
+class _LifecycleStage:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+        self.joint_prim_paths = {
+            name: f"/World/FR3/Joints/{name}" for name in JOINT_NAMES
+        }
+        self.joint_states: list[dict[str, Any]] = []
+        self.drive_targets: list[dict[str, Any]] = []
+
+    def author_joint_state(self, **item: Any) -> None:
+        self.events.append(f"joint_state:{item['joint_name']}")
+        self.joint_states.append(dict(item))
+
+    def author_drive_target(self, **item: Any) -> None:
+        self.events.append(f"drive_target:{item['joint_name']}")
+        self.drive_targets.append(dict(item))
+
+
+class _LifecycleAuthoringAdapter:
+    def resolve_joint_prim_bijection(
+        self, *, stage: _LifecycleStage, joint_names: list[str]
+    ) -> dict[str, str]:
+        return {name: stage.joint_prim_paths[name] for name in joint_names}
+
+    def author_joint(self, *, stage: _LifecycleStage, **item: Any) -> None:
+        stage.author_joint_state(**item)
+        stage.author_drive_target(**item)
+
+
+class _InjectedLifecycleRuntime:
+    def __init__(
+        self,
+        *,
+        stage_builder: Callable[[Any], None],
+        stage: _LifecycleStage,
+        timeline: _LifecycleTimeline,
+        events: list[str],
+    ) -> None:
+        self.stage_builder = stage_builder
+        self.stage = stage
+        self.timeline = timeline
+        self.events = events
+        self.action_calls = 0
+
+    def build(self, preferred_frame: str) -> bool:
+        self.events.append(f"runtime:build:start:{preferred_frame}")
+        self.stage_builder(self.stage)
+        assert self.timeline.is_playing() is False
+        self.timeline.play()
+        self.events.append("runtime:build:complete")
+        return True
+
+
+class _InjectedLifecycleRuntimeFactory:
+    def __init__(
+        self,
+        *,
+        stage: _LifecycleStage,
+        timeline: _LifecycleTimeline,
+        events: list[str],
+    ) -> None:
+        self.stage = stage
+        self.timeline = timeline
+        self.events = events
+        self.calls: list[dict[str, Any]] = []
+        self.runtime: _InjectedLifecycleRuntime | None = None
+
+    def __call__(self, **kwargs: Any) -> _InjectedLifecycleRuntime:
+        self.calls.append(dict(kwargs))
+        self.runtime = _InjectedLifecycleRuntime(
+            stage_builder=kwargs["stage_builder"],
+            stage=self.stage,
+            timeline=self.timeline,
+            events=self.events,
+        )
+        return self.runtime
+
+
+def test_t152_real_scene_source_authors_c2a_pose_inside_stage_builder_before_runtime_build(
+    runner: Any,
+) -> None:
+    scene_type = getattr(
+        runner,
+        "_PoseConditionedIsaacTrackingScene",
+        getattr(runner, "_IsaacTrackingScene"),
+    )
+    source = inspect.getsource(scene_type)
+    stage_builder_start = source.index("def stage_builder")
+    runtime_build_start = source.index("runtime.build")
+    author_tokens = (
+        "author_c2a_joint_state_before_play",
+        "build_g1_pose_conditioned_runtime_preplay",
+    )
+    author_positions = [source.find(token, stage_builder_start) for token in author_tokens]
+    author_positions = [position for position in author_positions if position >= 0]
+
+    assert author_positions
+    assert min(author_positions) < runtime_build_start
+    assert "UsdPhysxC2APrePlayAdapter" in source
+    assert "play_after_author=False" in source
+    assert "joint_velocities=[0.0] * 9" in source
+    assert source.find("author_selected_pose_before_play", runtime_build_start) == -1
+
+
+def test_t152_injected_real_preplay_seam_authors_state_velocity_and_drives_before_play(
+    runner: Any,
+) -> None:
+    build_runtime = _capability(runner, "build_g1_pose_conditioned_runtime_preplay")
+    events: list[str] = []
+    timeline = _LifecycleTimeline(events)
+    stage = _LifecycleStage(events)
+    runtime_factory = _InjectedLifecycleRuntimeFactory(
+        stage=stage, timeline=timeline, events=events
+    )
+
+    result = build_runtime(
+        selected_candidate=_selected_candidate(),
+        timeline=timeline,
+        runtime_factory=runtime_factory,
+        runtime_kwargs={
+            "simulation_app": object(),
+            "fr3_usd_path": "/Injected/fr3.usd",
+            "ee_frame": "/World/FR3/fr3_hand_tcp",
+            "articulation_root_path": "/World/FR3",
+        },
+        preferred_frame="fr3_hand_tcp",
+        authoring_adapter=_LifecycleAuthoringAdapter(),
+    )
+
+    assert len(runtime_factory.calls) == 1
+    assert runtime_factory.runtime is result["runtime"]
+    assert len(stage.joint_states) == len(stage.drive_targets) == 9
+    assert [item["joint_name"] for item in stage.joint_states] == list(JOINT_NAMES)
+    assert all(item["velocity"] == 0.0 for item in stage.joint_states)
+    assert [item["position"] for item in stage.joint_states] == [
+        item["position"] for item in stage.drive_targets
+    ]
+    play_index = events.index("timeline:play")
+    assert all(
+        events.index(f"drive_target:{joint_name}") < play_index
+        for joint_name in JOINT_NAMES
+    )
+    assert play_index < events.index("runtime:build:complete")
+    assert result["authoring_record"]["timeline_playing_before_author"] is False
+    assert result["authoring_record"]["drive_targets_match"] is True
+    assert runtime_factory.runtime.action_calls == 0
+
+
+def test_t152_injected_real_preplay_seam_rejects_post_play_authoring(
+    runner: Any,
+) -> None:
+    build_runtime = _capability(runner, "build_g1_pose_conditioned_runtime_preplay")
+    events: list[str] = []
+    timeline = _LifecycleTimeline(events, playing=True)
+    stage = _LifecycleStage(events)
+    runtime_factory = _InjectedLifecycleRuntimeFactory(
+        stage=stage, timeline=timeline, events=events
+    )
+
+    with pytest.raises(G1ValidationError) as caught:
+        build_runtime(
+            selected_candidate=_selected_candidate(),
+            timeline=timeline,
+            runtime_factory=runtime_factory,
+            runtime_kwargs={"fr3_usd_path": "/Injected/fr3.usd"},
+            preferred_frame="fr3_hand_tcp",
+            authoring_adapter=_LifecycleAuthoringAdapter(),
+        )
+
+    assert caught.value.code in {
+        "G1_C1_PREPLAY_POSE_REQUIRED",
+        "G1_C2A_PREPLAY_AUTHORING_UNPROVEN",
+    }
+    assert caught.value.message.strip()
+    assert stage.joint_states == []
+    assert stage.drive_targets == []
+    assert runtime_factory.runtime is not None
+    assert runtime_factory.runtime.action_calls == 0
