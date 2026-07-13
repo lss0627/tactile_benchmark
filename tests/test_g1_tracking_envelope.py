@@ -1304,6 +1304,7 @@ def test_c1_main_returns_orchestrated_cli_status_without_isaac_shutdown_exit(
     helper = getattr(runner, "orchestrate_g1_tracking_diagnostic", None)
     assert callable(helper), "G1 C1 missing failure-evidence lifecycle orchestration"
     monkeypatch.setattr(runner, "_repository_clean", lambda: True)
+    monkeypatch.setattr(runner, "_repository_commit", lambda: "c" * 40)
     monkeypatch.setattr(
         runner,
         "orchestrate_g1_tracking_diagnostic",
