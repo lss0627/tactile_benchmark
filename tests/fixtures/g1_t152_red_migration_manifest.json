@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0.0",
-  "replacement_checkpoint": "TASK_2_PENDING",
+  "replacement_checkpoint": "TASK_2_ASSERTION_RED",
   "required_retained_behaviors": [
     "caller_validity_flags_are_not_authoritative",
     "continuous_segments_are_validated",

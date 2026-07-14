@@ -1661,6 +1661,39 @@ def test_t152_orchestration_route_failure_blocks_factory_plan_and_success_eviden
     ] not in {"PASS", "SUCCESS"}
 
 
+def _declared_mechanism_geometry() -> dict[str, Any]:
+    return {
+        "mechanism_version": "1.1.0",
+        "base_position_m": [0.55, 0.0, 0.47],
+        "base_orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "geometry": {
+            "frame": "mechanism_root",
+            "units": "m",
+            "button": {
+                "primitive": "capped_cylinder",
+                "center_local_m": [0.0, 0.0, 0.0],
+                "axis_token": "Z",
+                "radius_m": 0.035,
+                "half_height_m": 0.009,
+            },
+            "housing": {
+                "primitive": "oriented_box",
+                "center_local_m": [0.0, 0.0, -0.025],
+                "half_extents_m": [0.045, 0.045, 0.010],
+            },
+        },
+        "contact_exclusion": {
+            "schema_version": "1.0.0",
+            "subject": "fr3_hand_tcp_point",
+            "obstacle_ids": ["button", "housing"],
+            "required_clearance_m": 0.005,
+            "distance_metric": "conservative_closed_solid_clearance_v1",
+            "route_validation": "continuous_line_segment",
+            "boundary_policy": "equality_allowed",
+        },
+    }
+
+
 def _route_derivation_inputs() -> dict[str, Any]:
     selected = _selected_candidate()
     return {
@@ -1677,11 +1710,7 @@ def _route_derivation_inputs() -> dict[str, Any]:
             "lower_world_m": [0.30, -0.30, 0.30],
             "upper_world_m": [0.80, 0.30, 0.80],
         },
-        "contact_exclusion_geometry": {
-            "center_world_m": [0.55, 0.0, 0.43],
-            "radius_m": 0.01,
-            "required_clearance_m": 0.005,
-        },
+        "mechanism_geometry": _declared_mechanism_geometry(),
         "current_config_digests": {
             "task_config_sha256": selected["task_config_sha256"],
             "robot_config_sha256": selected["robot_config_sha256"],
@@ -1694,7 +1723,7 @@ def _route_derivation_inputs() -> dict[str, Any]:
     }
 
 
-def test_t152_route_builder_derives_all_six_records_from_pose_geometry_and_current_inputs(
+def test_t152_route_builder_derives_all_six_records_from_declared_solids(
     runner: Any,
 ) -> None:
     derive = _capability(runner, "derive_g1_pose_conditioned_routes")
@@ -1715,7 +1744,18 @@ def test_t152_route_builder_derives_all_six_records_from_pose_geometry_and_curre
     )
     assert all(route["task_geometry_sha256"] for route in routes)
     assert all(route["workspace_limits_sha256"] for route in routes)
-    assert all(route["contact_exclusion_sha256"] for route in routes)
+    assert all(route["mechanism_root_sha256"] for route in routes)
+    assert all(route["geometry_sha256"] for route in routes)
+    assert all(route["contact_exclusion_policy_sha256"] for route in routes)
+    assert all(
+        route["contact_exclusion_scope"]
+        == "TCP_POINT_VS_DECLARED_MECHANISM_SOLIDS"
+        for route in routes
+    )
+    assert all(
+        route["full_robot_static_collision_exclusion_qualified"] is False
+        for route in routes
+    )
     assert all(
         route["current_config_digests"] == inputs["current_config_digests"]
         for route in routes
@@ -1730,9 +1770,16 @@ def test_t152_route_builder_derives_all_six_records_from_pose_geometry_and_curre
 
 
 @pytest.mark.parametrize(
-    "mutation", ["selected_pose", "task_geometry", "workspace", "contact_exclusion"]
+    "mutation",
+    [
+        "selected_pose",
+        "mechanism_root",
+        "declared_solids",
+        "workspace",
+        "contact_exclusion_policy",
+    ],
 )
-def test_t152_route_derivation_changes_digest_or_blocks_when_geometry_changes(
+def test_t152_declared_route_derivation_changes_digest_or_blocks(
     runner: Any, mutation: str
 ) -> None:
     derive = _capability(runner, "derive_g1_pose_conditioned_routes")
@@ -1741,12 +1788,18 @@ def test_t152_route_derivation_changes_digest_or_blocks_when_geometry_changes(
     changed_inputs = deepcopy(baseline_inputs)
     if mutation == "selected_pose":
         changed_inputs["selected_candidate"]["fk_position_world_m"][0] += 0.01
-    elif mutation == "task_geometry":
-        changed_inputs["task_geometry"]["approach_world_m"][2] -= 0.01
+    elif mutation == "mechanism_root":
+        changed_inputs["mechanism_geometry"]["base_position_m"][0] += 0.01
+    elif mutation == "declared_solids":
+        changed_inputs["mechanism_geometry"]["geometry"]["button"][
+            "radius_m"
+        ] = 0.036
     elif mutation == "workspace":
         changed_inputs["workspace_limits"]["upper_world_m"][2] = 0.49
     else:
-        changed_inputs["contact_exclusion_geometry"]["radius_m"] = 0.10
+        changed_inputs["mechanism_geometry"]["contact_exclusion"][
+            "required_clearance_m"
+        ] = 0.006
 
     try:
         changed = derive(**changed_inputs)
@@ -1754,6 +1807,9 @@ def test_t152_route_derivation_changes_digest_or_blocks_when_geometry_changes(
         assert error.code in {
             "G1_C1_ROUTE_PROVENANCE_INVALID",
             "G1_C1_POSE_UNQUALIFIED",
+            "G1_C1_CONTACT_EXCLUSION_SCHEMA_INVALID",
+            "G1_C1_CONTACT_EXCLUSION_GEOMETRY_INVALID",
+            "G1_C1_CONTACT_EXCLUSION_ROUTE_INVALID",
         }
         assert error.message.strip()
         return
@@ -1764,7 +1820,7 @@ def test_t152_route_derivation_changes_digest_or_blocks_when_geometry_changes(
 
 
 @pytest.mark.parametrize("invalid_geometry", ["workspace", "contact_exclusion"])
-def test_t152_route_derivation_ignores_caller_claimed_true_flags(
+def test_t152_declared_route_derivation_ignores_caller_true_flags(
     runner: Any, invalid_geometry: str
 ) -> None:
     derive = _capability(runner, "derive_g1_pose_conditioned_routes")
@@ -1779,11 +1835,9 @@ def test_t152_route_derivation_ignores_caller_claimed_true_flags(
             "upper_world_m": [0.56, 0.01, 0.56],
         }
     else:
-        inputs["contact_exclusion_geometry"] = {
-            "center_world_m": [0.55, 0.0, 0.50],
-            "radius_m": 0.20,
-            "required_clearance_m": 0.005,
-        }
+        inputs["mechanism_geometry"]["geometry"]["button"][
+            "center_local_m"
+        ] = [0.0, 0.0, 0.04]
 
     with pytest.raises(G1ValidationError) as caught:
         derive(**inputs)
@@ -1791,6 +1845,7 @@ def test_t152_route_derivation_ignores_caller_claimed_true_flags(
     assert caught.value.code in {
         "G1_C1_ROUTE_PROVENANCE_INVALID",
         "G1_C1_POSE_UNQUALIFIED",
+        "G1_C1_CONTACT_EXCLUSION_ROUTE_INVALID",
     }
     assert caught.value.message.strip()
 

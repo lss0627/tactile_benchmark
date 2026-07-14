@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 from pathlib import Path
 import sys
 
@@ -123,3 +124,21 @@ def test_mechanism_stage_builder_is_injected_before_fr3_runtime_starts() -> None
 
     controller = runtime.ik_runtime.ee_controller.controller
     assert controller._stage_builder is stage_builder
+
+
+def test_legacy_mechanism_1_0_is_state_only_and_ineligible_for_formal_build() -> None:
+    module = _target()
+    config = _config(module)
+
+    assert getattr(config, "geometry_contract_available", None) is False
+    assert getattr(config, "tcp_route_exclusion_qualified", None) is False
+    assert getattr(config, "benchmark_cap_eligible", None) is False
+    assert getattr(config, "runtime_stage_build_eligible", None) is False
+
+
+def test_legacy_mechanism_formal_build_fails_with_required_geometry_code() -> None:
+    module = _target()
+    source = inspect.getsource(module.PressButtonMechanism.build_stage)
+
+    assert "G1_PRESS_BUTTON_FORMAL_GEOMETRY_REQUIRED" in source
+    assert "runtime_stage_build_eligible" in source
