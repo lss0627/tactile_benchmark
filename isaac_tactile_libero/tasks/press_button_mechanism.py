@@ -25,6 +25,8 @@ from isaac_tactile_libero.tasks.press_button_geometry import (
 
 FORMAL_MECHANISM_VERSION = "1.1.0"
 _LEGACY_MECHANISM_VERSION = re.compile(r"1\.0\.\d+")
+PRESS_BUTTON_STAGE_BUILD_INCOMPLETE = "G1_PRESS_BUTTON_STAGE_BUILD_INCOMPLETE"
+_LEGACY_STATE_ONLY_LOCAL_POS0_M = (0.0, 0.0, 1.0 / 40.0)
 
 
 class PressButtonDeclaredGeometryAuthoringAdapter(Protocol):
@@ -74,6 +76,61 @@ class PressButtonGeometryAuthoringReceipt:
     geometry_only: bool = field(default=True, init=False)
     complete_stage: bool = field(default=False, init=False)
     benchmark_cap_eligible: bool = field(default=False, init=False)
+
+
+class UsdPressButtonDeclaredGeometryAuthoringAdapter:
+    """Lazy USD adapter for the declared root and analytic solids only."""
+
+    def __init__(self, stage: Any) -> None:
+        self._stage = stage
+
+    def author_root(
+        self,
+        *,
+        root_path: str,
+        position_m: tuple[float, float, float],
+        orientation_xyzw: tuple[float, float, float, float],
+    ) -> None:
+        from pxr import Gf, UsdGeom  # type: ignore
+
+        root = UsdGeom.Xform.Define(self._stage, root_path)
+        root.AddTranslateOp().Set(Gf.Vec3d(*position_m))
+        x, y, z, w = orientation_xyzw
+        root.AddOrientOp().Set(Gf.Quatd(w, Gf.Vec3d(x, y, z)))
+
+    def author_oriented_box(
+        self,
+        *,
+        path: str,
+        center_local_m: tuple[float, float, float],
+        half_extents_m: tuple[float, float, float],
+    ) -> None:
+        from pxr import Gf, UsdGeom  # type: ignore
+
+        housing = UsdGeom.Cube.Define(self._stage, path)
+        housing.CreateSizeAttr(1.0)
+        housing.AddTranslateOp().Set(Gf.Vec3d(*center_local_m))
+        full_extents_m = tuple(2.0 * half_extent for half_extent in half_extents_m)
+        housing.AddScaleOp().Set(Gf.Vec3f(*full_extents_m))
+        housing.GetDisplayColorAttr().Set([Gf.Vec3f(0.08, 0.08, 0.08)])
+
+    def author_capped_cylinder(
+        self,
+        *,
+        path: str,
+        center_local_m: tuple[float, float, float],
+        axis_token: str,
+        radius_m: float,
+        height_m: float,
+    ) -> None:
+        from pxr import Gf, UsdGeom  # type: ignore
+
+        button = UsdGeom.Cylinder.Define(self._stage, path)
+        button.CreateAxisAttr(axis_token)
+        button.CreateRadiusAttr(radius_m)
+        button.CreateHeightAttr(height_m)
+        button.AddTranslateOp().Set(Gf.Vec3d(*center_local_m))
+        button.GetDisplayColorAttr().Set([Gf.Vec3f(1.0, 0.05, 0.02)])
 
 
 @dataclass(frozen=True)
@@ -285,6 +342,40 @@ class PressButtonMechanismState:
         return asdict(self)
 
 
+def _derive_formal_joint_anchors(
+    contract: PressButtonGeometryContract,
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    housing_side = tuple(
+        button_coordinate - housing_coordinate
+        for button_coordinate, housing_coordinate in zip(
+            contract.button.center_local_m,
+            contract.housing.center_local_m,
+        )
+    )
+    button_side = tuple(
+        button_coordinate - button_coordinate
+        for button_coordinate in contract.button.center_local_m
+    )
+    return housing_side, button_side
+
+
+def _require_authored_stage_prim(stage: Any, path: str) -> Any:
+    try:
+        prim = stage.GetPrimAtPath(path)
+        valid = prim is not None and bool(prim.IsValid())
+    except Exception as exc:
+        raise PressButtonGeometryContractError(
+            PRESS_BUTTON_STAGE_BUILD_INCOMPLETE,
+            f"could not validate authored PressButton prim at {path}",
+        ) from exc
+    if not valid:
+        raise PressButtonGeometryContractError(
+            PRESS_BUTTON_STAGE_BUILD_INCOMPLETE,
+            f"required authored PressButton prim is missing or invalid: {path}",
+        )
+    return prim
+
+
 class PressButtonMechanism:
     """State classifier plus optional USD construction/read adapter."""
 
@@ -298,7 +389,15 @@ class PressButtonMechanism:
         self._joint_position_reader = joint_position_reader
 
     def scene_contract(self) -> dict[str, Any]:
-        return {
+        geometry_contract = self.config.geometry_contract
+        if geometry_contract is None:
+            local_pos0_m = _LEGACY_STATE_ONLY_LOCAL_POS0_M
+            local_pos1_m = tuple(value - value for value in local_pos0_m)
+        else:
+            local_pos0_m, local_pos1_m = _derive_formal_joint_anchors(
+                geometry_contract
+            )
+        scene = {
             "mechanism_version": self.config.mechanism_version,
             "joint_type": "prismatic",
             "joint_name": self.config.joint_name,
@@ -322,10 +421,20 @@ class PressButtonMechanism:
             "body0_path": self.config.housing_prim_path,
             "body1_path": self.config.button_prim_path,
             "body0_kinematic": True,
-            "local_pos0_m": [0.0, 0.0, 0.025],
-            "local_pos1_m": [0.0, 0.0, 0.0],
+            "local_pos0_m": list(local_pos0_m),
+            "local_pos1_m": list(local_pos1_m),
             "state_source": "observed_button_joint_travel",
         }
+        if geometry_contract is not None:
+            scene.update(
+                {
+                    "geometry_sha256": geometry_contract.geometry_sha256,
+                    "world_from_mechanism_root_sha256": (
+                        geometry_contract.world_from_mechanism_root_sha256
+                    ),
+                }
+            )
+        return scene
 
     def sample_reset_position(self, *, seed: int) -> float:
         if self.config.reset_noise_m == 0.0:
@@ -418,54 +527,59 @@ class PressButtonMechanism:
                 "formal PressButton stage construction requires mechanism 1.1.0 geometry",
             )
 
-        from pxr import Gf, Sdf, UsdGeom, UsdPhysics  # type: ignore
+        from pxr import Gf, Sdf, UsdPhysics  # type: ignore
 
         cfg = self.config
-        root = UsdGeom.Xform.Define(stage, cfg.root_prim_path)
-        root.AddTranslateOp().Set(Gf.Vec3d(*cfg.base_position_m))
+        try:
+            geometry_adapter = UsdPressButtonDeclaredGeometryAuthoringAdapter(stage)
+            receipt = self.author_declared_geometry(authoring_adapter=geometry_adapter)
+            _require_authored_stage_prim(stage, receipt.root_prim_path)
+            housing_prim = _require_authored_stage_prim(
+                stage, receipt.housing_prim_path
+            )
+            button_prim = _require_authored_stage_prim(stage, receipt.button_prim_path)
 
-        housing = UsdGeom.Cube.Define(stage, cfg.housing_prim_path)
-        housing.CreateSizeAttr(1.0)
-        housing.AddScaleOp().Set(Gf.Vec3f(0.09, 0.09, 0.02))
-        housing.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, -0.025))
-        housing.GetDisplayColorAttr().Set([Gf.Vec3f(0.08, 0.08, 0.08)])
-        UsdPhysics.CollisionAPI.Apply(housing.GetPrim())
-        housing_rigid = UsdPhysics.RigidBodyAPI.Apply(housing.GetPrim())
-        housing_rigid.CreateRigidBodyEnabledAttr(True)
-        housing_rigid.CreateKinematicEnabledAttr(True)
+            UsdPhysics.CollisionAPI.Apply(housing_prim)
+            housing_rigid = UsdPhysics.RigidBodyAPI.Apply(housing_prim)
+            housing_rigid.CreateRigidBodyEnabledAttr(True)
+            housing_rigid.CreateKinematicEnabledAttr(True)
 
-        button = UsdGeom.Cylinder.Define(stage, cfg.button_prim_path)
-        button.CreateAxisAttr("Z")
-        button.CreateRadiusAttr(0.035)
-        button.CreateHeightAttr(0.018)
-        button.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.0))
-        button.GetDisplayColorAttr().Set([Gf.Vec3f(1.0, 0.05, 0.02)])
-        UsdPhysics.CollisionAPI.Apply(button.GetPrim())
-        rigid = UsdPhysics.RigidBodyAPI.Apply(button.GetPrim())
-        rigid.CreateRigidBodyEnabledAttr(True)
-        mass = UsdPhysics.MassAPI.Apply(button.GetPrim())
-        mass.CreateMassAttr(cfg.button_mass_kg)
+            UsdPhysics.CollisionAPI.Apply(button_prim)
+            rigid = UsdPhysics.RigidBodyAPI.Apply(button_prim)
+            rigid.CreateRigidBodyEnabledAttr(True)
+            mass = UsdPhysics.MassAPI.Apply(button_prim)
+            mass.CreateMassAttr(cfg.button_mass_kg)
 
-        joint = UsdPhysics.PrismaticJoint.Define(stage, cfg.joint_prim_path)
-        joint.CreateBody0Rel().SetTargets([Sdf.Path(cfg.housing_prim_path)])
-        joint.CreateBody1Rel().SetTargets([Sdf.Path(cfg.button_prim_path)])
-        joint.CreateAxisAttr("Z")
-        # Coincident anchors and matching rotations prevent startup snapping;
-        # rotating both frames maps positive local Z travel to negative world Z.
-        inverted_z = Gf.Quatf(0.0, 1.0, 0.0, 0.0)
-        joint.CreateLocalPos0Attr(Gf.Vec3f(0.0, 0.0, 0.025))
-        joint.CreateLocalPos1Attr(Gf.Vec3f(0.0, 0.0, 0.0))
-        joint.CreateLocalRot0Attr(inverted_z)
-        joint.CreateLocalRot1Attr(inverted_z)
-        joint.CreateLowerLimitAttr(cfg.lower_limit_m)
-        joint.CreateUpperLimitAttr(cfg.travel_limit_m)
-        drive = UsdPhysics.DriveAPI.Apply(joint.GetPrim(), "linear")
-        drive.CreateTypeAttr("force")
-        # A vertical button otherwise settles at m*g/k below rest before any
-        # robot action.  The declared preload holds it against the lower stop.
-        drive.CreateTargetPositionAttr(cfg.drive_target_position_m)
-        drive.CreateStiffnessAttr(cfg.return_stiffness_n_per_m)
-        drive.CreateDampingAttr(cfg.return_damping_n_s_per_m)
+            joint = UsdPhysics.PrismaticJoint.Define(stage, cfg.joint_prim_path)
+            joint.CreateBody0Rel().SetTargets([Sdf.Path(cfg.housing_prim_path)])
+            joint.CreateBody1Rel().SetTargets([Sdf.Path(cfg.button_prim_path)])
+            joint.CreateAxisAttr(receipt.contract.button.axis_token)
+            # Coincident anchors and matching rotations prevent startup snapping;
+            # rotating both frames maps positive local Z travel to negative world Z.
+            inverted_z = Gf.Quatf(0.0, 1.0, 0.0, 0.0)
+            local_pos0_m, local_pos1_m = _derive_formal_joint_anchors(
+                receipt.contract
+            )
+            joint.CreateLocalPos0Attr(Gf.Vec3f(*local_pos0_m))
+            joint.CreateLocalPos1Attr(Gf.Vec3f(*local_pos1_m))
+            joint.CreateLocalRot0Attr(inverted_z)
+            joint.CreateLocalRot1Attr(inverted_z)
+            joint.CreateLowerLimitAttr(cfg.lower_limit_m)
+            joint.CreateUpperLimitAttr(cfg.travel_limit_m)
+            drive = UsdPhysics.DriveAPI.Apply(joint.GetPrim(), "linear")
+            drive.CreateTypeAttr("force")
+            # A vertical button otherwise settles at m*g/k below rest before any
+            # robot action.  The declared preload holds it against the lower stop.
+            drive.CreateTargetPositionAttr(cfg.drive_target_position_m)
+            drive.CreateStiffnessAttr(cfg.return_stiffness_n_per_m)
+            drive.CreateDampingAttr(cfg.return_damping_n_s_per_m)
+        except PressButtonGeometryContractError:
+            raise
+        except Exception as exc:
+            raise PressButtonGeometryContractError(
+                PRESS_BUTTON_STAGE_BUILD_INCOMPLETE,
+                f"complete PressButton physical stage authoring failed: {exc}",
+            ) from exc
         return self.scene_contract()
 
     def read_stage(self, stage: Any) -> PressButtonMechanismState:
