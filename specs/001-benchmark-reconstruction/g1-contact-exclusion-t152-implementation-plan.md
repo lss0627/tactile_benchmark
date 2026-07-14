@@ -1085,6 +1085,25 @@ The corrected or additional node IDs are:
 - `test_declared_geometry_seam_rejects_legacy_before_adapter_call`
 - `test_complete_build_stage_signature_accepts_only_real_stage`
 
+**Task 7A baseline classification**
+
+Task 7A does not manufacture a uniform RED result. The current complete builder
+already has two behaviors that are preservation controls:
+
+- `test_complete_build_stage_signature_accepts_only_real_stage` is GREEN because
+  the current signature already accepts only `self` and `stage`.
+- The existing collision, rigid body, mass, prismatic joint, Body0/Body1,
+  anchors, rotations, limits, and drive source assertions are GREEN within the
+  complete-builder contract.
+
+The missing geometry receipt, geometry-only seam, real declared-geometry
+adapter, receipt/contract digest binding, and complete-builder use of the new
+seam are RED. When the complete-builder node checks both old and new behavior,
+its existing physics/joint assertions must execute and pass before the assertion
+that the builder calls `author_declared_geometry()` fails. Tests may not call a
+generic missing-capability helper first when doing so would mask an already
+implemented signature or physical-authoring behavior.
+
 The RED receipt assertions require:
 
 ```text
@@ -1111,8 +1130,11 @@ python -m pytest --collect-only -q tests/test_press_button_mechanism.py
 
 python -m pytest -q tests/test_press_button_mechanism.py \
   -k 'declared_geometry or geometry_authoring_receipt or complete_build_stage or formal_stage_builder'
-# Expected before production changes: every corrected/new Task 7 node is an
-# assertion RED caused by missing approved capability; 0 errors and 0 skips.
+# Expected before production changes: receipt/seam/real-adapter/shared-contract
+# assertions are missing-capability RED; the signature node and existing
+# physics/joint preservation assertions are genuinely GREEN; 0 errors and 0
+# skips. A combined builder node is RED only at its missing seam-integration
+# assertion after its preservation assertions pass.
 
 python -m pytest -q tests/test_press_button_mechanism.py \
   -k 'not declared_geometry and not geometry_authoring_receipt and not complete_build_stage and not formal_stage_builder'
@@ -1122,9 +1144,10 @@ python -m pytest -q tests/test_press_button_mechanism.py \
 **Task 7A stop conditions**
 
 Stop if a corrected node disappears without a one-to-one behavior mapping, a
-failure is caused by import/fixture/collection/environment setup, a receipt is
-treated as complete stage success, a fake calls the complete builder, or an
-approved Task 6 assertion is changed.
+failure is caused by import/fixture/collection/environment setup, an existing
+signature or physics behavior is masked behind a missing-capability assertion,
+a receipt is treated as complete stage success, a fake calls the complete
+builder, or an approved Task 6 assertion is changed.
 
 **Task 7A commit**
 
