@@ -517,6 +517,21 @@ result, the later result controls. Any route that cannot prove the approved clea
 the route is not shortened, clearance is not reduced, the pose is not moved, and the command
 matrix is not changed to manufacture a pass.
 
+### 5.1 Command-bound bundle addendum
+
+The approved Task 8 ownership and record shape are defined in
+[`g1-task8-command-bound-route-bundle-design.md`](g1-task8-command-bound-route-bundle-design.md).
+The table above remains a design-time analytic reference over the maximum spatial sets. Task 8 does
+not copy the table into a result. It derives all five canonical command routes for each of the six
+classes from the selected measured FK, canonical A/P/R source, exact motif schedule, parsed
+`PressButtonGeometryContract`, and current workspace/digests.
+
+Every action endpoint and every continuous segment, including zero holds, local crossings, and
+continuous reversals, is validated again. The resulting command-bound bundle controls. The
+design-only `0.021 m` value is not a route field, clearance result, or evidence value. A later
+failure or unproven result blocks Task 8 without shortening a route, reducing the exact `0.005 m`
+clearance, moving the pose, or changing the command matrix.
+
 ## 6. Derived route evidence schema
 
 Each future route record contains at least:

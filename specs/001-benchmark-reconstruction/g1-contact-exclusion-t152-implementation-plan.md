@@ -1272,17 +1272,159 @@ test needs Isaac Sim.
 Task 7 depends on Tasks 4 and 6. Task 8 depends on Task 7B GREEN plus the Task 5
 continuous validator. Isaac Sim is not allowed in Task 7A or Task 7B.
 
-## Task 8: Derive and validate all six T152 routes
+## Task 8: Derive and validate the command-bound six-route bundle
+
+**Approved architecture**
+
+Follow
+[`g1-task8-command-bound-route-bundle-design.md`](g1-task8-command-bound-route-bundle-design.md).
+Task 8 produces one import-safe pure-Python bundle for five canonical commands
+and six canonical classes. It does not build a plan, construct a factory, acquire
+a scene, execute an action, write evidence, aggregate a cap, or close a runtime.
+
+### Task 8A: Correct RED ownership and bundle schema
 
 **Files**
 
 - Modify: `tests/test_g1_pose_conditioned_tracking_cli.py`
-- Modify: `isaac_tactile_libero/runtime/g1_contact_exclusion.py`
-- Modify: `isaac_tactile_libero/runtime/g1_tracking.py` only for canonical
-  route/motif data that belongs with existing multiclass capability.
-- Modify: `scripts/run_g1_tracking_envelope.py`
+- Add or modify only test-side helpers/fixtures needed for the exact command-bound
+  bundle contract.
+- Do not modify production code, YAML, evidence, task status, or the intentional
+  future-RED inventory.
 
-**Functions and signatures**
+**RED correction**
+
+- [ ] Replace raw formal `mechanism_geometry` input with a real parsed
+  `PressButtonGeometryContract` fixture.
+- [ ] Replace handwritten A/P/R inputs with the canonical task-route geometry
+  function contract.
+- [ ] Add `selected_pose_sha256` and the exact five current digest fields:
+  `task_config_sha256`, `task_card_sha256`, `robot_config_sha256`,
+  `fr3_asset_sha256`, and `geometry_sha256`.
+- [ ] Change the six invalid-route expansions to invoke the pure bundle validator
+  directly; they do not construct a factory or call orchestration.
+- [ ] Change the three local and three continuous schedule expansions to consume
+  command routes from the pure bundle rather than a Task 10 plan.
+- [ ] Keep the Task 10 plan-motif node, six executor-motif expansions, and seven
+  orchestration-route expansions unchanged and assertion RED.
+- [ ] Keep the existing six-route and motif fixture controls GREEN.
+
+The existing Task 8 node families remain observable:
+
+- `test_t152_all_six_complete_routes_are_required_before_scene_acquisition`
+  (six direct-validator expansions);
+- `test_t152_local_class_executes_plus16_minus32_plus16_in_every_window`
+  (three pure-bundle expansions);
+- `test_t152_continuous_class_consumes_decimal_endpoint_reflection_schedule`
+  (three pure-bundle expansions);
+- `test_t152_motif_digest_exact_scalar_and_float64_materialization_cross_check`;
+- `test_t152_route_builder_derives_all_six_records_from_declared_solids`;
+- `test_t152_declared_route_derivation_changes_digest_or_blocks` (five
+  expansions); and
+- `test_t152_declared_route_derivation_ignores_caller_true_flags` (two
+  expansions).
+
+Add command-bound RED contracts with dedicated `test_task8_` names:
+
+- `test_task8_command_authority_is_exact_decimal_bound_and_strictly_ordered`;
+- `test_task8_task_route_geometry_is_canonical_and_digest_bound`;
+- `test_task8_selected_candidate_hash_fk_and_frame_are_bundle_bound`;
+- `test_task8_bundle_is_exact_six_classes_by_five_commands_in_order`;
+- `test_task8_zero_command_routes_are_256_action_immutable_holds`;
+- `test_task8_each_command_route_records_schedule_endpoints_and_segments`;
+- `test_task8_current_digests_are_complete_lowercase_and_contract_bound`;
+- `test_task8_command_matrix_mutation_fails_closed`;
+- `test_task8_bundle_class_command_motif_and_segment_digests_recompute`;
+- `test_task8_digest_mutation_fails_closed` (bundle, class, command, motif,
+  segment, task geometry, workspace, geometry, and policy expansions); and
+- `test_task8_runner_reexports_pure_route_bundle_functions_without_copying`.
+
+The Task 8 requirement-to-test mapping is fixed:
+
+| Task 8 requirement | RED contract |
+|---|---|
+| exact five-command Decimal/float64 authority | `test_task8_command_authority_is_exact_decimal_bound_and_strictly_ordered` |
+| single A/P/R and press-axis authority | `test_task8_task_route_geometry_is_canonical_and_digest_bound` |
+| pure selected-candidate hash, measured FK, and frame binding | `test_task8_selected_candidate_hash_fk_and_frame_are_bundle_bound` |
+| exact 6 classes x 5 commands and zero hold | `test_task8_bundle_is_exact_six_classes_by_five_commands_in_order`, `test_task8_zero_command_routes_are_256_action_immutable_holds` |
+| local and continuous action schedules | the three local and three continuous existing expansions |
+| ordered endpoints and full segments | `test_task8_each_command_route_records_schedule_endpoints_and_segments` |
+| exact five current digests and parsed contract binding | `test_task8_current_digests_are_complete_lowercase_and_contract_bound` |
+| command matrix cannot drift | `test_task8_command_matrix_mutation_fails_closed` |
+| bundle/class/command/motif/segment digest closure | `test_task8_bundle_class_command_motif_and_segment_digests_recompute`, `test_task8_digest_mutation_fails_closed` expansions |
+| missing/reordered/partial/nonfinite/workspace/contact fail closed | six existing direct-validator expansions |
+| selected pose/root/solid/workspace/policy mutations | five existing declared-solid mutation expansions |
+| caller truth flags ignored | two existing caller-flag expansions |
+| runner owns no copied algorithm | `test_task8_runner_reexports_pure_route_bundle_functions_without_copying` |
+| Task 10 remains separate | existing plan-motif, six executor-motif, and seven orchestration-route expansions stay RED |
+
+**Historical selection boundary**
+
+The former broad expression selected 29 assertion RED and 2 controls. Fifteen
+failures belong to Task 8; fourteen belong to Task 10: one plan-motif, six
+executor-motif, and seven orchestration-route expansions. The broad expression
+is retained only as historical ownership information and is not run as a Task 8
+checkpoint.
+
+**Task 8A command**
+
+Use exact existing function node IDs and the dedicated new prefix:
+
+```bash
+python -m pytest -q \
+  tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_all_six_complete_routes_are_required_before_scene_acquisition \
+  tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_local_class_executes_plus16_minus32_plus16_in_every_window \
+  tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_continuous_class_consumes_decimal_endpoint_reflection_schedule \
+  tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_motif_digest_exact_scalar_and_float64_materialization_cross_check \
+  tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_route_builder_derives_all_six_records_from_declared_solids \
+  tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_declared_route_derivation_changes_digest_or_blocks \
+  tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_declared_route_derivation_ignores_caller_true_flags
+
+python -m pytest -q tests/test_g1_pose_conditioned_tracking_cli.py \
+  -k 'test_task8_'
+
+python -m pytest -q \
+  tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_positive_six_route_fixture_is_complete_and_canonical \
+  tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_positive_motif_fixtures_are_canonical_and_self_consistent
+
+python -m pytest -q \
+  tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_plan_carries_consumable_canonical_motif_not_only_class_label \
+  tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_executor_consumes_exact_class_motif_schedule \
+  tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_orchestration_route_failure_blocks_factory_plan_and_success_evidence
+```
+
+The final command must remain exactly 14 Task 10 assertion RED. Do not use a
+keyword expression containing generic `route` or `motif`.
+Before production changes, every corrected/new behavior node must be an
+assertion RED for the missing command-bound capability, both fixture controls
+must remain GREEN, and Task 10 ownership must remain unchanged. Collection,
+import, fixture, path, syntax, and Isaac errors must all be zero.
+
+**Task 8A stop conditions**
+
+Stop if a Task 10 node is changed, a test still supplies raw formal geometry or
+handwritten A/P/R, a current digest family is omitted, caller truth becomes an
+authority, or any failure is not the intended assertion RED.
+
+**Task 8A commit**
+
+`test(g1): correct Task 8 route bundle contracts`
+
+This commit is tests-only. Task 8B may begin only after the corrected RED
+partition is reviewed.
+
+### Task 8B: Implement the pure command-bound bundle
+
+**Production files**
+
+- Modify: `isaac_tactile_libero/runtime/g1_tracking.py`
+- Modify: `isaac_tactile_libero/runtime/g1_contact_exclusion.py`
+- Modify: `scripts/run_g1_tracking_envelope.py` for direct import-safe re-export
+  only.
+- Do not implement any Task 9 evidence loader or Task 10 plan, executor,
+  orchestration, factory, scene, evidence, aggregation, close, or shutdown API.
+
+**Public interfaces**
 
 ```python
 def derive_g1_pose_conditioned_routes(
@@ -1290,96 +1432,90 @@ def derive_g1_pose_conditioned_routes(
     selected_candidate: Mapping[str, object],
     selected_pose_sha256: str,
     class_definitions: Sequence[Mapping[str, object]],
+    task_route_geometry: Mapping[str, object],
+    command_matrix_m: Sequence[float],
     workspace_limits: Mapping[str, object],
     geometry_contract: PressButtonGeometryContract,
     current_input_digests: Mapping[str, str],
-) -> tuple[Mapping[str, object], ...]: ...
+) -> Mapping[str, object]: ...
 
 def validate_g1_pose_conditioned_routes(
     *,
-    ordered_routes: Sequence[Mapping[str, object]],
+    route_bundle: Mapping[str, object],
     geometry_contract: PressButtonGeometryContract,
     workspace_limits: Mapping[str, object],
     current_input_digests: Mapping[str, str],
 ) -> ContactExclusionRouteResult: ...
 ```
 
-The script may re-export these names to preserve the approved test import seam,
-but owns no duplicate algorithm. Construction consumes selected measured FK,
-frame, pose/hash, current task/config/card/asset digests, workspace, the parsed
-contract, and the canonical six class definitions. It accepts no trusted
-`workspace_valid` or `contact_exclusion_valid` field.
+**Task 8B.1: authorities and derivation**
 
-Route order is exactly the existing `G1_TRAJECTORY_CLASS_IDS`. Each local
-round-trip is a complete ordered `+16/-32/+16` segment chain at the current
-command. Each continuous class materializes the existing Decimal-derived
-phase-reflected scalar schedule into float64 and records both forms plus motif
-digest. All route segments, including crossings back through the start, are
-validated continuously against both solids and workspace. One missing,
-reordered, partial, nonfinite, workspace-invalid, contact-invalid, or
-digest-mismatched route blocks before `factory_builder`.
+- [ ] Add `G1_TRACKING_COMMANDS_M` and
+  `G1_TRACKING_COMMAND_DECIMAL_STRINGS` as the one co-located five-command
+  authority; make `build_g1_multiclass_tracking_plan()` consume it.
+- [ ] Add `g1_press_button_task_route_geometry()` with world-frame A/P/R, press
+  axis, schema, and canonical digest.
+- [ ] Derive `S` only from finite selected-candidate measured FK.
+- [ ] Construct all six classes by five commands, with a 256-action zero hold,
+  four exact local windows, and existing Decimal phase-reflected schedules.
+- [ ] Materialize every ordered endpoint and continuous segment without dropping
+  crossings, reversals, or zero-length holds.
+- [ ] Bind selected pose, class definition, command, task geometry, workspace,
+  geometry, policy, root transform, and all five current digests.
 
-Each route record includes selected pose ID/hash, class ID/version, motif digest,
-exact scalar schedule, float64 materialization, ordered endpoints/segment
-digests, root transform, geometry/config/task-card/robot/asset digests,
-TCP-only scope, required clearance, per-obstacle results, and full-robot static
-qualification false. The design-time 21 mm table is never a runtime field.
+Focused corrected RED should become GREEN for command authority, task geometry,
+bundle shape, schedules, endpoints, and construction digests while validation
+failure nodes remain RED.
 
-**Owned RED nodes**
+Commit:
 
-- Replacement seven sphere-dependent expansions from Task 1's manifest.
-- Existing route parameters:
-  `test_t152_all_six_complete_routes_are_required_before_scene_acquisition`
-  for `missing`, `reordered`, `partial`, `nonfinite`, `workspace`, and
-  `contact_exclusion`.
-- Existing orchestration parameters:
-  `test_t152_orchestration_route_failure_blocks_factory_plan_and_success_evidence`
-  for those six cases plus `digest_mismatch`.
-- Existing motif nodes for three local and three continuous class expansions,
-  digest, scalar schedule, and float64 equality.
+`feat(g1): derive command-bound pose routes`
 
-**Steps**
+**Task 8B.2: independent validation**
 
-- [ ] Build segments from canonical motifs and current inputs; remove the sphere
-  data shape from the formal path.
-- [ ] Validate all workspace and contact-exclusion segments before any factory
-  or runner call.
-- [ ] Bind ordered route/motif/root/config/card digests and revalidate them at
-  the orchestration boundary.
-- [ ] Preserve exact class and command order without changing the command matrix.
-- [ ] Make all Task 8-owned T152 RED nodes GREEN; leave loader/lifecycle/runner
-  integration nodes RED.
-- [ ] Confirm invalid-route parameter cases report zero factory, runner, scene,
-  and successful-evidence calls.
+- [ ] Validate schema, selected pose, exact class/command order, all digests,
+  finite endpoints, and the continuous world-frame workspace proof.
+- [ ] Invoke `validate_contact_exclusion_routes()` once per canonical command;
+  reuse its OBB and capped-cylinder segment validators and do not copy their
+  analytic algorithms.
+- [ ] Transpose the five lower-level results into six command-bound class
+  records while retaining every obstacle and segment result.
+- [ ] Ignore caller `workspace_valid`, `contact_exclusion_valid`,
+  `route_complete`, and `finite` claims.
+- [ ] Raise exact non-empty `G1ValidationError` codes:
+  `G1_C1_ROUTE_PROVENANCE_INVALID`,
+  `G1_C1_CONTACT_EXCLUSION_ROUTE_INVALID`, or
+  `G1_C1_CONTACT_EXCLUSION_DIGEST_MISMATCH`.
+- [ ] Return qualification true only when every one of the 30 command routes
+  passes; full-robot static qualification remains false.
+- [ ] Re-export the two public pure functions from the runner without an
+  algorithm wrapper.
 
-**Commands and expected results**
+After this commit, all exact Task 8 node IDs are GREEN, Task 10 nodes remain
+assertion RED, and `tests/test_g1_contact_exclusion_geometry.py` remains fully
+GREEN without simulator startup.
 
-```bash
-python -m pytest -q tests/test_g1_pose_conditioned_tracking_cli.py \
-  -k 'route or motif or scalar_schedule or float64'
-# Before integration: Task 8-owned assertions fail.
-# After integration: all selected route/motif nodes pass; unrelated T152 REDs remain.
+Commit:
 
-python -m pytest -q tests/test_g1_contact_exclusion_geometry.py
-# Expected after integration: all pass.
-```
+`feat(g1): validate command-bound declared-solid routes`
 
-**Stop conditions**
+**Task 8B stop conditions**
 
-Stop if route construction trusts caller flags, omits any class/segment, changes
-the matrix/clearance, uses the design-time 21 mm value, allows a factory call on
-invalid input, or revives the sphere shape as formal authority.
+Stop if implementation trusts caller flags, accepts raw formal geometry,
+duplicates A/P/R or analytic solid algorithms, changes the five commands or
+clearance, uses a design-only minimum as a result, omits any action segment,
+adds any Task 9/10 partial API, imports or starts Isaac, or changes the existing
+Task 10 RED outcome.
 
-**Commit**
-
-`feat(g1): derive pose-conditioned exclusion routes`
-
-Before and after commit run the two focused commands and the migration manifest.
-All mapped replacement nodes and Task 8-owned nodes must be GREEN; all remaining
-T152 nodes keep their recorded RED ownership. Task 8 depends on Task 5 and Task 7B GREEN;
-Task 9 depends on validated pre-runtime routes. Isaac Sim is not allowed.
+Task 8 depends on Task 5 and Task 7B GREEN. Task 9 depends on the validated
+bundle contract. Task 10 consumes the Task 8 bundle plus the Task 9 verified
+selected pose. Isaac Sim is not allowed in Task 8A or Task 8B.
 
 ## Task 9: Verify selected C2a evidence and current-input freshness
+
+Task 9 begins only after the Task 8 command-bound bundle contract is GREEN. It
+owns evidence/current-input freshness and does not rebuild routes. Task 10 later
+consumes both the validated Task 8 bundle and the Task 9 verified selected pose.
 
 **Files**
 
@@ -2029,15 +2165,19 @@ GREEN/RED partition stated below.
 | 7A | `test(g1): correct geometry-only authoring contracts` | `python -m pytest -q tests/test_press_button_mechanism.py -k 'declared_geometry or geometry_authoring_receipt or complete_build_stage or formal_stage_builder'` | corrected receipt/seam/complete-builder nodes are exact assertion RED; prior mechanism nodes GREEN |
 | 7B.1 | `feat(g1): add declared geometry authoring receipt` | `python -m pytest -q tests/test_press_button_mechanism.py -k 'declared_geometry or geometry_authoring_receipt or legacy'` | import-safe geometry receipt/seam nodes GREEN; complete real-builder nodes remain RED |
 | 7B.2 | `refactor(g1): share declared geometry with complete USD stage` | `python -m pytest -q tests/test_press_button_mechanism.py tests/test_press_button_geometry_contract.py tests/test_g1_contact_exclusion_geometry.py tests/test_press_button_task_card_contract.py` | all Task 4–7 nodes GREEN; full physical authoring source contract retained without Isaac startup |
-| 8 | `feat(g1): derive pose-conditioned exclusion routes` | `python -m pytest -q tests/test_g1_pose_conditioned_tracking_cli.py -k 'route or motif or scalar_schedule or float64'` | all route/motif-owned nodes GREEN; factory remains untouched on invalid route |
+| 8 design | `docs(g1): define command-bound route bundle ownership` | documentation consistency scans only | approved Option B, exact Task 8/10 ownership, and no production/test/config change |
+| 8A | `test(g1): correct Task 8 route bundle contracts` | exact Task 8 node IDs plus dedicated `test_task8_` nodes | schema-correct command-bound behavior is assertion RED; two fixture controls GREEN; Task 10 nodes unchanged |
+| 8B.1 | `feat(g1): derive command-bound pose routes` | exact Task 8 authority, bundle-shape, schedule, endpoint, and construction-digest nodes | pure 6-class x 5-command derivation GREEN; validation failures remain RED; no Task 10 API added |
+| 8B.2 | `feat(g1): validate command-bound declared-solid routes` | all exact Task 8 node IDs plus `tests/test_g1_contact_exclusion_geometry.py` | Task 8 bundle/validation/re-export GREEN; Task 10 plan/executor/orchestration nodes remain RED |
 | 9 | `feat(g1): verify current C2a pose evidence` | `python -m pytest -q tests/test_g1_pose_conditioned_tracking_cli.py -k 'c2a_evidence or selected_candidate or selected_pose or current_input or provenance'` | all loader/freshness nodes GREEN; attempt-02 rejected as historical |
 | 10 | `feat(g1): wire pose-conditioned multiclass CLI` | `python -m pytest -q tests/test_g1_pose_conditioned_tracking_cli.py` | complete file GREEN; no legacy real-main path |
 | 11 | `docs(g1): complete T152 geometry integration` | complete suite at `E_impl`, projection commit `P`, complete suite and G0 at `P` | `P^=E_impl`, `E2=P`, T152 `[x]`, T151/T070 `[ ]`, attempt-04 prohibited, no tracked change after `P` |
 
-Tasks 2, 3, and 7A are deliberately RED-only commits. No production change may
+Tasks 2, 3, 7A, and 8A are deliberately RED-only commits. No production change may
 be included with them. Tasks 4–10 may not modify approved RED assertions except
 the one-to-one schema-specific migration committed in Task 2 and the
-architecture-approved geometry-only seam correction in Task 7A.
+architecture-approved geometry-only seam correction in Task 7A and the
+command-bound ownership correction in Task 8A.
 
 ## Approved design-section coverage
 
@@ -2047,7 +2187,7 @@ architecture-approved geometry-only seam correction in Task 7A.
 | 2. One authoritative geometry source | 4, 6, 7A, 7B | strict YAML parser, geometry-only receipt identity/digests, complete-builder literal-source guard |
 | 3. Geometry parsing and validation | 2, 4, 6 | schema/dimension/token/quaternion/digest tests |
 | 4. Distance, clearance, continuous mathematics | 3, 5 | slab/quadratic/boundary/degenerate analytic tests |
-| 5. Six-route design-time assessment | 8 | six canonical continuous routes; no runtime 21 mm claim |
+| 5. Six-route design-time assessment | 8 | command-bound continuous routes recomputed from current inputs; the design table is not copied into results |
 | 6. Derived route evidence schema | 5, 8, 10 | obstacle/segment/root/config provenance cross-recording |
 | 7. Fail-closed taxonomy | 2–10 | exact code and non-empty-message assertions at each boundary |
 | 8. RED fixture correction | 1–3 | one-to-one migration manifest and observed schema RED |
@@ -2109,7 +2249,7 @@ node-ID comparison.
 | Pose/joint/frame/asset/task/robot identity mismatch | 6 | 9 |
 | Exact 90-trial plan and ordering | 1 | 10 |
 | Six-route pre-acquisition invalid states | 6 | 8 |
-| Plan carries canonical motif | 1 | 8 |
+| Plan carries canonical motif | 1 | 10 |
 | Local class schedules | 3 | 8 |
 | Continuous class schedules | 3 | 8 |
 | Motif digest/schedule/float64 consistency | 1 | 8 |
@@ -2134,9 +2274,9 @@ node-ID comparison.
 | Missing evidence argument blocks factory | 1 | 9 |
 | Invalid evidence artifact/tamper/duplicate parameters | 8 | 9 |
 | Current task/robot/asset digest mismatches | 3 | 9 |
-| Orchestration invalid route parameters | 7 | 8 |
+| Orchestration invalid route parameters | 7 | 10 |
 | Route builder derives inputs | 1 | 8 |
-| Pose/task/workspace/contact geometry mutations | 4 | 8 |
+| Pose/task/workspace/contact geometry mutations | 4 historical nodes mapped to 5 declared-solid replacements | 8 |
 | Caller true flags ignored | 2 | 8 |
 | Real scene source pre-Play contract | 1 | 10 |
 | Injected lifecycle order seam | 1 | 10 |
@@ -2168,8 +2308,11 @@ canonical motif fixtures, and fake-factory import safety.
 | `PressButtonGeometryAuthoringReceipt` | Task 7B | Task 7A receipt truth tests and Task 7B complete builder |
 | `author_declared_geometry` | Task 7B | Task 7A recording tests and Task 7B real complete builder |
 | `UsdPressButtonDeclaredGeometryAuthoringAdapter` | Task 7B | Task 7A lazy-import/source tests and Task 7B complete builder |
-| `derive_g1_pose_conditioned_routes` | Task 8 | Tasks 8–10 script orchestration |
-| `validate_g1_pose_conditioned_routes` | Task 8 | Tasks 8–10 script orchestration |
+| `G1_TRACKING_COMMANDS_M` | Task 8B, `g1_tracking.py` | Task 8 bundle derivation and existing multiclass plan; Task 10 plan integration |
+| `G1_TRACKING_COMMAND_DECIMAL_STRINGS` | Task 8B, `g1_tracking.py` | Task 8 command and bundle digests |
+| `g1_press_button_task_route_geometry` | Task 8B, `g1_tracking.py` | Task 8 bundle derivation and Task 10 provenance recording |
+| `derive_g1_pose_conditioned_routes` | Task 8B, `g1_contact_exclusion.py` | Task 8 pure tests and Task 10 plan input |
+| `validate_g1_pose_conditioned_routes` | Task 8B, `g1_contact_exclusion.py` | Task 8 pure tests and Task 10 pre-factory orchestration boundary |
 | `G1CurrentInputDigests` | Task 9 | Tasks 9–10 |
 | `C2ASelectedPoseEvidence` | Task 9 | Tasks 9–10 |
 | `load_g1_c2a_selected_pose_evidence` | Task 9 | Task 10 `main` |
