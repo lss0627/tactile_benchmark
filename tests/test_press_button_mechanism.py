@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+import builtins
+import hashlib
 import importlib.util
 import inspect
 from pathlib import Path
 import sys
 
 import pytest
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = ROOT / "isaac_tactile_libero/tasks/press_button_mechanism.py"
+PHYSICAL_CONFIG = ROOT / "configs/tasks/press_button_physical.yaml"
+HISTORICAL_ATTEMPT_02_TASK_CONFIG_SHA256 = (
+    "507c1684d45cf17dda41bbcd690e03850c55a8a4444edc076f47e9bd6eb8008a"
+)
 
 
 def _target():
@@ -33,6 +40,57 @@ def _config(module):
         reset_noise_m=0.0002,
         collision_enabled=True,
     )
+
+
+def _formal_payload() -> dict[str, object]:
+    payload = yaml.safe_load(PHYSICAL_CONFIG.read_text(encoding="utf-8"))
+    mechanism = payload["mechanism"]
+    mechanism.update(
+        {
+            "mechanism_version": "1.1.0",
+            "base_orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            "geometry": {
+                "frame": "mechanism_root",
+                "units": "m",
+                "button": {
+                    "primitive": "capped_cylinder",
+                    "center_local_m": [0.0, 0.0, 0.0],
+                    "axis_token": "Z",
+                    "radius_m": 0.035,
+                    "half_height_m": 0.009,
+                },
+                "housing": {
+                    "primitive": "oriented_box",
+                    "center_local_m": [0.0, 0.0, -0.025],
+                    "half_extents_m": [0.045, 0.045, 0.010],
+                },
+            },
+            "contact_exclusion": {
+                "schema_version": "1.0.0",
+                "subject": "fr3_hand_tcp_point",
+                "obstacle_ids": ["button", "housing"],
+                "required_clearance_m": 0.005,
+                "distance_metric": "conservative_closed_solid_clearance_v1",
+                "route_validation": "continuous_line_segment",
+                "boundary_policy": "equality_allowed",
+            },
+        }
+    )
+    return payload
+
+
+def _write_payload(tmp_path: Path, payload: dict[str, object]) -> Path:
+    path = tmp_path / "press_button.yaml"
+    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    return path
+
+
+def _assert_exact_failure(call, code: str) -> None:
+    with pytest.raises(Exception) as caught:
+        call()
+    assert getattr(caught.value, "code", None) == code
+    assert isinstance(getattr(caught.value, "message", None), str)
+    assert caught.value.message.strip()
 
 
 def test_mechanism_declares_real_joint_travel_limits_and_collision() -> None:
@@ -92,7 +150,7 @@ def test_seeded_reset_is_deterministic_and_inside_reset_tolerance() -> None:
 def test_vertical_button_return_drive_is_preloaded_against_gravity() -> None:
     module = _target()
     config = module.load_press_button_mechanism_config(
-        ROOT / "configs/tasks/press_button_physical.yaml"
+        PHYSICAL_CONFIG
     )
     contract = module.PressButtonMechanism(config).scene_contract()
 
@@ -134,6 +192,7 @@ def test_legacy_mechanism_1_0_is_state_only_and_ineligible_for_formal_build() ->
     assert getattr(config, "tcp_route_exclusion_qualified", None) is False
     assert getattr(config, "benchmark_cap_eligible", None) is False
     assert getattr(config, "runtime_stage_build_eligible", None) is False
+    assert getattr(config, "route_validation_input_eligible", None) is False
 
 
 def test_legacy_mechanism_formal_build_fails_with_required_geometry_code() -> None:
@@ -142,3 +201,141 @@ def test_legacy_mechanism_formal_build_fails_with_required_geometry_code() -> No
 
     assert "G1_PRESS_BUTTON_FORMAL_GEOMETRY_REQUIRED" in source
     assert "runtime_stage_build_eligible" in source
+
+
+def test_tracked_physical_config_loads_strict_formal_mechanism_1_1() -> None:
+    module = _target()
+    config = module.load_press_button_mechanism_config(PHYSICAL_CONFIG)
+
+    assert config.mechanism_version == "1.1.0"
+    assert config.base_position_m == (0.55, 0.0, 0.47)
+    assert config.base_orientation_xyzw == (0.0, 0.0, 0.0, 1.0)
+    assert config.geometry_contract is not None
+    assert config.geometry_contract_available is True
+    assert config.runtime_stage_build_eligible is True
+    assert config.route_validation_input_eligible is True
+
+
+def test_formal_mechanism_schema_never_grants_benchmark_cap_eligibility() -> None:
+    module = _target()
+    config = module.load_press_button_mechanism_config(PHYSICAL_CONFIG)
+    mechanism = module.PressButtonMechanism(config)
+
+    assert getattr(config, "benchmark_cap_eligible", False) is False
+    assert getattr(mechanism, "benchmark_cap_eligible", False) is False
+    contract = getattr(config, "geometry_contract", None)
+    assert contract is not None
+    assert getattr(contract, "benchmark_cap_eligible", False) is False
+
+
+@pytest.mark.parametrize(
+    "missing_path",
+    [
+        "base_orientation_xyzw",
+        "geometry",
+        "geometry.button",
+        "geometry.housing",
+        "contact_exclusion",
+    ],
+)
+def test_formal_mechanism_1_1_rejects_missing_geometry_fields_without_fallback(
+    tmp_path: Path, missing_path: str
+) -> None:
+    module = _target()
+    payload = _formal_payload()
+    mechanism = payload["mechanism"]
+    if "." in missing_path:
+        parent, child = missing_path.split(".")
+        mechanism[parent].pop(child)
+    else:
+        mechanism.pop(missing_path)
+    path = _write_payload(tmp_path, payload)
+
+    _assert_exact_failure(
+        lambda: module.load_press_button_mechanism_config(path),
+        "G1_C1_CONTACT_EXCLUSION_SCHEMA_INVALID",
+    )
+
+
+@pytest.mark.parametrize(
+    "orientation",
+    [[0.0, 0.0, 1.0], [0.0, 0.0, 0.0, 0.0], [0.0, 0.0, float("nan"), 1.0]],
+)
+def test_formal_mechanism_1_1_rejects_invalid_root_orientation(
+    tmp_path: Path, orientation: list[float]
+) -> None:
+    module = _target()
+    payload = _formal_payload()
+    payload["mechanism"]["base_orientation_xyzw"] = orientation
+    path = _write_payload(tmp_path, payload)
+
+    _assert_exact_failure(
+        lambda: module.load_press_button_mechanism_config(path),
+        "G1_C1_CONTACT_EXCLUSION_GEOMETRY_INVALID",
+    )
+
+
+@pytest.mark.parametrize("mechanism_version", ["1.1.1", "1.2.0", "2.0.0", "legacy"])
+def test_unknown_mechanism_versions_fail_closed(
+    tmp_path: Path, mechanism_version: str
+) -> None:
+    module = _target()
+    payload = _formal_payload()
+    payload["mechanism"]["mechanism_version"] = mechanism_version
+    path = _write_payload(tmp_path, payload)
+
+    _assert_exact_failure(
+        lambda: module.load_press_button_mechanism_config(path),
+        "G1_C1_CONTACT_EXCLUSION_SCHEMA_INVALID",
+    )
+
+
+@pytest.mark.parametrize("mechanism_version", ["1.0.0", "1.0.1", "1.0.9"])
+def test_explicit_legacy_1_0_x_remains_state_only(
+    mechanism_version: str,
+) -> None:
+    module = _target()
+    payload = _formal_payload()["mechanism"]
+    payload["mechanism_version"] = mechanism_version
+    for field in ("base_orientation_xyzw", "geometry", "contact_exclusion"):
+        payload.pop(field)
+    config = module.PressButtonMechanismConfig.from_mapping(payload)
+    state = module.PressButtonMechanism(config).observe_joint_position(0.0)
+
+    assert state.reset is True
+    assert state.released is True
+    assert getattr(config, "geometry_contract_available", None) is False
+    assert getattr(config, "tcp_route_exclusion_qualified", None) is False
+    assert getattr(config, "benchmark_cap_eligible", None) is False
+    assert getattr(config, "runtime_stage_build_eligible", None) is False
+    assert getattr(config, "route_validation_input_eligible", None) is False
+
+
+def test_legacy_formal_build_blocks_before_pxr_import(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _target()
+    mechanism = module.PressButtonMechanism(_config(module))
+    real_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        assert not name.startswith("pxr"), "legacy formal build attempted a pxr import"
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    _assert_exact_failure(
+        lambda: mechanism.build_stage(object()),
+        "G1_PRESS_BUTTON_FORMAL_GEOMETRY_REQUIRED",
+    )
+
+
+def test_tracked_config_digest_changes_from_attempt_02_without_inventing_provenance() -> None:
+    module = _target()
+    current_digest = hashlib.sha256(PHYSICAL_CONFIG.read_bytes()).hexdigest()
+    historical_provenance = {
+        "task_config_sha256": HISTORICAL_ATTEMPT_02_TASK_CONFIG_SHA256,
+    }
+
+    assert current_digest != HISTORICAL_ATTEMPT_02_TASK_CONFIG_SHA256
+    assert "task_card_sha256" not in historical_provenance
+    assert "geometry_sha256" not in historical_provenance
+    config = module.load_press_button_mechanism_config(PHYSICAL_CONFIG)
+    assert config.geometry_contract.task_config_sha256 == current_digest
