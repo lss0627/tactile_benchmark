@@ -21,11 +21,13 @@ adapters, pytest, Spec Kit evidence manifests.
 
 ## Execution contract
 
-This plan starts from `codex/g1-press-button-safety` at
-`0ea98a530c16397f863440310421bc58ccda4677`. Before Task 1, the executor must
-repeat the branch, clean-worktree, tracking-ref, live-origin, and Draft PR #2
-checks. The PR must be OPEN and Draft with base `main`. T150 must be `[x]`;
-T151, T152, and T070 must remain `[ ]`; and attempt-04 must remain
+The approved behavior baseline is the existing 84 T152 assertion REDs plus four
+GREEN controls. Actual execution starts only from a clean HEAD that already
+contains the final human-reviewed version of this plan. Task 1 dynamically
+records the local branch, tracking ref, live origin, and Draft PR #2 head SHAs;
+all four and `git rev-parse HEAD` must be identical. The plan never embeds its
+own future revision SHA. The PR must be OPEN and Draft with base `main`. T150
+must be `[x]`; T151, T152, and T070 must remain `[ ]`; and attempt-04 must remain
 `ATTEMPT_04_PROHIBITED`.
 
 No task in this plan permits Isaac Sim. No task permits C2a, attempt-04, or a
@@ -45,7 +47,8 @@ The invariant values are:
   post-action checks remain mandatory.
 - Force truth: `force_vector_valid=false`, `wrench_valid=false`, and
   `raw_impulse_used_as_force=false`.
-- Physics: CPU Physics with MBP and GPU dynamics disabled.
+- Physics: `physics_device=cpu`, `broadphase_type=MBP`, and GPU dynamics
+  disabled.
 
 Every real runtime sample must still prove
 `contact_valid=true`, `in_contact=false`, `raw_contact_count=0`,
@@ -73,21 +76,31 @@ current-input check for T152, T151, or attempt-04.
 
 Add these node IDs:
 
-- `tests/test_g1_t152_red_migration_manifest.py::test_t152_baseline_inventory_is_bound_to_approved_source_commit`
+- `tests/test_g1_t152_red_migration_manifest.py::test_t152_baseline_inventory_distinguishes_behavior_source_and_execution_start_commits`
 - `tests/test_g1_t152_red_migration_manifest.py::test_t152_migration_manifest_maps_every_retired_node_exactly_once`
 - `tests/test_g1_t152_red_migration_manifest.py::test_t152_migration_manifest_preserves_each_safety_behavior`
 - `tests/test_g1_t152_red_migration_manifest.py::test_t152_inventory_keeps_future_red_separate`
 
-The inventory JSON records the source commit, every node ID, outcome, and
-classification for 84 T152 expected REDs, four T152 GREEN controls, 748 original
-GREEN nodes, 125 intentional future-RED nodes, the four exact-hard-limit nodes,
-and the deprecated API scan result. It also stores a SHA-256 over each sorted
-node-ID list; outcome order is retained separately so accidental reordering is
-visible.
+The inventory JSON separately records:
+
+- `behavior_source_commit`: the commit that last changed the approved T152 test
+  behavior, obtained with
+  `git log -1 --format=%H -- tests/test_g1_pose_conditioned_tracking_cli.py`;
+- `execution_start_commit`: the clean, final-plan HEAD obtained with
+  `git rev-parse HEAD` at Task 1 preflight.
+
+It also records every node ID, outcome, and classification for 84 T152 expected
+REDs, four T152 GREEN controls, 748 original GREEN nodes, 125 intentional
+future-RED nodes, the four exact-hard-limit nodes, and the deprecated API scan
+result. A SHA-256 covers each sorted node-ID list; outcome order is retained
+separately so accidental reordering is visible. The executor verifies that the
+T152 test blob at `behavior_source_commit` is byte-identical to the blob at
+`execution_start_commit`; otherwise the approved behavior inventory is stale.
 
 `tests/run_g1_node_inventory.py` is a test-side command that accepts
-`--inventory` and `--selection`, executes exactly the stored node IDs through
-pytest, parses the JUnit outcome, and rejects any missing, extra, reordered, or
+`--inventory`, `--selection`, expected pass/fail outcome, and optional expected
+classification counts. It executes exactly the stored node IDs through pytest,
+parses the JUnit outcome, and rejects any missing, extra, reordered, or
 misclassified node. It is not imported by production code.
 
 The migration manifest has one row per sphere-specific node expansion:
@@ -126,8 +139,11 @@ the schema-correction checkpoint is an immediate stop.
 
 **Steps**
 
-- [ ] Capture the exact starting commit, branch, PR metadata, task states, and
-  prohibition state in the inventory metadata.
+- [ ] Capture `behavior_source_commit`, `execution_start_commit`, branch and PR
+  metadata, task states, and prohibition state in the inventory metadata.
+- [ ] Fail before collection unless local HEAD, local branch SHA, tracking SHA,
+  live origin SHA, and PR head SHA all equal `execution_start_commit` and the
+  worktree is clean.
 - [ ] Run the existing T152 file once and record exactly `84 failed, 4 passed`,
   with zero errors, skips, collection failures, or Isaac imports.
 - [ ] Run the original GREEN selection with both the T152 file and all 125
@@ -143,6 +159,25 @@ the schema-correction checkpoint is an immediate stop.
 **Commands and expected results**
 
 ```bash
+EXECUTION_START_COMMIT=$(git rev-parse HEAD)
+BEHAVIOR_SOURCE_COMMIT=$(
+  git log -1 --format=%H -- tests/test_g1_pose_conditioned_tracking_cli.py
+)
+LOCAL_BRANCH_SHA=$(git rev-parse refs/heads/codex/g1-press-button-safety)
+TRACKING_SHA=$(git rev-parse @{u})
+LIVE_ORIGIN_SHA=$(
+  git ls-remote --heads origin codex/g1-press-button-safety | awk '{print $1}'
+)
+PR_HEAD_SHA=$(gh api repos/{owner}/{repo}/pulls/2 --jq .head.sha)
+test -z "$(git status --porcelain)"
+test "$EXECUTION_START_COMMIT" = "$LOCAL_BRANCH_SHA"
+test "$EXECUTION_START_COMMIT" = "$TRACKING_SHA"
+test "$EXECUTION_START_COMMIT" = "$LIVE_ORIGIN_SHA"
+test "$EXECUTION_START_COMMIT" = "$PR_HEAD_SHA"
+test "$(git rev-parse "$BEHAVIOR_SOURCE_COMMIT:tests/test_g1_pose_conditioned_tracking_cli.py")" = \
+     "$(git rev-parse "$EXECUTION_START_COMMIT:tests/test_g1_pose_conditioned_tracking_cli.py")"
+# Expected: every command exits 0; both commit identities are written to the inventory.
+
 python -m pytest -q tests/test_g1_pose_conditioned_tracking_cli.py \
   --junitxml=/tmp/g1-t152-start.xml
 # Expected: 84 failed, 4 passed; every failure is an approved assertion RED.
@@ -179,9 +214,10 @@ recorded lists reproduce the observed baseline exactly.
 
 **Stop conditions**
 
-Stop on any non-assertion T152 failure, any baseline count/node drift, any
-unmapped sphere-specific node, any intentional future-RED classification change,
-or any deprecated scan diagnostic.
+Stop on any SHA inequality/dirty worktree, behavior-source blob mismatch,
+non-assertion T152 failure, baseline count/node drift, unmapped sphere-specific
+node, intentional future-RED classification change, or deprecated scan
+diagnostic.
 
 **Commit**
 
@@ -286,6 +322,24 @@ Policy, digest, version, and truth boundary:
 - `test_static_exclusion_pass_cannot_set_cap_gate_c1_c2_or_g1_pass`
 - `test_runtime_contact_collision_penetration_truth_remains_required_after_static_pass`
 
+`tests/test_press_button_task_card_contract.py` initially contributes the exact
+assertion RED
+`test_task_card_mechanism_version_matches_physical_config`: it requires both the
+physical config and task card to declare formal mechanism `1.1.0` and to match.
+This node must be observed RED in Task 2; Task 6 is not its first execution.
+
+At the end of Task 2,
+`tests/test_g1_contact_exclusion_geometry.py` contains exactly two fixture-only
+GREEN controls and zero analytic behavior REDs:
+
+- `test_declared_geometry_fixture_contains_cylinder_obb_and_exact_policy`
+- `test_declared_geometry_fixture_has_stable_test_side_digest`
+
+Task 3 adds the analytic behavior REDs to that file. The Task 1 inventory and
+migration manifest classify the task-card node as a new schema-migration RED and
+the two geometry-fixture nodes as new GREEN controls; none is inserted into the
+original 84 RED or original four-GREEN lists.
+
 Use full pytest paths when writing the tests, for example
 `tests/test_press_button_geometry_contract.py::test_geometry_1_1_requires_every_top_level_contract_field`.
 Parameterized expansions must be separately present in `--collect-only` output.
@@ -303,6 +357,9 @@ the intended assertion RED, never ImportError or collection failure.
 - [ ] Add every schema/version/truth node above. Use a positive parsing fixture
   only to prove the test data are internally coherent; production APIs must
   remain missing at this checkpoint.
+- [ ] Add and observe the task-card/config `1.1.0` synchronization assertion RED.
+- [ ] Add exactly the two named geometry-fixture GREEN controls and record their
+  separate inventory classification.
 - [ ] Modify the existing seven sphere-dependent expansions to consume declared
   solids while retaining their original behavioral assertions.
 - [ ] Collect the new files and assert zero import, fixture, syntax, path, or
@@ -317,16 +374,21 @@ python -m pytest --collect-only -q \
   tests/test_press_button_geometry_contract.py \
   tests/test_g1_contact_exclusion_geometry.py \
   tests/test_press_button_mechanism.py \
+  tests/test_press_button_task_card_contract.py \
   tests/test_g1_pose_conditioned_tracking_cli.py
-# Expected: collection succeeds; no Isaac modules are imported.
+# Expected: collection succeeds; the geometry file contributes exactly two
+# fixture controls; no Isaac modules are imported.
 
 python -m pytest -q \
   tests/test_press_button_geometry_contract.py \
+  tests/test_g1_contact_exclusion_geometry.py \
   tests/test_press_button_mechanism.py \
+  tests/test_press_button_task_card_contract.py \
   tests/test_g1_pose_conditioned_tracking_cli.py
 # Expected RED: new schema nodes fail by assertion because strict 1.1.0 parsing,
 # digesting, legacy gating, and declared-solid route construction do not exist.
-# Existing four T152 GREEN controls still pass.
+# The task-card synchronization node is assertion-RED. The two geometry-fixture
+# controls and existing four T152 controls pass.
 
 python -m pytest -q tests/test_g1_t152_red_migration_manifest.py
 # Expected: all manifest nodes pass and no old sphere expansion is unmapped.
@@ -342,9 +404,10 @@ any old safety behavior loses its mapped replacement.
 
 `test(g1): replace spherical contact exclusion fixtures`
 
-Before and after commit, run collection, the schema/T152 RED selection, and the
-migration-manifest tests. The schema selection must remain assertion RED; the
-manifest and four existing controls must be GREEN. Task 2 depends on Task 1;
+Before and after commit, run the exact collect-only and five-file focused
+commands above plus the migration-manifest test. The schema and task-card nodes
+must remain assertion RED; the manifest, two new fixture controls, and four
+existing T152 controls must be GREEN. Task 2 depends on Task 1;
 Task 3 depends on the canonical fixture established here. Isaac Sim is not
 allowed.
 
@@ -488,8 +551,9 @@ that cannot distinguish open interior from boundary contact.
 
 `test(g1): define analytic contact exclusion contracts`
 
-Before and after commit, collect and run the focused file. All behavior nodes
-remain expected assertion RED; fixture self-checks pass. Task 3 depends on Task
+Before and after commit, run the Task 3 collect-only and focused analytic-file
+commands plus the migration-manifest test. All analytic behavior nodes remain
+expected assertion RED; fixture controls pass. Task 3 depends on Task
 2; Tasks 4 and 5 depend on these RED contracts. Isaac Sim is not allowed.
 
 ## Task 4: Implement import-safe geometry contract types
@@ -869,18 +933,34 @@ class PressButtonMechanismConfig:
     @property
     def runtime_stage_build_eligible(self) -> bool: ...
     @property
-    def benchmark_cap_eligible(self) -> bool: ...
+    def route_validation_input_eligible(self) -> bool: ...
 ```
 
-For exact `1.1.0`, orientation, geometry, and contact-exclusion are required and
-all three eligibility properties are true. Explicit legacy `1.0.x` may still
-parse for state/reset/release classification, but returns:
+For exact `1.1.0`, orientation, geometry, and contact-exclusion are required.
+Successful strict parsing sets `geometry_contract_available=true`, permits
+formal stage construction through `runtime_stage_build_eligible=true`, and
+permits the declared values to enter TCP route validation through
+`route_validation_input_eligible=true`. These are input/schema capabilities,
+not benchmark results.
+
+`PressButtonMechanismConfig` must not expose a true
+`benchmark_cap_eligible` property. That field belongs to real runtime samples
+and can become true only after the shared qualifying runtime kernel, complete
+sample truth, multiclass aggregation, and tested-only cap selection succeed.
+Static analytic success records only
+`tcp_route_exclusion_qualified=true|false` and
+`full_robot_static_collision_exclusion_qualified=false`; it cannot set cap
+eligibility.
+
+Explicit legacy `1.0.x` may still parse for state/reset/release classification,
+but returns:
 
 ```yaml
 geometry_contract_available: false
 tcp_route_exclusion_qualified: false
 benchmark_cap_eligible: false
 runtime_stage_build_eligible: false
+route_validation_input_eligible: false
 ```
 
 If a legacy caller requests `build_stage()` or route validation, raise
@@ -894,20 +974,27 @@ geometry, and policy mappings. Keep
 `configs/tasks/cards/press_button.v1.yaml::scene.mechanism_version` to `"1.1.0"`;
 retain the card's existing task-version semantics.
 
-This task is the first behavior/config migration. As soon as its work begins,
-attempt-02 becomes stale and the active blocker is
-`CURRENT_C2A_REFRESH_REQUIRED_AFTER_GEOMETRY_SCHEMA_CHANGE`.
+This task is the first behavior/config migration. It proves that the new
+task/config/card/geometry digests differ from attempt-02 and therefore classifies
+attempt-02 as historical/stale. This activates the condition
+`CURRENT_C2A_REFRESH_REQUIRED_AFTER_GEOMETRY_SCHEMA_CHANGE`, but Task 6 does not
+implement the complete T152 evidence-loader/orchestration blocker. Task 9 owns
+that blocker and its report/manifest/exit/close lifecycle.
 
 **Steps**
 
 - [ ] Add strict formal-versus-legacy parsing without changing state/reset/release
   calculations.
-- [ ] Add eligibility properties and the formal-build blocker.
+- [ ] Add the three schema/input eligibility properties and the formal-build
+  blocker; prove the mechanism config cannot grant benchmark cap eligibility.
 - [ ] Insert the approved 1.1.0 mappings in the physical config and synchronize
   the task-card mechanism version.
 - [ ] Remove geometry defaults from the formal path; retain no second authority.
 - [ ] Assert physical task version and card task-version meanings are unchanged.
 - [ ] Make Task 2 version/config nodes GREEN.
+- [ ] Prove the migrated current task/card/geometry digests differ from the
+  immutable attempt-02 provenance and classify it stale without invoking the
+  T152 CLI loader.
 - [ ] Run state/reset/release tests to prove legacy classification still works
   and formal runtime build is blocked.
 
@@ -919,7 +1006,9 @@ python -m pytest -q \
   tests/test_press_button_mechanism.py \
   tests/test_press_button_task_card_contract.py
 # Before migration: version/config nodes are RED.
-# After migration: all selected nodes pass.
+# After migration: all selected schema/version/digest nodes pass and attempt-02
+# is proven stale by digest comparison. The T152 loader/orchestration exact
+# refresh-blocker nodes remain assertion RED until Task 9.
 
 python -m pytest --collect-only -q tests/test_press_button_mechanism.py
 # Expected: no collection/import/Isaac error.
@@ -929,16 +1018,18 @@ python -m pytest --collect-only -q tests/test_press_button_mechanism.py
 
 Stop if task card and config versions diverge, if a legacy path can construct a
 formal stage, if a formal geometry default remains, if task success/reset/action
-semantics change, or if attempt-02 is still accepted as current.
+semantics change, if schema/static geometry can grant benchmark cap eligibility,
+or if the migrated digests do not classify attempt-02 as stale.
 
 **Commit**
 
 `feat(g1): migrate PressButton mechanism 1.1`
 
 Before commit run geometry-contract, mechanism, and actual collected task-card
-contract files. After commit rerun them and explicitly assert the freshness
-blocker against attempt-02. Task 6 depends on Task 4; Task 7 depends on this
-versioned config. Isaac Sim is not allowed.
+contract files. After commit rerun them, prove old/current digest inequality,
+and confirm the T152 loader/orchestration refresh-blocker nodes remain RED for
+Task 9. Task 6 depends on Task 4; Task 7 depends on this versioned config. Isaac
+Sim is not allowed.
 
 ## Task 7: Share the parsed geometry object with the USD stage builder
 
@@ -1223,6 +1314,12 @@ The report/manifest records the non-empty explanation and historical evidence
 path, returns exit code 1, and performs one close after blocker evidence is
 durably written. It does not edit, copy, or rehash attempt-02.
 
+Task 9 is the first checkpoint at which the complete freshness behavior becomes
+GREEN: evidence loading and checksum validation, candidate-hash recomputation,
+all five current-input digest families, pre-factory exact blocker emission, and
+report/manifest/exit/unique-close propagation. Task 6 supplies the stale digest
+fact only; it cannot satisfy these orchestration contracts.
+
 Extend new C2a candidate/report/manifest provenance to carry
 `task_card_sha256` and `geometry_sha256`. Add the task-card path to the static
 qualification CLI and `C2ARealSceneFactory` input so the separately approved
@@ -1451,154 +1548,149 @@ allowed.
 
 **Files**
 
-- Modify: `specs/001-benchmark-reconstruction/tasks.md` only after every gate
-  below passes, changing T152 from `[ ]` to `[x]`.
+- Modify: `specs/001-benchmark-reconstruction/tasks.md` only after every
+  pre-projection check passes, changing T152 from `[ ]` to `[x]`.
 - Modify: `specs/001-benchmark-reconstruction/g1-contact-exclusion-t152-implementation-plan.md`
-  only to record the implementation checkpoint and final commit reference.
-- Produce a G0 repository-integrity evidence directory using the existing G0
-  script; this is repository evidence, not runtime/physical evidence.
+  in the same projection commit to record only `E_impl`, the already-existing
+  parent implementation SHA.
+- Produce final G0 repository-integrity evidence at projection commit `P`; this
+  is repository evidence, not runtime/physical evidence.
 
-**Verification order**
+**Commit identities and no-self-reference rule**
 
-- [ ] 1. Geometry schema focused:
+- `E_impl` is the last production implementation commit after Tasks 1–10.
+- Run the complete pre-projection verification suite at clean `E_impl`.
+- After it passes, edit only `tasks.md` and this plan, record the literal
+  already-known `E_impl`, and create the one projection/status commit `P` with
+  message `docs(g1): complete T152 geometry integration`.
+- Do not write `P`'s SHA into either tracked file. Define final `E2=P` only after
+  commit creation with `FINAL_E2=$(git rev-parse HEAD)`.
+- Verify `P^ == E_impl`, rerun the complete suite at `P`, and create G0 evidence
+  bound to `P`.
+- After `P`, no tracked file may change. Any tracked change invalidates final
+  verification/freshness and requires a new reviewed projection commit.
 
-  ```bash
+**Reusable verification suite**
+
+The function below is executed once at `E_impl` and again at `P`. Its 12
+ordered checks are: geometry schema, analytic geometry, mechanism/task card,
+T152, affected runtime/safety, exact hard limit, original 748 GREEN, all current
+non-future GREEN, intentional future-RED 125, full collection, deprecated/import
+checks, and detached clean-checkout.
+
+```bash
+run_t152_verification() {
+  VERIFY_COMMIT=$1
+  VERIFY_LABEL=$2
+  test "$(git rev-parse HEAD)" = "$VERIFY_COMMIT"
+  test -z "$(git status --porcelain)"
+
   python -m pytest -q tests/test_press_button_geometry_contract.py
-  # Expected: all pass.
-  ```
-
-- [ ] 2. Analytic geometry focused:
-
-  ```bash
   python -m pytest -q tests/test_g1_contact_exclusion_geometry.py
-  # Expected: all pass, including exact equality/tangent/degenerate cases.
-  ```
-
-- [ ] 3. Mechanism focused:
-
-  ```bash
   python -m pytest -q \
     tests/test_press_button_mechanism.py \
     tests/test_press_button_task_card_contract.py
-  # Expected: all pass.
-  ```
-
-- [ ] 4. Complete T152 file:
-
-  ```bash
   python -m pytest -q tests/test_g1_pose_conditioned_tracking_cli.py
-  # Expected: all pass; no expected RED remains in this file.
-  ```
-
-- [ ] 5. Runner/kernel/static-pose/safety related files:
-
-  ```bash
   python -m pytest -q \
     tests/test_g1_tracking_envelope.py \
     tests/test_g1_press_button_runner_evidence.py \
     tests/test_g1_static_pose_runtime_cli.py \
     tests/test_g1_static_pose_qualification.py \
     tests/test_fr3_runtime_safety.py
-  # Expected: all non-intentional nodes pass.
-  ```
-
-- [ ] 6. Exact hard limit:
-
-  ```bash
   python -m pytest -q \
     tests/test_fr3_runtime_safety.py::test_observed_public_action_displacement_equal_to_exact_hard_limit_passes \
     tests/test_fr3_runtime_safety.py::test_nextafter_above_exact_observed_hard_limit_aborts_without_epsilon \
     tests/test_fr3_runtime_safety.py::test_observed_hard_limit_comparison_source_has_no_epsilon_or_isclose \
     tests/test_fr3_runtime_safety.py::test_physical_safety_config_requires_exact_observed_hard_limit
-  # Expected: 4 passed; exact value remains 0.0005 m.
-  ```
-
-- [ ] 7. Original 748 GREEN node-ID preservation:
-
-  ```bash
   python tests/run_g1_node_inventory.py \
     --inventory tests/fixtures/g1_t152_baseline_inventory.json \
     --selection original_green --expect-pass 748
-  # Expected: the exact original 748 node IDs pass; zero drift/error/skip.
-  ```
-
-- [ ] 8. Intentional future-RED preservation:
-
-  ```bash
-  mapfile -t FUTURE_RED < configs/repository/intentional-future-red-nodeids.txt
-  python -m pytest -q "${FUTURE_RED[@]}" --junitxml=/tmp/g1-future-red-final.xml
-  # Expected: exactly the same 125 assertion failures and classifications:
-  # C2 78, C3 29, freshness 10, Task 9 8; no pass/error/skip.
-  ```
-
-- [ ] 9. Full collection and expected-outcome partition:
-
-  ```bash
+  python tests/run_g1_node_inventory.py \
+    --inventory tests/fixtures/g1_t152_baseline_inventory.json \
+    --selection all_non_future_red --expect-outcome pass
+  python tests/run_g1_node_inventory.py \
+    --inventory tests/fixtures/g1_t152_baseline_inventory.json \
+    --selection intentional_future_red --expect-fail 125 \
+    --expect-classification C2=78 --expect-classification C3=29 \
+    --expect-classification freshness=10 --expect-classification task9=8
   python -m pytest --collect-only -q
-  # Expected: collection succeeds; every node belongs to GREEN, approved future
-  # RED, or documented new GREEN. No duplicate or unclassified node exists.
-  ```
-
-- [ ] 10. Deprecated API scan:
-
-  ```bash
   python scripts/check_isaacsim6_imports.py --deprecated-as-error
-  # Expected: 0 errors, 0 warnings.
-  ```
-
-- [ ] 11. Import-safe CLI help:
-
-  ```bash
   python scripts/run_g1_tracking_envelope.py --help
   python scripts/run_g1_static_pose_qualification.py --help
-  # Expected: exit 0 and no Isaac application startup.
-  ```
 
-- [ ] 12. Detached clean-checkout replay:
-
-  ```bash
-  E2=$(git rev-parse HEAD)
-  CLEAN_DIR=$(mktemp -d /tmp/g1-t152-clean-XXXXXX)
-  git archive "$E2" | tar -x -C "$CLEAN_DIR"
-  (cd "$CLEAN_DIR" && python -m pytest -q tests/test_press_button_geometry_contract.py \
+  CLEAN_DIR=$(mktemp -d "/tmp/g1-t152-${VERIFY_LABEL}-XXXXXX")
+  git archive "$VERIFY_COMMIT" | tar -x -C "$CLEAN_DIR"
+  (cd "$CLEAN_DIR" && python -m pytest -q \
+    tests/test_press_button_geometry_contract.py \
     tests/test_g1_contact_exclusion_geometry.py \
     tests/test_press_button_mechanism.py \
+    tests/test_press_button_task_card_contract.py \
     tests/test_g1_pose_conditioned_tracking_cli.py)
-  # Expected: all pass from tracked files only.
-  ```
+}
+```
 
-- [ ] 13. Final G0 repository-integrity evidence/checksums:
+Expected at both commits: all focused/current GREEN nodes pass; the exact
+original 748 remain GREEN; exactly 125 intentional future-REDs retain the
+78/29/10/8 classifications with no unexpected pass/error/skip; all collection
+and import/help checks succeed; exact hard limit remains `0.0005`; and the clean
+archive passes from tracked files only. No command launches Isaac Sim.
+
+**Steps**
+
+- [ ] Bind `E_IMPL=$(git rev-parse HEAD)` after Task 10, verify the worktree is
+  clean, and run `run_t152_verification "$E_IMPL" pre-projection`.
+- [ ] After the suite passes, change only T152 to `[x]` in `tasks.md`; leave T151
+  and T070 `[ ]` and attempt-04 prohibited.
+- [ ] Record the literal `E_impl` SHA in this plan without attempting to record
+  the not-yet-created projection SHA.
+- [ ] Run `git diff --check`, stage only the two Markdown files, verify their
+  diff, and create the unique projection commit:
 
   ```bash
-  E2=$(git rev-parse HEAD)
-  E2_SHORT=${E2:0:12}
-  python scripts/check_clean_checkout.py \
-    --output "outputs/evidence/G0/t152-geometry-${E2_SHORT}"
-  python scripts/review_gate.py --gate G0 \
-    --evidence "outputs/evidence/G0/t152-geometry-${E2_SHORT}/manifest.json"
-  (cd "outputs/evidence/G0/t152-geometry-${E2_SHORT}" && sha256sum -c checksums.sha256)
-  # Expected: clean-checkout/G0 review passes and every checksum is OK.
+  git add specs/001-benchmark-reconstruction/tasks.md \
+    specs/001-benchmark-reconstruction/g1-contact-exclusion-t152-implementation-plan.md
+  git diff --cached --check
+  git commit -m "docs(g1): complete T152 geometry integration"
   ```
 
-Only after all 13 checks pass may T152 become `[x]`. T151 and T070 remain `[ ]`,
-and attempt-04 remains prohibited. Commit the task-status/documentation change,
-then rerun current-input/freshness tests because the final task-status commit
-changes the repository commit bound into later evidence.
+- [ ] Dynamically bind and verify final E2/P, then rerun the complete suite:
+
+  ```bash
+  FINAL_E2=$(git rev-parse HEAD)
+  test "$(git rev-parse "${FINAL_E2}^")" = "$E_IMPL"
+  run_t152_verification "$FINAL_E2" final-projection
+  ```
+
+- [ ] Produce final G0 evidence bound only to `FINAL_E2=P`:
+
+  ```bash
+  FINAL_E2_SHORT=${FINAL_E2:0:12}
+  G0_OUTPUT="outputs/evidence/G0/t152-geometry-${FINAL_E2_SHORT}"
+  test ! -e "$G0_OUTPUT"
+  python scripts/check_clean_checkout.py --output "$G0_OUTPUT"
+  python scripts/review_gate.py --gate G0 \
+    --evidence "$G0_OUTPUT/manifest.json"
+  (cd "$G0_OUTPUT" && sha256sum -c checksums.sha256)
+  test -z "$(git status --porcelain --untracked-files=no)"
+  ```
+
+- [ ] Freeze `FINAL_E2=P`: do not modify any tracked file after the final suite
+  and G0 evidence. A separately approved fresh C2a must bind this SHA, not
+  `E_impl`.
 
 **Stop conditions**
 
-Stop on any node-ID or classification drift, unexpected pass/error/skip,
+Stop on any node-ID/classification drift, unexpected pass/error/skip,
 hard-limit/clearance/matrix/truth change, deprecated diagnostic, help-time Isaac
-startup, dirty archive dependency, G0 checksum failure, or pressure to advance
-T151/T070/attempt-04.
+startup, dirty archive dependency, projection parent mismatch, tracked change
+after `P`, G0 checksum failure, or pressure to advance T151/T070/attempt-04.
 
 **Commit**
 
 `docs(g1): complete T152 geometry integration`
 
-Before commit, all 13 checks pass at the implementation commit. After commit,
-rerun Tasks 9 freshness tests, T152, hard-limit, inventory, deprecated scan,
-clean archive, and regenerate G0 evidence bound to the final E2 SHA. Task 11
+This is the sole projection/status commit `P` and final `E2`. Its parent is
+`E_impl`; tracked files contain only the parent implementation SHA. Task 11
 depends on Tasks 1–10. Isaac Sim is not allowed.
 
 ## Task 12: Prepare the separately approved fresh C2a refresh; do not execute it
@@ -1606,37 +1698,39 @@ depends on Tasks 1–10. Isaac Sim is not allowed.
 **Files**
 
 - No file changes are required.
-- Read only: final E2 commit, the C2a script/configs, and the future output parent.
+- Read only: final `E2=P` commit, the C2a script/configs, and the future output
+  parent.
 
 This task prepares a review card only. It does not run the command, create the
 directory, accept an attempt number without approval, or assume a selected pose.
 
 **Preparation checklist**
 
-- [ ] Bind `E2=$(git rev-parse HEAD)` only after Task 11's final clean commit and
-  all verification replays.
+- [ ] Bind `FINAL_E2=$(git rev-parse HEAD)` only after Task 11's projection
+  commit, final verification replay, and G0 review.
 - [ ] Obtain a separate user authorization containing the one permitted attempt
   ID and exact output path.
-- [ ] Verify worktree clean and local/tracking/live-origin/PR heads equal E2.
+- [ ] Verify worktree clean and local/tracking/live-origin/PR heads equal
+  `FINAL_E2=P`.
 - [ ] Verify Draft PR #2 remains OPEN, Draft, base `main`.
 - [ ] Verify the approved output directory does not exist.
 - [ ] Verify prior C2a evidence and checksums remain immutable.
-- [ ] Record driver `550.144.03 / UNVALIDATED`, Isaac Sim version, CPU Physics,
-  MBP disabled, GPU dynamics disabled, headless mode, seed 1701, and EULA
-  authorization.
+- [ ] Record driver `550.144.03 / UNVALIDATED`, Isaac Sim version,
+  `physics_device=cpu`, `broadphase_type=MBP`, GPU dynamics disabled, headless
+  mode, seed 1701, and EULA authorization.
 - [ ] Do not preset the selected pose to `task-ready-z-0p55`; selection must come
   from the new evidence.
 
 **Prepared command — forbidden until separately authorized**
 
 ```bash
-E2=$(git rev-parse HEAD)
-E2_SHORT=${E2:0:12}
+FINAL_E2=$(git rev-parse HEAD)
+FINAL_E2_SHORT=${FINAL_E2:0:12}
 : "${ATTEMPT_ID:?set the exact separately approved attempt ID}"
 OMNI_KIT_ACCEPT_EULA=YES \
 /mnt/data/home/lss/miniconda3/envs/isaac6/bin/python \
 scripts/run_g1_static_pose_qualification.py \
-  --output "outputs/evidence/G1/c2a-static-preliminary-${E2_SHORT}-attempt-${ATTEMPT_ID}" \
+  --output "outputs/evidence/G1/c2a-static-preliminary-${FINAL_E2_SHORT}-attempt-${ATTEMPT_ID}" \
   --config configs/tasks/press_button_physical.yaml \
   --task-card configs/tasks/cards/press_button.v1.yaml \
   --robot-config configs/robots/fr3_press_button_safe.yaml \
@@ -1649,10 +1743,11 @@ any exit code. After the one process exits, stop. A later read-only review check
 `command.log`, `offline_candidates.jsonl`, `static_scenes.jsonl`,
 `readiness_samples.jsonl`, `report.json`, `manifest.json`, and
 `checksums.sha256`; runs `sha256sum -c checksums.sha256` from the output
-directory; verifies current E2/config/card/asset provenance; recomputes any
-selected candidate hash; reports truthful rejected candidates and actual counts;
-and verifies unique shutdown/exit consistency. That review also retains the
-preliminary/no-claim boundary.
+directory; verifies current `FINAL_E2=P`/config/card/asset provenance; recomputes
+any selected candidate hash; reports truthful rejected candidates and actual
+counts; verifies observed `physics_device=cpu`, `broadphase_type=MBP`, and GPU
+dynamics disabled; and verifies unique shutdown/exit consistency. That review
+also retains the preliminary/no-claim boundary.
 
 **Expected result and stop conditions**
 
@@ -1664,9 +1759,9 @@ the driver/physics policy differs, or an approval does not bind exactly one run.
 
 **Commit and dependency**
 
-No commit. Task 12 depends on final E2 from Task 11 and a new user authorization.
-Isaac Sim is explicitly forbidden during plan implementation and T152 GREEN; it
-is permitted only by that later one-run authorization.
+No commit. Task 12 depends on final `E2=P` from Task 11 and a new user
+authorization. Isaac Sim is explicitly forbidden during plan implementation and
+T152 GREEN; it is permitted only by that later one-run authorization.
 
 ## Commit and checkpoint map
 
@@ -1677,16 +1772,16 @@ GREEN/RED partition stated below.
 | Task | Commit | Focused command | Required checkpoint |
 |---|---|---|---|
 | 1 | `test(g1): freeze T152 red migration inventory` | `python -m pytest -q tests/test_g1_t152_red_migration_manifest.py` | 4 manifest tests pass; frozen T152 remains 84 RED + 4 GREEN |
-| 2 | `test(g1): replace spherical contact exclusion fixtures` | `python -m pytest -q tests/test_press_button_geometry_contract.py tests/test_press_button_mechanism.py tests/test_g1_pose_conditioned_tracking_cli.py` | schema/migrated behavior nodes assertion-RED; original four controls GREEN; no collection error |
+| 2 | `test(g1): replace spherical contact exclusion fixtures` | `python -m pytest -q tests/test_press_button_geometry_contract.py tests/test_g1_contact_exclusion_geometry.py tests/test_press_button_mechanism.py tests/test_press_button_task_card_contract.py tests/test_g1_pose_conditioned_tracking_cli.py` | schema/migrated/task-card nodes assertion-RED; two new fixture controls plus original four controls GREEN; no collection error |
 | 3 | `test(g1): define analytic contact exclusion contracts` | `python -m pytest -q tests/test_g1_contact_exclusion_geometry.py` | all behavior nodes assertion-RED; fixture checks GREEN |
 | 4 | `feat(g1): define PressButton geometry contract` | `python -m pytest -q tests/test_press_button_geometry_contract.py` | all schema/type/digest nodes GREEN; analytic nodes remain RED |
 | 5 | `feat(g1): validate continuous TCP clearance` | `python -m pytest -q tests/test_g1_contact_exclusion_geometry.py` | all analytic nodes GREEN |
-| 6 | `feat(g1): migrate PressButton mechanism 1.1` | `python -m pytest -q tests/test_press_button_geometry_contract.py tests/test_press_button_mechanism.py tests/test_press_button_task_card_contract.py` | all selected nodes GREEN; attempt-02 stale blocker GREEN |
+| 6 | `feat(g1): migrate PressButton mechanism 1.1` | `python -m pytest -q tests/test_press_button_geometry_contract.py tests/test_press_button_mechanism.py tests/test_press_button_task_card_contract.py` | schema/version/current-digest nodes GREEN and attempt-02 classified stale; complete CLI refresh-blocker nodes remain RED for Task 9 |
 | 7 | `refactor(g1): share declared geometry with USD stage` | `python -m pytest -q tests/test_press_button_mechanism.py -k 'stage or geometry or version or legacy'` | exact recording-adapter calls and shared-object tests GREEN |
 | 8 | `feat(g1): derive pose-conditioned exclusion routes` | `python -m pytest -q tests/test_g1_pose_conditioned_tracking_cli.py -k 'route or motif or scalar_schedule or float64'` | all route/motif-owned nodes GREEN; factory remains untouched on invalid route |
 | 9 | `feat(g1): verify current C2a pose evidence` | `python -m pytest -q tests/test_g1_pose_conditioned_tracking_cli.py -k 'c2a_evidence or selected_candidate or selected_pose or current_input or provenance'` | all loader/freshness nodes GREEN; attempt-02 rejected as historical |
 | 10 | `feat(g1): wire pose-conditioned multiclass CLI` | `python -m pytest -q tests/test_g1_pose_conditioned_tracking_cli.py` | complete file GREEN; no legacy real-main path |
-| 11 | `docs(g1): complete T152 geometry integration` | Task 11's full 13-step sequence | T152 `[x]`; T151/T070 `[ ]`; attempt-04 prohibited; final-E2 replay GREEN |
+| 11 | `docs(g1): complete T152 geometry integration` | complete suite at `E_impl`, projection commit `P`, complete suite and G0 at `P` | `P^=E_impl`, `E2=P`, T152 `[x]`, T151/T070 `[ ]`, attempt-04 prohibited, no tracked change after `P` |
 
 Tasks 2 and 3 are deliberately RED-only commits. No production change may be
 included with them. Tasks 4–10 may not modify approved RED assertions except the
@@ -1705,7 +1800,7 @@ one-to-one schema-specific migration already committed in Task 2.
 | 7. Fail-closed taxonomy | 2–10 | exact code and non-empty-message assertions at each boundary |
 | 8. RED fixture correction | 1–3 | one-to-one migration manifest and observed schema RED |
 | 9. Version migration/consumer synchronization | 6, 7, 9 | formal 1.1.0, state-only legacy, card/config/digest synchronization |
-| 10. Freshness/C2a invalidation | 6, 9, 11, 12 | attempt-02 historical; final-E2 fresh run separately gated |
+| 10. Freshness/C2a invalidation | 6, 9, 11, 12 | Task 6 proves stale digests, Task 9 propagates the blocker, and a fresh run is separately gated at final `E2=P` |
 | 11. Non-goals/fixed invariants | every task | matrix, limits, clearance, physics, truth, and task-state stop checks |
 | 12. Architecture conclusion/task state | 11, 12 | only T152 closes after GREEN; T151/T070 and attempt-04 stay blocked |
 
@@ -1869,8 +1964,9 @@ if any condition occurs:
   dependency.
 - [x] Every task explicitly forbids Isaac Sim; Task 12 prepares but does not run
   the separately gated command.
-- [x] Freshness ordering is schema/config migration → T152 GREEN → final clean E2
-  → separately approved fresh C2a → evidence review → T151 review → separately
-  approved attempt-04.
+- [x] Freshness ordering is schema/config migration → T152 GREEN at `E_impl` →
+  pre-projection verification → projection/final `E2` commit `P` → final
+  verification and G0 evidence at `P` → separately approved fresh C2a at `P` →
+  evidence review → T151 review → separately approved attempt-04.
 - [x] T150 remains `[x]`; T151, T152, and T070 remain `[ ]` while this plan is
   authored; attempt-04 remains `ATTEMPT_04_PROHIBITED`.
