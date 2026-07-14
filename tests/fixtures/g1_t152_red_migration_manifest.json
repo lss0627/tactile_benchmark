@@ -1,0 +1,93 @@
+{
+  "schema_version": "1.0.0",
+  "replacement_checkpoint": "TASK_2_PENDING",
+  "required_retained_behaviors": [
+    "caller_validity_flags_are_not_authoritative",
+    "continuous_segments_are_validated",
+    "current_inputs_are_authoritative",
+    "route_digest_mutation_is_detected",
+    "six_canonical_classes_are_complete"
+  ],
+  "mappings": [
+    {
+      "old_node_id": "tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_route_builder_derives_all_six_records_from_pose_geometry_and_current_inputs",
+      "replacement_node_ids": [
+        "tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_route_builder_derives_all_six_records_from_declared_solids"
+      ],
+      "retained_behavior": [
+        "caller_validity_flags_are_not_authoritative",
+        "continuous_segments_are_validated",
+        "current_inputs_are_authoritative",
+        "route_digest_mutation_is_detected",
+        "six_canonical_classes_are_complete"
+      ],
+      "replacement_reason": "The approved authority is a capped cylinder plus an OBB, not a single sphere."
+    },
+    {
+      "old_node_id": "tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_route_derivation_changes_digest_or_blocks_when_geometry_changes[selected_pose]",
+      "replacement_node_ids": [
+        "tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_declared_route_derivation_changes_digest_or_blocks[selected_pose]"
+      ],
+      "retained_behavior": [
+        "current_inputs_are_authoritative",
+        "route_digest_mutation_is_detected"
+      ],
+      "replacement_reason": "Selected-pose mutation remains bound to route derivation while declared solids replace the sphere placeholder."
+    },
+    {
+      "old_node_id": "tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_route_derivation_changes_digest_or_blocks_when_geometry_changes[task_geometry]",
+      "replacement_node_ids": [
+        "tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_declared_route_derivation_changes_digest_or_blocks[mechanism_root]",
+        "tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_declared_route_derivation_changes_digest_or_blocks[declared_solids]"
+      ],
+      "retained_behavior": [
+        "current_inputs_are_authoritative",
+        "route_digest_mutation_is_detected"
+      ],
+      "replacement_reason": "The former task-geometry mutation is split across the authoritative root transform and declared solid geometry."
+    },
+    {
+      "old_node_id": "tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_route_derivation_changes_digest_or_blocks_when_geometry_changes[workspace]",
+      "replacement_node_ids": [
+        "tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_declared_route_derivation_changes_digest_or_blocks[workspace]"
+      ],
+      "retained_behavior": [
+        "current_inputs_are_authoritative",
+        "route_digest_mutation_is_detected"
+      ],
+      "replacement_reason": "Workspace mutation remains authoritative and is checked alongside declared analytic solids."
+    },
+    {
+      "old_node_id": "tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_route_derivation_changes_digest_or_blocks_when_geometry_changes[contact_exclusion]",
+      "replacement_node_ids": [
+        "tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_declared_route_derivation_changes_digest_or_blocks[contact_exclusion_policy]"
+      ],
+      "retained_behavior": [
+        "current_inputs_are_authoritative",
+        "route_digest_mutation_is_detected"
+      ],
+      "replacement_reason": "Contact-exclusion mutation now targets the exact 5 mm declared policy rather than a sphere radius."
+    },
+    {
+      "old_node_id": "tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_route_derivation_ignores_caller_claimed_true_flags[workspace]",
+      "replacement_node_ids": [
+        "tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_declared_route_derivation_ignores_caller_true_flags[workspace]"
+      ],
+      "retained_behavior": [
+        "caller_validity_flags_are_not_authoritative"
+      ],
+      "replacement_reason": "A caller workspace-valid boolean remains non-authoritative under the shared analytic contract."
+    },
+    {
+      "old_node_id": "tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_route_derivation_ignores_caller_claimed_true_flags[contact_exclusion]",
+      "replacement_node_ids": [
+        "tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_declared_route_derivation_ignores_caller_true_flags[contact_exclusion]"
+      ],
+      "retained_behavior": [
+        "caller_validity_flags_are_not_authoritative",
+        "continuous_segments_are_validated"
+      ],
+      "replacement_reason": "A caller contact-exclusion-valid boolean cannot override continuous declared-solid validation."
+    }
+  ]
+}
