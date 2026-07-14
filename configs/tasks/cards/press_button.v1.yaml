@@ -8,7 +8,7 @@ status: candidate
 
 scene:
   task_config_path: configs/tasks/press_button_physical.yaml
-  mechanism_version: "1.0.1"
+  mechanism_version: "1.1.0"
   assets:
     - asset_id: isaacsim_franka_fr3_asset
       manifest: assets/asset_manifest.csv

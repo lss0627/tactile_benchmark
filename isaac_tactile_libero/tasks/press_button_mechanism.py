@@ -7,11 +7,24 @@ The pure-Python state contract is import-safe. Isaac/USD imports occur only in
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import hashlib
 from pathlib import Path
+import re
 from typing import Any, Callable, Mapping
 
 import numpy as np
 import yaml
+
+from isaac_tactile_libero.tasks.press_button_geometry import (
+    CONTACT_EXCLUSION_SCHEMA_INVALID,
+    PressButtonGeometryContract,
+    PressButtonGeometryContractError,
+    parse_press_button_geometry_contract,
+)
+
+
+FORMAL_MECHANISM_VERSION = "1.1.0"
+_LEGACY_MECHANISM_VERSION = re.compile(r"1\.0\.\d+")
 
 
 @dataclass(frozen=True)
@@ -37,6 +50,8 @@ class PressButtonMechanismConfig:
     return_damping_n_s_per_m: float = 2.0
     return_preload_n: float = 0.6
     base_position_m: tuple[float, float, float] = (0.55, 0.0, 0.47)
+    base_orientation_xyzw: tuple[float, float, float, float] | None = None
+    geometry_contract: PressButtonGeometryContract | None = None
 
     def __post_init__(self) -> None:
         numeric = np.asarray(
@@ -54,6 +69,7 @@ class PressButtonMechanismConfig:
                 self.return_preload_n,
                 *self.joint_axis,
                 *self.base_position_m,
+                *(self.base_orientation_xyzw or ()),
             ],
             dtype=float,
         )
@@ -80,6 +96,27 @@ class PressButtonMechanismConfig:
             raise ValueError("return spring stiffness/damping are invalid")
         if self.return_preload_n < self.gravity_load_along_travel_n - 1.0e-9:
             raise ValueError("return_preload_n must balance gravity along the button travel axis")
+        if self.mechanism_version == FORMAL_MECHANISM_VERSION:
+            if self.base_orientation_xyzw is None or self.geometry_contract is None:
+                raise PressButtonGeometryContractError(
+                    CONTACT_EXCLUSION_SCHEMA_INVALID,
+                    "formal mechanism 1.1.0 requires root orientation and parsed geometry",
+                )
+            if self.geometry_contract.mechanism_version != FORMAL_MECHANISM_VERSION:
+                raise PressButtonGeometryContractError(
+                    CONTACT_EXCLUSION_SCHEMA_INVALID,
+                    "formal mechanism and geometry contract versions differ",
+                )
+        elif not _LEGACY_MECHANISM_VERSION.fullmatch(self.mechanism_version):
+            raise PressButtonGeometryContractError(
+                CONTACT_EXCLUSION_SCHEMA_INVALID,
+                f"unsupported mechanism_version={self.mechanism_version!r}",
+            )
+        elif self.geometry_contract is not None or self.base_orientation_xyzw is not None:
+            raise PressButtonGeometryContractError(
+                CONTACT_EXCLUSION_SCHEMA_INVALID,
+                "legacy mechanism 1.0.x is state-only and cannot carry formal geometry",
+            )
 
     @property
     def gravity_load_along_travel_n(self) -> float:
@@ -91,8 +128,70 @@ class PressButtonMechanismConfig:
     def drive_target_position_m(self) -> float:
         return self.rest_position_m - self.return_preload_n / self.return_stiffness_n_per_m
 
+    @property
+    def geometry_contract_available(self) -> bool:
+        return self.geometry_contract is not None
+
+    @property
+    def tcp_route_exclusion_qualified(self) -> bool:
+        return False
+
+    @property
+    def benchmark_cap_eligible(self) -> bool:
+        return False
+
+    @property
+    def runtime_stage_build_eligible(self) -> bool:
+        return self.mechanism_version == FORMAL_MECHANISM_VERSION and self.geometry_contract is not None
+
+    @property
+    def route_validation_input_eligible(self) -> bool:
+        return self.runtime_stage_build_eligible
+
     @classmethod
-    def from_mapping(cls, data: Mapping[str, Any]) -> "PressButtonMechanismConfig":
+    def from_mapping(
+        cls,
+        data: Mapping[str, Any],
+        *,
+        task_config_sha256: str | None = None,
+    ) -> "PressButtonMechanismConfig":
+        mechanism_version = str(data.get("mechanism_version", "1.0.0"))
+        geometry_contract: PressButtonGeometryContract | None = None
+        base_orientation_xyzw: tuple[float, float, float, float] | None = None
+        base_position_m: tuple[float, float, float]
+        if mechanism_version == FORMAL_MECHANISM_VERSION:
+            formal_mapping = {
+                key: data[key]
+                for key in (
+                    "mechanism_version",
+                    "base_position_m",
+                    "base_orientation_xyzw",
+                    "geometry",
+                    "contact_exclusion",
+                )
+                if key in data
+            }
+            if task_config_sha256 is None:
+                raise PressButtonGeometryContractError(
+                    CONTACT_EXCLUSION_SCHEMA_INVALID,
+                    "formal mechanism parsing requires the tracked task config SHA-256",
+                )
+            geometry_contract = parse_press_button_geometry_contract(
+                formal_mapping,
+                joint_axis=data["joint_axis"],
+                task_config_sha256=task_config_sha256,
+            )
+            base_position_m = geometry_contract.root_pose.position_m
+            base_orientation_xyzw = geometry_contract.root_pose.orientation_xyzw
+        elif _LEGACY_MECHANISM_VERSION.fullmatch(mechanism_version):
+            base_position_m = tuple(
+                float(item) for item in data.get("base_position_m", (0.55, 0.0, 0.47))
+            )
+        else:
+            raise PressButtonGeometryContractError(
+                CONTACT_EXCLUSION_SCHEMA_INVALID,
+                f"unsupported mechanism_version={mechanism_version!r}",
+            )
         return cls(
             joint_name=str(data["joint_name"]),
             rest_position_m=float(data["rest_position_m"]),
@@ -103,7 +202,7 @@ class PressButtonMechanismConfig:
             reset_tolerance_m=float(data["reset_tolerance_m"]),
             reset_noise_m=float(data.get("reset_noise_m", 0.0)),
             collision_enabled=bool(data.get("collision_enabled", False)),
-            mechanism_version=str(data.get("mechanism_version", "1.0.0")),
+            mechanism_version=mechanism_version,
             root_prim_path=str(data.get("root_prim_path", "/World/PressButton")),
             housing_prim_path=str(data.get("housing_prim_path", "/World/PressButton/Housing")),
             button_prim_path=str(data.get("button_prim_path", "/World/PressButton/Button")),
@@ -116,7 +215,9 @@ class PressButtonMechanismConfig:
             return_stiffness_n_per_m=float(data.get("return_stiffness_n_per_m", 120.0)),
             return_damping_n_s_per_m=float(data.get("return_damping_n_s_per_m", 2.0)),
             return_preload_n=float(data.get("return_preload_n", 0.6)),
-            base_position_m=tuple(float(item) for item in data.get("base_position_m", (0.55, 0.0, 0.47))),
+            base_position_m=base_position_m,
+            base_orientation_xyzw=base_orientation_xyzw,
+            geometry_contract=geometry_contract,
         )
 
 
@@ -164,6 +265,10 @@ class PressButtonMechanism:
             "return_preload_n": self.config.return_preload_n,
             "drive_target_position_m": self.config.drive_target_position_m,
             "collision_enabled": self.config.collision_enabled,
+            "geometry_contract_available": self.config.geometry_contract_available,
+            "runtime_stage_build_eligible": self.config.runtime_stage_build_eligible,
+            "route_validation_input_eligible": self.config.route_validation_input_eligible,
+            "benchmark_cap_eligible": False,
             "movable": True,
             "body0_path": self.config.housing_prim_path,
             "body1_path": self.config.button_prim_path,
@@ -209,6 +314,12 @@ class PressButtonMechanism:
 
     def build_stage(self, stage: Any) -> dict[str, Any]:
         """Create a collision-enabled dynamic button constrained by a prismatic joint."""
+
+        if not self.config.runtime_stage_build_eligible:
+            raise PressButtonGeometryContractError(
+                "G1_PRESS_BUTTON_FORMAL_GEOMETRY_REQUIRED",
+                "formal PressButton stage construction requires mechanism 1.1.0 geometry",
+            )
 
         from pxr import Gf, Sdf, UsdGeom, UsdPhysics  # type: ignore
 
@@ -277,8 +388,12 @@ class PressButtonMechanism:
 
 
 def load_press_button_mechanism_config(path: str | Path) -> PressButtonMechanismConfig:
-    with Path(path).open("r", encoding="utf-8") as stream:
-        payload = yaml.safe_load(stream) or {}
+    config_path = Path(path)
+    raw_config = config_path.read_bytes()
+    payload = yaml.safe_load(raw_config.decode("utf-8")) or {}
     if not isinstance(payload, Mapping) or not isinstance(payload.get("mechanism"), Mapping):
         raise ValueError(f"{path} must contain a mechanism mapping")
-    return PressButtonMechanismConfig.from_mapping(payload["mechanism"])
+    return PressButtonMechanismConfig.from_mapping(
+        payload["mechanism"],
+        task_config_sha256=hashlib.sha256(raw_config).hexdigest(),
+    )

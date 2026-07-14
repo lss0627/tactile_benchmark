@@ -18,7 +18,7 @@ runtime:
   physics_dt_s: 0.016666666666666666
 
 mechanism:
-  mechanism_version: "1.0.1"
+  mechanism_version: "1.1.0"
   root_prim_path: /World/PressButton
   housing_prim_path: /World/PressButton/Housing
   button_prim_path: /World/PressButton/Button
@@ -28,6 +28,30 @@ mechanism:
   joint_type: prismatic
   joint_axis: [0.0, 0.0, -1.0]
   base_position_m: [0.55, 0.0, 0.47]
+  base_orientation_xyzw: [0.0, 0.0, 0.0, 1.0]
+  geometry:
+    frame: mechanism_root
+    units: m
+    button:
+      primitive: capped_cylinder
+      center_local_m: [0.0, 0.0, 0.0]
+      axis_token: Z
+      radius_m: 0.035
+      half_height_m: 0.009
+    housing:
+      primitive: oriented_box
+      center_local_m: [0.0, 0.0, -0.025]
+      half_extents_m: [0.045, 0.045, 0.010]
+  contact_exclusion:
+    schema_version: "1.0.0"
+    subject: fr3_hand_tcp_point
+    obstacle_ids:
+      - button
+      - housing
+    required_clearance_m: 0.005
+    distance_metric: conservative_closed_solid_clearance_v1
+    route_validation: continuous_line_segment
+    boundary_policy: equality_allowed
   rest_position_m: 0.0
   lower_limit_m: 0.0
   travel_limit_m: 0.012
