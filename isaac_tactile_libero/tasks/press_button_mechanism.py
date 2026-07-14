@@ -6,11 +6,11 @@ The pure-Python state contract is import-safe. Isaac/USD imports occur only in
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import hashlib
 from pathlib import Path
 import re
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Protocol
 
 import numpy as np
 import yaml
@@ -25,6 +25,55 @@ from isaac_tactile_libero.tasks.press_button_geometry import (
 
 FORMAL_MECHANISM_VERSION = "1.1.0"
 _LEGACY_MECHANISM_VERSION = re.compile(r"1\.0\.\d+")
+
+
+class PressButtonDeclaredGeometryAuthoringAdapter(Protocol):
+    """Geometry-only authoring boundary for the declared PressButton solids."""
+
+    def author_root(
+        self,
+        *,
+        root_path: str,
+        position_m: tuple[float, float, float],
+        orientation_xyzw: tuple[float, float, float, float],
+    ) -> None: ...
+
+    def author_oriented_box(
+        self,
+        *,
+        path: str,
+        center_local_m: tuple[float, float, float],
+        half_extents_m: tuple[float, float, float],
+    ) -> None: ...
+
+    def author_capped_cylinder(
+        self,
+        *,
+        path: str,
+        center_local_m: tuple[float, float, float],
+        axis_token: str,
+        radius_m: float,
+        height_m: float,
+    ) -> None: ...
+
+
+@dataclass(frozen=True)
+class PressButtonGeometryAuthoringReceipt:
+    """No-claim receipt for declared geometry transfer only."""
+
+    schema_version: str = field(
+        default="g1.press_button.geometry_authoring_receipt.v1", init=False
+    )
+    mechanism_version: str
+    contract: PressButtonGeometryContract
+    geometry_sha256: str
+    world_from_mechanism_root_sha256: str
+    root_prim_path: str
+    housing_prim_path: str
+    button_prim_path: str
+    geometry_only: bool = field(default=True, init=False)
+    complete_stage: bool = field(default=False, init=False)
+    benchmark_cap_eligible: bool = field(default=False, init=False)
 
 
 @dataclass(frozen=True)
@@ -311,6 +360,54 @@ class PressButtonMechanism:
         if self._joint_position_reader is None:
             raise RuntimeError("no observed button joint-position reader is configured")
         return self.observe_joint_position(self._joint_position_reader())
+
+    def author_declared_geometry(
+        self,
+        *,
+        authoring_adapter: PressButtonDeclaredGeometryAuthoringAdapter,
+    ) -> PressButtonGeometryAuthoringReceipt:
+        """Transfer the parsed root and solids without claiming a complete stage."""
+
+        cfg = self.config
+        contract = cfg.geometry_contract
+        if (
+            cfg.mechanism_version != FORMAL_MECHANISM_VERSION
+            or not cfg.geometry_contract_available
+            or contract is None
+        ):
+            raise PressButtonGeometryContractError(
+                "G1_PRESS_BUTTON_FORMAL_GEOMETRY_REQUIRED",
+                "declared PressButton geometry authoring requires mechanism 1.1.0 geometry",
+            )
+
+        authoring_adapter.author_root(
+            root_path=cfg.root_prim_path,
+            position_m=contract.root_pose.position_m,
+            orientation_xyzw=contract.root_pose.orientation_xyzw,
+        )
+        authoring_adapter.author_oriented_box(
+            path=cfg.housing_prim_path,
+            center_local_m=contract.housing.center_local_m,
+            half_extents_m=contract.housing.half_extents_m,
+        )
+        authoring_adapter.author_capped_cylinder(
+            path=cfg.button_prim_path,
+            center_local_m=contract.button.center_local_m,
+            axis_token=contract.button.axis_token,
+            radius_m=contract.button.radius_m,
+            height_m=2.0 * contract.button.half_height_m,
+        )
+        return PressButtonGeometryAuthoringReceipt(
+            mechanism_version=cfg.mechanism_version,
+            contract=contract,
+            geometry_sha256=contract.geometry_sha256,
+            world_from_mechanism_root_sha256=(
+                contract.world_from_mechanism_root_sha256
+            ),
+            root_prim_path=cfg.root_prim_path,
+            housing_prim_path=cfg.housing_prim_path,
+            button_prim_path=cfg.button_prim_path,
+        )
 
     def build_stage(self, stage: Any) -> dict[str, Any]:
         """Create a collision-enabled dynamic button constrained by a prismatic joint."""
