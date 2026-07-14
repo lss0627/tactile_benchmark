@@ -403,11 +403,16 @@ def test_clearance_exactly_0p005_allows_expanded_boundary_touch() -> None:
 
 
 def test_clearance_strictly_below_0p005_fails_without_tolerance() -> None:
-    actual_clearance = math.nextafter(REQUIRED_CLEARANCE_M, 0.0)
+    expanded_boundary_y = 0.01 + REQUIRED_CLEARANCE_M
+    strictly_inside_y = math.nextafter(expanded_boundary_y, -math.inf)
+    actual_clearance = strictly_inside_y - 0.01
+
+    assert strictly_inside_y < expanded_boundary_y
+    assert strictly_inside_y.hex() != expanded_boundary_y.hex()
     assert actual_clearance < REQUIRED_CLEARANCE_M
     result = _obb(
-        start_world_m=(-0.1, 0.01 + actual_clearance, 0.0),
-        end_world_m=(0.1, 0.01 + actual_clearance, 0.0),
+        start_world_m=(-0.1, strictly_inside_y, 0.0),
+        end_world_m=(0.1, strictly_inside_y, 0.0),
     )
     _assert_exact_blocker(result, "G1_C1_CONTACT_EXCLUSION_ROUTE_INVALID")
 
