@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from copy import deepcopy
+from dataclasses import replace
 from decimal import Decimal
 import hashlib
 import importlib.util
@@ -14,7 +15,10 @@ import textwrap
 from typing import Any, Callable, Mapping
 
 import pytest
+import yaml
 
+from isaac_tactile_libero.runtime import g1_contact_exclusion as g1_contact_exclusion_runtime
+from isaac_tactile_libero.runtime import g1_tracking as g1_tracking_runtime
 from isaac_tactile_libero.runtime.g1_tracking import (
     G1_TRAJECTORY_CLASS_IDS,
     G1ValidationError,
@@ -23,13 +27,23 @@ from isaac_tactile_libero.runtime.g1_tracking import (
     g1_trajectory_class_definitions,
     validate_g1_trajectory_routes,
 )
+from isaac_tactile_libero.tasks.press_button_geometry import (
+    PressButtonGeometryContract,
+)
+from isaac_tactile_libero.tasks.press_button_mechanism import (
+    load_press_button_mechanism_config,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER_PATH = ROOT / "scripts/run_g1_tracking_envelope.py"
+TASK_CONFIG_PATH = ROOT / "configs/tasks/press_button_physical.yaml"
+TASK_CARD_PATH = ROOT / "configs/tasks/cards/press_button.v1.yaml"
+ROBOT_CONFIG_PATH = ROOT / "configs/robots/fr3_press_button_safe.yaml"
 EXPECTED_POSE_ID = "task-ready-z-0p55"
 EXPECTED_POSE_SHA256 = "f23323bad3bfb29ee642ed74a13798e615a51b88516067f1c8c07911b4913db9"
 COMMANDS_M = (0.0, 0.00025, 0.00035, 0.00040, 0.00045)
+COMMAND_DECIMAL_STRINGS = ("0", "0.00025", "0.00035", "0.00040", "0.00045")
 ARM_NAMES = tuple(f"fr3_joint{index}" for index in range(1, 8))
 JOINT_NAMES = ARM_NAMES + ("fr3_finger_joint1", "fr3_finger_joint2")
 
@@ -61,6 +75,18 @@ def runner():
 def _capability(runner: Any, name: str) -> Callable[..., Any]:
     value = getattr(runner, name, None)
     assert callable(value), f"T152 real CLI missing callable integration capability: {name}"
+    return value
+
+
+def _task8_callable(owner: Any, name: str) -> Callable[..., Any]:
+    value = getattr(owner, name, None)
+    assert callable(value), f"missing approved Task 8 command-bound capability: {name}"
+    return value
+
+
+def _task8_value(owner: Any, name: str) -> Any:
+    value = getattr(owner, name, None)
+    assert value is not None, f"missing approved Task 8 command-bound authority: {name}"
     return value
 
 
@@ -266,6 +292,203 @@ def _trial_spec(class_id: str, command_m: float, scene_index: int = 0) -> dict[s
         "route_sha256": route["route_sha256"],
         "motif": _expected_motif(class_id, command_m),
     }
+
+
+def _parsed_press_button_geometry_contract() -> PressButtonGeometryContract:
+    config = load_press_button_mechanism_config(TASK_CONFIG_PATH)
+    contract = config.geometry_contract
+    assert isinstance(contract, PressButtonGeometryContract)
+    assert config.mechanism_version == "1.1.0"
+    assert config.geometry_contract_available is True
+    return contract
+
+
+def _task8_command_authority() -> tuple[tuple[float, ...], tuple[str, ...]]:
+    commands = tuple(_task8_value(g1_tracking_runtime, "G1_TRACKING_COMMANDS_M"))
+    decimal_strings = tuple(
+        _task8_value(g1_tracking_runtime, "G1_TRACKING_COMMAND_DECIMAL_STRINGS")
+    )
+    return commands, decimal_strings
+
+
+def _task8_task_route_geometry() -> dict[str, Any]:
+    build = _task8_callable(
+        g1_tracking_runtime, "g1_press_button_task_route_geometry"
+    )
+    value = build()
+    assert isinstance(value, Mapping)
+    return deepcopy(dict(value))
+
+
+def _task8_workspace_limits() -> dict[str, Any]:
+    payload = yaml.safe_load(ROBOT_CONFIG_PATH.read_text(encoding="utf-8"))
+    workspace = payload["workspace"]
+    return {
+        "frame": workspace["frame"],
+        "lower_world_m": list(workspace["min_m"]),
+        "upper_world_m": list(workspace["max_m"]),
+    }
+
+
+def _task8_current_input_digests(
+    contract: PressButtonGeometryContract,
+) -> dict[str, str]:
+    return {
+        "task_config_sha256": hashlib.sha256(TASK_CONFIG_PATH.read_bytes()).hexdigest(),
+        "task_card_sha256": hashlib.sha256(TASK_CARD_PATH.read_bytes()).hexdigest(),
+        "robot_config_sha256": hashlib.sha256(ROBOT_CONFIG_PATH.read_bytes()).hexdigest(),
+        "fr3_asset_sha256": _selected_candidate()["asset_sha256"],
+        "geometry_sha256": contract.geometry_sha256,
+    }
+
+
+def _task8_bundle_inputs() -> dict[str, Any]:
+    contract = _parsed_press_button_geometry_contract()
+    commands, _decimal_strings = _task8_command_authority()
+    return {
+        "selected_candidate": _selected_candidate(),
+        "selected_pose_sha256": EXPECTED_POSE_SHA256,
+        "class_definitions": g1_trajectory_class_definitions(),
+        "task_route_geometry": _task8_task_route_geometry(),
+        "command_matrix_m": commands,
+        "workspace_limits": _task8_workspace_limits(),
+        "geometry_contract": contract,
+        "current_input_digests": _task8_current_input_digests(contract),
+    }
+
+
+def _derive_task8_bundle() -> dict[str, Any]:
+    derive = _task8_callable(
+        g1_contact_exclusion_runtime, "derive_g1_pose_conditioned_routes"
+    )
+    value = derive(**_task8_bundle_inputs())
+    assert isinstance(value, Mapping)
+    return deepcopy(dict(value))
+
+
+def _expected_task8_motif(
+    bundle: Mapping[str, Any], class_id: str, command_decimal: str
+) -> dict[str, Any]:
+    task_geometry = bundle["task_route_geometry"]
+    start = bundle["selected_fk_position_world_m"]
+    approach = task_geometry["approach_world_m"]
+    press = task_geometry["press_world_m"]
+    retract = task_geometry["retract_world_m"]
+    if class_id in G1_TRAJECTORY_CLASS_IDS[:3]:
+        if class_id == G1_TRAJECTORY_CLASS_IDS[0]:
+            direction = [approach[index] - start[index] for index in range(3)]
+        elif class_id == G1_TRAJECTORY_CLASS_IDS[1]:
+            direction = list(task_geometry["press_axis_world"])
+        else:
+            direction = [retract[index] - approach[index] for index in range(3)]
+        base = build_g1_local_round_trip_motif(
+            command_m=command_decimal, direction_world=direction
+        )
+        schedule = []
+        command = Decimal(command_decimal)
+        for window_index in range(4):
+            for item in base["schedule"]:
+                local_index = item["motif_action_index"]
+                schedule.append(
+                    {
+                        **item,
+                        "measurement_action_index": window_index * 64 + local_index,
+                        "window_index": window_index,
+                        "scalar_action": _decimal_text(
+                            command * item["signed_multiplier"]
+                        ),
+                    }
+                )
+        return {**base, "actions": 256, "schedule": schedule}
+    if class_id == G1_TRAJECTORY_CLASS_IDS[3]:
+        vector = [approach[index] - start[index] for index in range(3)]
+    elif class_id == G1_TRAJECTORY_CLASS_IDS[4]:
+        vector = [press[index] - approach[index] for index in range(3)]
+    else:
+        vector = [retract[index] - approach[index] for index in range(3)]
+    segment_length = math.sqrt(sum(component * component for component in vector))
+    motif = build_g1_phase_reflected_motif(
+        segment_length_m=str(segment_length),
+        command_m=command_decimal,
+        actions=256,
+    )
+    return {
+        **motif,
+        "schedule": [
+            {
+                **item,
+                "measurement_action_index": index,
+                "window_index": index // 64,
+                "motif_action_index": index,
+            }
+            for index, item in enumerate(motif["schedule"])
+        ],
+    }
+
+
+def _task8_class_route(bundle: Mapping[str, Any], class_id: str) -> dict[str, Any]:
+    return next(
+        item for item in bundle["class_routes"] if item["class_id"] == class_id
+    )
+
+
+def _task8_command_route(
+    bundle: Mapping[str, Any], class_id: str, command_decimal: str
+) -> dict[str, Any]:
+    class_route = _task8_class_route(bundle, class_id)
+    return next(
+        item
+        for item in class_route["command_routes"]
+        if item["command_decimal"] == command_decimal
+    )
+
+
+def _without_digest(record: Mapping[str, Any], digest_field: str) -> dict[str, Any]:
+    return {key: value for key, value in record.items() if key != digest_field}
+
+
+def _refresh_task8_bundle_digests(bundle: dict[str, Any]) -> None:
+    for class_route in bundle["class_routes"]:
+        for command_route in class_route["command_routes"]:
+            command_route["segment_sha256s"] = [
+                _canonical_sha256(segment)
+                for segment in command_route["ordered_continuous_segments_world_m"]
+            ]
+            command_route["route_sha256"] = _canonical_sha256(
+                _without_digest(command_route, "route_sha256")
+            )
+        class_route["class_route_sha256"] = _canonical_sha256(
+            _without_digest(class_route, "class_route_sha256")
+        )
+    bundle["bundle_sha256"] = _canonical_sha256(
+        _without_digest(bundle, "bundle_sha256")
+    )
+
+
+def _translate_task8_bundle_to_button(bundle: dict[str, Any]) -> None:
+    selected = deepcopy(bundle["selected_candidate"])
+    start = list(selected["fk_position_world_m"])
+    target = list(_parsed_press_button_geometry_contract().root_pose.position_m)
+    delta = [target[index] - start[index] for index in range(3)]
+    selected["fk_position_world_m"] = target
+    selected_sha256 = _canonical_sha256(selected)
+    bundle["selected_candidate"] = selected
+    bundle["selected_pose_sha256"] = selected_sha256
+    bundle["selected_fk_position_world_m"] = target
+    for class_route in bundle["class_routes"]:
+        for command_route in class_route["command_routes"]:
+            command_route["ordered_action_endpoints_world_m"] = [
+                [point[index] + delta[index] for index in range(3)]
+                for point in command_route["ordered_action_endpoints_world_m"]
+            ]
+            command_route["ordered_continuous_segments_world_m"] = [
+                [
+                    [endpoint[index] + delta[index] for index in range(3)]
+                    for endpoint in segment
+                ]
+                for segment in command_route["ordered_continuous_segments_world_m"]
+            ]
+    _refresh_task8_bundle_digests(bundle)
 
 
 class _CountingFactory:
@@ -491,29 +714,44 @@ def test_t152_pose_conditioned_plan_is_exact_90_trial_order_and_pose_bound(runne
 def test_t152_all_six_complete_routes_are_required_before_scene_acquisition(
     runner: Any, mutation: str
 ) -> None:
-    validate = _capability(runner, "validate_g1_pose_conditioned_routes")
-    routes = _route_fixture()
+    validate = _task8_callable(
+        g1_contact_exclusion_runtime, "validate_g1_pose_conditioned_routes"
+    )
+    inputs = _task8_bundle_inputs()
+    bundle = _derive_task8_bundle()
+    workspace_limits = deepcopy(inputs["workspace_limits"])
     if mutation == "missing":
-        routes.pop()
+        bundle["class_routes"].pop()
     elif mutation == "reordered":
-        routes[0], routes[1] = routes[1], routes[0]
+        bundle["class_routes"][0], bundle["class_routes"][1] = (
+            bundle["class_routes"][1],
+            bundle["class_routes"][0],
+        )
     elif mutation == "partial":
-        routes[2]["route_complete"] = False
+        bundle["class_routes"][2]["command_routes"].pop()
     elif mutation == "nonfinite":
-        routes[3]["finite"] = False
+        bundle["class_routes"][3]["command_routes"][1][
+            "ordered_action_endpoints_world_m"
+        ][0][0] = math.nan
     elif mutation == "workspace":
-        routes[4]["workspace_valid"] = False
+        workspace_limits["upper_world_m"][2] = 0.49
     else:
-        routes[5]["contact_exclusion_valid"] = False
+        _translate_task8_bundle_to_button(bundle)
 
     with pytest.raises(G1ValidationError) as caught:
         validate(
-            selected_candidate=_selected_candidate(),
-            selected_pose_sha256=EXPECTED_POSE_SHA256,
-            routes=routes,
+            route_bundle=bundle,
+            geometry_contract=inputs["geometry_contract"],
+            workspace_limits=workspace_limits,
+            current_input_digests=inputs["current_input_digests"],
         )
 
-    assert caught.value.code == "G1_C1_ROUTE_PROVENANCE_INVALID"
+    expected_code = (
+        "G1_C1_CONTACT_EXCLUSION_ROUTE_INVALID"
+        if mutation == "contact_exclusion"
+        else "G1_C1_ROUTE_PROVENANCE_INVALID"
+    )
+    assert caught.value.code == expected_code
     assert caught.value.message.strip()
 
 
@@ -541,18 +779,9 @@ def test_t152_plan_carries_consumable_canonical_motif_not_only_class_label(runne
 def test_t152_local_class_executes_plus16_minus32_plus16_in_every_window(
     runner: Any, class_id: str
 ) -> None:
-    build = _capability(runner, "build_g1_pose_conditioned_tracking_plan")
-    plan = build(
-        seed=1701,
-        selected_candidate=_selected_candidate(),
-        selected_pose_sha256=EXPECTED_POSE_SHA256,
-        routes=_route_fixture(),
-    )
-    trial = next(
-        item for item in plan["trials"]
-        if item["class_id"] == class_id and item["command_m"] == 0.00025
-    )
-    schedule = trial["motif"]["schedule"]
+    bundle = _derive_task8_bundle()
+    command_route = _task8_command_route(bundle, class_id, "0.00025")
+    schedule = command_route["exact_schedule"]
 
     assert [item["signed_multiplier"] for item in schedule] == (
         [1] * 16 + [-1] * 32 + [1] * 16
@@ -569,50 +798,36 @@ def test_t152_local_class_executes_plus16_minus32_plus16_in_every_window(
 def test_t152_continuous_class_consumes_decimal_endpoint_reflection_schedule(
     runner: Any, class_id: str
 ) -> None:
-    build = _capability(runner, "build_g1_pose_conditioned_tracking_plan")
-    plan = build(
-        seed=1701,
-        selected_candidate=_selected_candidate(),
-        selected_pose_sha256=EXPECTED_POSE_SHA256,
-        routes=_route_fixture(),
-    )
-    trial = next(
-        item for item in plan["trials"]
-        if item["class_id"] == class_id and item["command_m"] == 0.00025
-    )
-    expected = _expected_motif(class_id, 0.00025)
+    bundle = _derive_task8_bundle()
+    command_route = _task8_command_route(bundle, class_id, "0.00025")
+    schedule = command_route["exact_schedule"]
+    expected = _expected_task8_motif(bundle, class_id, "0.00025")
 
-    assert trial["motif"]["schedule"] == expected["schedule"]
-    assert trial["motif"]["endpoint_actions"] == expected["endpoint_actions"]
-    assert trial["motif"]["reversal_before_actions"] == expected["reversal_before_actions"]
-    assert trial["motif"]["schedule_arithmetic"] == "decimal"
+    assert schedule == expected["schedule"]
+    assert command_route["endpoint_actions"] == expected["endpoint_actions"]
+    assert command_route["reversal_before_actions"] == expected[
+        "reversal_before_actions"
+    ]
+    assert command_route["schedule_arithmetic"] == "decimal"
 
 
 def test_t152_motif_digest_exact_scalar_and_float64_materialization_cross_check(
     runner: Any,
 ) -> None:
-    build = _capability(runner, "build_g1_pose_conditioned_tracking_plan")
-    plan = build(
-        seed=1701,
-        selected_candidate=_selected_candidate(),
-        selected_pose_sha256=EXPECTED_POSE_SHA256,
-        routes=_route_fixture(),
-    )
+    bundle = _derive_task8_bundle()
 
     for class_id in G1_TRAJECTORY_CLASS_IDS:
-        trial = next(
-            item for item in plan["trials"]
-            if item["class_id"] == class_id and item["command_m"] == 0.00025
-        )
-        expected = _expected_motif(class_id, 0.00025)
-        assert trial["motif"]["motif_digest"] == expected["motif_digest"]
-        assert [item["scalar_action"] for item in trial["motif"]["schedule"]] == [
-            item["scalar_action"] for item in expected["schedule"]
-        ]
-        assert trial["motif"]["float64_materialization_only"] is True
+        command_route = _task8_command_route(bundle, class_id, "0.00025")
+        expected = _expected_task8_motif(bundle, class_id, "0.00025")
+        assert command_route["motif_digest"] == expected["motif_digest"]
+        assert command_route["motif_digest_inputs"] == expected["digest_inputs"]
+        assert command_route["exact_schedule"] == expected["schedule"]
+        assert command_route["float64_materialization_only"] is True
+        assert len(command_route["exact_schedule"]) == 256
+        assert len(command_route["float64_materialization"]) == 256
         assert all(
             item["requested_norm_m"] == float(item["exact_requested_norm_m"])
-            for item in trial["motif"]["schedule"]
+            for item in command_route["exact_schedule"]
         )
 
 
@@ -1661,111 +1876,39 @@ def test_t152_orchestration_route_failure_blocks_factory_plan_and_success_eviden
     ] not in {"PASS", "SUCCESS"}
 
 
-def _declared_mechanism_geometry() -> dict[str, Any]:
-    return {
-        "mechanism_version": "1.1.0",
-        "base_position_m": [0.55, 0.0, 0.47],
-        "base_orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
-        "geometry": {
-            "frame": "mechanism_root",
-            "units": "m",
-            "button": {
-                "primitive": "capped_cylinder",
-                "center_local_m": [0.0, 0.0, 0.0],
-                "axis_token": "Z",
-                "radius_m": 0.035,
-                "half_height_m": 0.009,
-            },
-            "housing": {
-                "primitive": "oriented_box",
-                "center_local_m": [0.0, 0.0, -0.025],
-                "half_extents_m": [0.045, 0.045, 0.010],
-            },
-        },
-        "contact_exclusion": {
-            "schema_version": "1.0.0",
-            "subject": "fr3_hand_tcp_point",
-            "obstacle_ids": ["button", "housing"],
-            "required_clearance_m": 0.005,
-            "distance_metric": "conservative_closed_solid_clearance_v1",
-            "route_validation": "continuous_line_segment",
-            "boundary_policy": "equality_allowed",
-        },
-    }
-
-
-def _route_derivation_inputs() -> dict[str, Any]:
-    selected = _selected_candidate()
-    return {
-        "selected_candidate": selected,
-        "task_geometry": {
-            "task_ready_world_m": list(selected["fk_position_world_m"]),
-            "approach_world_m": [0.55, 0.0, 0.50],
-            "press_world_m": [0.55, 0.0, 0.46],
-            "retract_world_m": [0.55, 0.0, 0.51],
-            "press_axis_world": [0.0, 0.0, -1.0],
-            "frame": selected["ee_frame"],
-        },
-        "workspace_limits": {
-            "lower_world_m": [0.30, -0.30, 0.30],
-            "upper_world_m": [0.80, 0.30, 0.80],
-        },
-        "mechanism_geometry": _declared_mechanism_geometry(),
-        "current_config_digests": {
-            "task_config_sha256": selected["task_config_sha256"],
-            "robot_config_sha256": selected["robot_config_sha256"],
-            "asset_sha256": selected["asset_sha256"],
-        },
-        "untrusted_claims": {
-            "workspace_valid": True,
-            "contact_exclusion_valid": True,
-        },
-    }
-
-
 def test_t152_route_builder_derives_all_six_records_from_declared_solids(
     runner: Any,
 ) -> None:
-    derive = _capability(runner, "derive_g1_pose_conditioned_routes")
-    inputs = _route_derivation_inputs()
+    derive = _task8_callable(
+        g1_contact_exclusion_runtime, "derive_g1_pose_conditioned_routes"
+    )
+    inputs = _task8_bundle_inputs()
 
-    routes = derive(**inputs)
+    bundle = derive(**inputs)
 
-    assert [route["class_id"] for route in routes] == list(G1_TRAJECTORY_CLASS_IDS)
-    assert all(route["selected_pose_id"] == EXPECTED_POSE_ID for route in routes)
-    assert all(
-        route["selected_fk_position_world_m"]
-        == inputs["selected_candidate"]["fk_position_world_m"]
-        for route in routes
+    assert bundle["schema_version"] == "g1.pose_conditioned.command_bound_routes.v1"
+    assert [route["class_id"] for route in bundle["class_routes"]] == list(
+        G1_TRAJECTORY_CLASS_IDS
     )
-    assert all(
-        route["selected_frame"] == inputs["selected_candidate"]["ee_frame"]
-        for route in routes
-    )
-    assert all(route["task_geometry_sha256"] for route in routes)
-    assert all(route["workspace_limits_sha256"] for route in routes)
-    assert all(route["mechanism_root_sha256"] for route in routes)
-    assert all(route["geometry_sha256"] for route in routes)
-    assert all(route["contact_exclusion_policy_sha256"] for route in routes)
-    assert all(
-        route["contact_exclusion_scope"]
-        == "TCP_POINT_VS_DECLARED_MECHANISM_SOLIDS"
-        for route in routes
-    )
-    assert all(
-        route["full_robot_static_collision_exclusion_qualified"] is False
-        for route in routes
-    )
-    assert all(
-        route["current_config_digests"] == inputs["current_config_digests"]
-        for route in routes
-    )
-    assert all(
-        route["route_sha256"]
-        == _canonical_sha256(
-            {key: value for key, value in route.items() if key != "route_sha256"}
-        )
-        for route in routes
+    assert all(len(route["command_routes"]) == 5 for route in bundle["class_routes"])
+    assert bundle["selected_candidate"] == inputs["selected_candidate"]
+    assert bundle["selected_pose_id"] == EXPECTED_POSE_ID
+    assert bundle["selected_pose_sha256"] == EXPECTED_POSE_SHA256
+    assert bundle["selected_fk_position_world_m"] == inputs["selected_candidate"][
+        "fk_position_world_m"
+    ]
+    assert bundle["selected_frame"] == inputs["selected_candidate"]["ee_frame"]
+    assert bundle["task_route_geometry"] == inputs["task_route_geometry"]
+    assert bundle["workspace_limits"] == inputs["workspace_limits"]
+    assert bundle["geometry_sha256"] == inputs["geometry_contract"].geometry_sha256
+    assert bundle["world_from_mechanism_root_sha256"] == inputs[
+        "geometry_contract"
+    ].world_from_mechanism_root_sha256
+    assert bundle["current_input_digests"] == inputs["current_input_digests"]
+    assert bundle["tcp_only_scope"] == "TCP_POINT_VS_DECLARED_MECHANISM_SOLIDS"
+    assert bundle["full_robot_static_collision_exclusion_qualified"] is False
+    assert bundle["bundle_sha256"] == _canonical_sha256(
+        _without_digest(bundle, "bundle_sha256")
     )
 
 
@@ -1782,24 +1925,41 @@ def test_t152_route_builder_derives_all_six_records_from_declared_solids(
 def test_t152_declared_route_derivation_changes_digest_or_blocks(
     runner: Any, mutation: str
 ) -> None:
-    derive = _capability(runner, "derive_g1_pose_conditioned_routes")
-    baseline_inputs = _route_derivation_inputs()
+    derive = _task8_callable(
+        g1_contact_exclusion_runtime, "derive_g1_pose_conditioned_routes"
+    )
+    baseline_inputs = _task8_bundle_inputs()
     baseline = derive(**baseline_inputs)
     changed_inputs = deepcopy(baseline_inputs)
     if mutation == "selected_pose":
         changed_inputs["selected_candidate"]["fk_position_world_m"][0] += 0.01
     elif mutation == "mechanism_root":
-        changed_inputs["mechanism_geometry"]["base_position_m"][0] += 0.01
+        contract = changed_inputs["geometry_contract"]
+        changed_inputs["geometry_contract"] = replace(
+            contract,
+            root_pose=replace(
+                contract.root_pose,
+                position_m=(
+                    contract.root_pose.position_m[0] + 0.01,
+                    *contract.root_pose.position_m[1:],
+                ),
+            ),
+        )
     elif mutation == "declared_solids":
-        changed_inputs["mechanism_geometry"]["geometry"]["button"][
-            "radius_m"
-        ] = 0.036
+        contract = changed_inputs["geometry_contract"]
+        changed_inputs["geometry_contract"] = replace(
+            contract, button=replace(contract.button, radius_m=0.036)
+        )
     elif mutation == "workspace":
         changed_inputs["workspace_limits"]["upper_world_m"][2] = 0.49
     else:
-        changed_inputs["mechanism_geometry"]["contact_exclusion"][
-            "required_clearance_m"
-        ] = 0.006
+        contract = changed_inputs["geometry_contract"]
+        changed_inputs["geometry_contract"] = replace(
+            contract,
+            contact_exclusion=replace(
+                contract.contact_exclusion, required_clearance_m=0.006
+            ),
+        )
 
     try:
         changed = derive(**changed_inputs)
@@ -1810,44 +1970,351 @@ def test_t152_declared_route_derivation_changes_digest_or_blocks(
             "G1_C1_CONTACT_EXCLUSION_SCHEMA_INVALID",
             "G1_C1_CONTACT_EXCLUSION_GEOMETRY_INVALID",
             "G1_C1_CONTACT_EXCLUSION_ROUTE_INVALID",
+            "G1_C1_CONTACT_EXCLUSION_DIGEST_MISMATCH",
         }
         assert error.message.strip()
         return
 
-    assert [route["route_sha256"] for route in changed] != [
-        route["route_sha256"] for route in baseline
-    ]
+    assert changed["bundle_sha256"] != baseline["bundle_sha256"]
 
 
 @pytest.mark.parametrize("invalid_geometry", ["workspace", "contact_exclusion"])
 def test_t152_declared_route_derivation_ignores_caller_true_flags(
     runner: Any, invalid_geometry: str
 ) -> None:
-    derive = _capability(runner, "derive_g1_pose_conditioned_routes")
-    inputs = _route_derivation_inputs()
-    assert inputs["untrusted_claims"] == {
-        "workspace_valid": True,
-        "contact_exclusion_valid": True,
-    }
+    validate = _task8_callable(
+        g1_contact_exclusion_runtime, "validate_g1_pose_conditioned_routes"
+    )
+    inputs = _task8_bundle_inputs()
+    bundle = _derive_task8_bundle()
+    bundle["workspace_valid"] = True
+    bundle["contact_exclusion_valid"] = True
+    bundle["route_complete"] = True
+    bundle["finite"] = True
+    workspace_limits = deepcopy(inputs["workspace_limits"])
     if invalid_geometry == "workspace":
-        inputs["workspace_limits"] = {
+        workspace_limits = {
+            "frame": "world",
             "lower_world_m": [0.54, -0.01, 0.52],
             "upper_world_m": [0.56, 0.01, 0.56],
         }
     else:
-        inputs["mechanism_geometry"]["geometry"]["button"][
-            "center_local_m"
-        ] = [0.0, 0.0, 0.04]
+        _translate_task8_bundle_to_button(bundle)
+
+    with pytest.raises(G1ValidationError) as caught:
+        validate(
+            route_bundle=bundle,
+            geometry_contract=inputs["geometry_contract"],
+            workspace_limits=workspace_limits,
+            current_input_digests=inputs["current_input_digests"],
+        )
+
+    expected_code = (
+        "G1_C1_CONTACT_EXCLUSION_ROUTE_INVALID"
+        if invalid_geometry == "contact_exclusion"
+        else "G1_C1_ROUTE_PROVENANCE_INVALID"
+    )
+    assert caught.value.code == expected_code
+    assert caught.value.message.strip()
+
+
+def test_task8_command_authority_is_exact_decimal_bound_and_strictly_ordered() -> None:
+    commands, decimal_strings = _task8_command_authority()
+
+    assert commands == COMMANDS_M
+    assert decimal_strings == COMMAND_DECIMAL_STRINGS
+    assert tuple(float(Decimal(value)) for value in decimal_strings) == commands
+    assert all(
+        Decimal(decimal_strings[index]) < Decimal(decimal_strings[index + 1])
+        for index in range(len(decimal_strings) - 1)
+    )
+    plan_source = inspect.getsource(g1_tracking_runtime.build_g1_multiclass_tracking_plan)
+    assert "G1_TRACKING_COMMANDS_M" in plan_source
+    assert "0.00025, 0.00035, 0.00040, 0.00045" not in plan_source
+
+
+def test_task8_task_route_geometry_is_canonical_and_digest_bound() -> None:
+    task_geometry = _task8_task_route_geometry()
+
+    assert set(task_geometry) == {
+        "schema_version",
+        "frame",
+        "approach_world_m",
+        "press_world_m",
+        "retract_world_m",
+        "press_axis_world",
+        "task_route_geometry_sha256",
+    }
+    assert task_geometry["schema_version"] == "g1.press_button.task_route_geometry.v1"
+    assert task_geometry["frame"] == "world"
+    assert task_geometry["approach_world_m"] == [0.55, 0.0, 0.50]
+    assert task_geometry["press_world_m"] == [0.55, 0.0, 0.46]
+    assert task_geometry["retract_world_m"] == [0.55, 0.0, 0.51]
+    assert task_geometry["press_axis_world"] == [0.0, 0.0, -1.0]
+    assert task_geometry["task_route_geometry_sha256"] == _canonical_sha256(
+        _without_digest(task_geometry, "task_route_geometry_sha256")
+    )
+
+
+def test_task8_selected_candidate_hash_fk_and_frame_are_bundle_bound() -> None:
+    bundle = _derive_task8_bundle()
+    candidate = _selected_candidate()
+
+    assert _canonical_sha256(candidate) == EXPECTED_POSE_SHA256
+    assert bundle["selected_candidate"] == candidate
+    assert bundle["selected_pose_id"] == candidate["candidate_id"]
+    assert bundle["selected_pose_sha256"] == _canonical_sha256(
+        bundle["selected_candidate"]
+    )
+    assert bundle["selected_fk_position_world_m"] == candidate[
+        "fk_position_world_m"
+    ]
+    assert bundle["selected_frame"] == candidate["ee_frame"]
+    assert len(bundle["selected_fk_position_world_m"]) == 3
+    assert all(math.isfinite(value) for value in bundle["selected_fk_position_world_m"])
+
+
+def test_task8_bundle_is_exact_six_classes_by_five_commands_in_order() -> None:
+    bundle = _derive_task8_bundle()
+
+    assert bundle["class_ids"] == list(G1_TRAJECTORY_CLASS_IDS)
+    assert bundle["command_matrix_decimal"] == list(COMMAND_DECIMAL_STRINGS)
+    assert bundle["command_matrix_float64"] == list(COMMANDS_M)
+    assert [item["class_id"] for item in bundle["class_routes"]] == list(
+        G1_TRAJECTORY_CLASS_IDS
+    )
+    assert len(bundle["class_routes"]) == 6
+    assert sum(len(item["command_routes"]) for item in bundle["class_routes"]) == 30
+    assert all(
+        [item["command_decimal"] for item in class_route["command_routes"]]
+        == list(COMMAND_DECIMAL_STRINGS)
+        for class_route in bundle["class_routes"]
+    )
+    assert all(
+        [item["command_m"] for item in class_route["command_routes"]]
+        == list(COMMANDS_M)
+        for class_route in bundle["class_routes"]
+    )
+
+
+def test_task8_zero_command_routes_are_256_action_immutable_holds() -> None:
+    bundle = _derive_task8_bundle()
+    start = bundle["selected_fk_position_world_m"]
+
+    for class_id in G1_TRAJECTORY_CLASS_IDS:
+        command_route = _task8_command_route(bundle, class_id, "0")
+        assert command_route["command_m"] == 0.0
+        assert len(command_route["exact_schedule"]) == 256
+        assert len(command_route["float64_materialization"]) == 256
+        assert len(command_route["ordered_action_endpoints_world_m"]) == 256
+        assert len(command_route["ordered_continuous_segments_world_m"]) == 256
+        assert all(
+            item["exact_requested_norm_m"] == "0"
+            and item["scalar_action"] == "0"
+            and item["requested_vector_m"] == [0.0, 0.0, 0.0]
+            for item in command_route["exact_schedule"]
+        )
+        assert command_route["float64_materialization"] == [
+            [0.0, 0.0, 0.0]
+        ] * 256
+        assert command_route["ordered_action_endpoints_world_m"] == [start] * 256
+        assert command_route["ordered_continuous_segments_world_m"] == [
+            [start, start]
+        ] * 256
+
+
+def test_task8_each_command_route_records_schedule_endpoints_and_segments() -> None:
+    bundle = _derive_task8_bundle()
+    start = bundle["selected_fk_position_world_m"]
+
+    for class_route in bundle["class_routes"]:
+        for command_route in class_route["command_routes"]:
+            schedule = command_route["exact_schedule"]
+            materialization = command_route["float64_materialization"]
+            endpoints = command_route["ordered_action_endpoints_world_m"]
+            segments = command_route["ordered_continuous_segments_world_m"]
+            assert (
+                len(schedule)
+                == len(materialization)
+                == len(endpoints)
+                == len(segments)
+                == 256
+            )
+            assert [item["measurement_action_index"] for item in schedule] == list(
+                range(256)
+            )
+            assert all(
+                len(point) == 3 and all(math.isfinite(value) for value in point)
+                for point in endpoints
+            )
+            assert all(
+                segment[0] == (start if index == 0 else endpoints[index - 1])
+                and segment[1] == endpoints[index]
+                for index, segment in enumerate(segments)
+            )
+            assert all(
+                segment[1]
+                == [
+                    segment[0][axis] + materialization[index][axis]
+                    for axis in range(3)
+                ]
+                for index, segment in enumerate(segments)
+            )
+            assert len(command_route["segment_sha256s"]) == 256
+
+
+def test_task8_current_digests_are_complete_lowercase_and_contract_bound() -> None:
+    inputs = _task8_bundle_inputs()
+    bundle = _derive_task8_bundle()
+    digests = bundle["current_input_digests"]
+
+    assert set(digests) == {
+        "task_config_sha256",
+        "task_card_sha256",
+        "robot_config_sha256",
+        "fr3_asset_sha256",
+        "geometry_sha256",
+    }
+    assert digests == inputs["current_input_digests"]
+    assert all(
+        isinstance(value, str)
+        and len(value) == 64
+        and value == value.lower()
+        and set(value) <= set("0123456789abcdef")
+        for value in digests.values()
+    )
+    assert digests["task_config_sha256"] == inputs[
+        "geometry_contract"
+    ].task_config_sha256
+    assert digests["geometry_sha256"] == inputs[
+        "geometry_contract"
+    ].geometry_sha256
+
+
+def test_task8_command_matrix_mutation_fails_closed() -> None:
+    derive = _task8_callable(
+        g1_contact_exclusion_runtime, "derive_g1_pose_conditioned_routes"
+    )
+    inputs = _task8_bundle_inputs()
+    inputs["command_matrix_m"] = (0.0, 0.00024, 0.00035, 0.00040, 0.00045)
 
     with pytest.raises(G1ValidationError) as caught:
         derive(**inputs)
 
-    assert caught.value.code in {
-        "G1_C1_ROUTE_PROVENANCE_INVALID",
-        "G1_C1_POSE_UNQUALIFIED",
-        "G1_C1_CONTACT_EXCLUSION_ROUTE_INVALID",
-    }
+    assert caught.value.code == "G1_C1_ROUTE_PROVENANCE_INVALID"
     assert caught.value.message.strip()
+
+
+def test_task8_bundle_class_command_motif_and_segment_digests_recompute() -> None:
+    bundle = _derive_task8_bundle()
+
+    assert bundle["command_matrix_sha256"] == _canonical_sha256(
+        bundle["command_matrix_decimal"]
+    )
+    assert bundle["task_route_geometry_sha256"] == _canonical_sha256(
+        _without_digest(
+            bundle["task_route_geometry"], "task_route_geometry_sha256"
+        )
+    )
+    assert bundle["workspace_limits_sha256"] == _canonical_sha256(
+        bundle["workspace_limits"]
+    )
+    for class_route in bundle["class_routes"]:
+        definition = next(
+            item
+            for item in g1_trajectory_class_definitions()
+            if item["class_id"] == class_route["class_id"]
+        )
+        assert class_route["class_definition_sha256"] == _canonical_sha256(
+            definition
+        )
+        for command_route in class_route["command_routes"]:
+            assert command_route["motif_digest"] == _canonical_sha256(
+                command_route["motif_digest_inputs"]
+            )
+            assert command_route["segment_sha256s"] == [
+                _canonical_sha256(segment)
+                for segment in command_route["ordered_continuous_segments_world_m"]
+            ]
+            assert command_route["route_sha256"] == _canonical_sha256(
+                _without_digest(command_route, "route_sha256")
+            )
+        assert class_route["class_route_sha256"] == _canonical_sha256(
+            _without_digest(class_route, "class_route_sha256")
+        )
+    assert bundle["bundle_sha256"] == _canonical_sha256(
+        _without_digest(bundle, "bundle_sha256")
+    )
+
+
+@pytest.mark.parametrize(
+    "digest_kind",
+    [
+        "bundle",
+        "class",
+        "command",
+        "motif",
+        "segment",
+        "task_geometry",
+        "workspace",
+        "geometry",
+        "policy",
+    ],
+)
+def test_task8_digest_mutation_fails_closed(digest_kind: str) -> None:
+    validate = _task8_callable(
+        g1_contact_exclusion_runtime, "validate_g1_pose_conditioned_routes"
+    )
+    inputs = _task8_bundle_inputs()
+    bundle = _derive_task8_bundle()
+    command_route = bundle["class_routes"][0]["command_routes"][0]
+    if digest_kind == "bundle":
+        bundle["bundle_sha256"] = "0" * 64
+    elif digest_kind == "class":
+        bundle["class_routes"][0]["class_route_sha256"] = "0" * 64
+    elif digest_kind == "command":
+        command_route["route_sha256"] = "0" * 64
+    elif digest_kind == "motif":
+        command_route["motif_digest"] = "0" * 64
+    elif digest_kind == "segment":
+        command_route["segment_sha256s"][0] = "0" * 64
+    elif digest_kind == "task_geometry":
+        bundle["task_route_geometry_sha256"] = "0" * 64
+    elif digest_kind == "workspace":
+        bundle["workspace_limits_sha256"] = "0" * 64
+    elif digest_kind == "geometry":
+        bundle["geometry_sha256"] = "0" * 64
+    else:
+        bundle["contact_exclusion_policy_sha256"] = "0" * 64
+
+    with pytest.raises(G1ValidationError) as caught:
+        validate(
+            route_bundle=bundle,
+            geometry_contract=inputs["geometry_contract"],
+            workspace_limits=inputs["workspace_limits"],
+            current_input_digests=inputs["current_input_digests"],
+        )
+
+    assert caught.value.code == "G1_C1_CONTACT_EXCLUSION_DIGEST_MISMATCH"
+    assert caught.value.message.strip()
+
+
+def test_task8_runner_reexports_pure_route_bundle_functions_without_copying(
+    runner: Any,
+) -> None:
+    runner_derive = getattr(runner, "derive_g1_pose_conditioned_routes", None)
+    runner_validate = getattr(runner, "validate_g1_pose_conditioned_routes", None)
+    assert callable(runner_derive), "missing approved Task 8 runner derive re-export"
+    assert callable(runner_validate), "missing approved Task 8 runner validate re-export"
+    derive = _task8_callable(
+        g1_contact_exclusion_runtime, "derive_g1_pose_conditioned_routes"
+    )
+    validate = _task8_callable(
+        g1_contact_exclusion_runtime, "validate_g1_pose_conditioned_routes"
+    )
+
+    assert runner_derive is derive
+    assert runner_validate is validate
 
 
 class _LifecycleTimeline:
