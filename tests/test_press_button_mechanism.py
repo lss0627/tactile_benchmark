@@ -6,6 +6,7 @@ import importlib.util
 import inspect
 from pathlib import Path
 import sys
+from typing import Any
 
 import pytest
 import yaml
@@ -91,6 +92,52 @@ def _assert_exact_failure(call, code: str) -> None:
     assert getattr(caught.value, "code", None) == code
     assert isinstance(getattr(caught.value, "message", None), str)
     assert caught.value.message.strip()
+
+
+class RecordingPressButtonStageAuthoringAdapter:
+    def __init__(self) -> None:
+        self.calls: list[tuple[Any, ...]] = []
+
+    def author_root(
+        self,
+        *,
+        root_path: str,
+        position_m: tuple[float, float, float],
+        orientation_xyzw: tuple[float, float, float, float],
+    ) -> None:
+        self.calls.append(("root", position_m, orientation_xyzw))
+
+    def author_capped_cylinder(
+        self,
+        *,
+        path: str,
+        center_local_m: tuple[float, float, float],
+        axis_token: str,
+        radius_m: float,
+        height_m: float,
+    ) -> None:
+        self.calls.append(
+            ("button", center_local_m, axis_token, radius_m, height_m)
+        )
+
+    def author_oriented_box(
+        self,
+        *,
+        path: str,
+        center_local_m: tuple[float, float, float],
+        half_extents_m: tuple[float, float, float],
+    ) -> None:
+        self.calls.append(("housing", center_local_m, half_extents_m))
+
+
+def _require_stage_authoring_capability(module) -> None:
+    protocol = getattr(module, "PressButtonStageAuthoringAdapter", None)
+    real_adapter = getattr(module, "UsdPressButtonStageAuthoringAdapter", None)
+    assert protocol is not None, "missing approved PressButton stage-authoring capability"
+    assert real_adapter is not None, "missing approved lazy USD stage-authoring adapter"
+    assert "authoring_adapter" in inspect.signature(
+        module.PressButtonMechanism.build_stage
+    ).parameters
 
 
 def test_mechanism_declares_real_joint_travel_limits_and_collision() -> None:
@@ -339,3 +386,99 @@ def test_tracked_config_digest_changes_from_attempt_02_without_inventing_provena
     assert "geometry_sha256" not in historical_provenance
     config = module.load_press_button_mechanism_config(PHYSICAL_CONFIG)
     assert config.geometry_contract.task_config_sha256 == current_digest
+
+
+def test_stage_authoring_adapter_records_root_housing_button_order_and_exact_values() -> None:
+    module = _target()
+    _require_stage_authoring_capability(module)
+    config = module.load_press_button_mechanism_config(PHYSICAL_CONFIG)
+    adapter = RecordingPressButtonStageAuthoringAdapter()
+
+    module.PressButtonMechanism(config).build_stage(
+        object(), authoring_adapter=adapter
+    )
+
+    assert adapter.calls[:3] == [
+        ("root", (0.55, 0.0, 0.47), (0.0, 0.0, 0.0, 1.0)),
+        ("housing", (0.0, 0.0, -0.025), (0.045, 0.045, 0.010)),
+        ("button", (0.0, 0.0, 0.0), "Z", 0.035, 0.018),
+    ]
+
+
+def test_stage_authoring_uses_the_loaded_contract_and_matching_digests() -> None:
+    module = _target()
+    _require_stage_authoring_capability(module)
+    config = module.load_press_button_mechanism_config(PHYSICAL_CONFIG)
+    contract = config.geometry_contract
+    source = inspect.getsource(module.PressButtonMechanism.build_stage)
+
+    assert "cfg.geometry_contract" in source
+    assert "parse_press_button_geometry_contract" not in source
+    scene = module.PressButtonMechanism(config).scene_contract()
+    assert scene["geometry_sha256"] == contract.geometry_sha256
+    assert (
+        scene["world_from_mechanism_root_sha256"]
+        == contract.world_from_mechanism_root_sha256
+    )
+    assert config.geometry_contract is contract
+
+
+def test_stage_authoring_module_and_fake_path_are_import_safe() -> None:
+    forbidden = ("pxr", "omni", "isaacsim")
+    before = {name for name in sys.modules if name.split(".", 1)[0] in forbidden}
+    module = _target()
+    _require_stage_authoring_capability(module)
+    adapter = RecordingPressButtonStageAuthoringAdapter()
+
+    module.PressButtonMechanism(
+        module.load_press_button_mechanism_config(PHYSICAL_CONFIG)
+    ).build_stage(object(), authoring_adapter=adapter)
+
+    after = {name for name in sys.modules if name.split(".", 1)[0] in forbidden}
+    assert after == before
+
+
+def test_real_usd_authoring_adapter_keeps_pxr_import_lazy_and_uses_full_dimensions() -> None:
+    module = _target()
+    _require_stage_authoring_capability(module)
+    adapter_type = module.UsdPressButtonStageAuthoringAdapter
+    source = inspect.getsource(adapter_type)
+
+    assert "CreateAxisAttr(axis_token)" in source
+    assert "2.0 *" in source
+    assert "orientation_xyzw" in source
+    assert "half_extents_m" in source
+    assert "from pxr import" in source
+
+
+def test_formal_stage_builder_contains_no_geometry_authority_literals() -> None:
+    module = _target()
+    _require_stage_authoring_capability(module)
+    source = inspect.getsource(module.PressButtonMechanism.build_stage)
+
+    for literal in ("0.035", "0.018", "0.09", "0.025"):
+        assert literal not in source
+
+
+def test_adapter_injection_cannot_skip_complete_stage_physics_semantics() -> None:
+    module = _target()
+    _require_stage_authoring_capability(module)
+    source = inspect.getsource(module.PressButtonMechanism.build_stage)
+    required_stage_semantics = (
+        "CollisionAPI",
+        "RigidBodyAPI",
+        "MassAPI",
+        "PrismaticJoint",
+        "CreateBody0Rel",
+        "CreateBody1Rel",
+        "CreateLowerLimitAttr",
+        "CreateUpperLimitAttr",
+        "CreateTargetPositionAttr",
+        "CreateStiffnessAttr",
+        "CreateDampingAttr",
+    )
+
+    assert all(marker in source for marker in required_stage_semantics)
+    assert "if fake" not in source
+    assert "type(authoring_adapter)" not in source
+    assert "authoring_adapter.__class__" not in source
