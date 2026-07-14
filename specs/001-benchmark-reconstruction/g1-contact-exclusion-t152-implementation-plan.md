@@ -96,12 +96,22 @@ result. A SHA-256 covers each sorted node-ID list; outcome order is retained
 separately so accidental reordering is visible. The executor verifies that the
 T152 test blob at `behavior_source_commit` is byte-identical to the blob at
 `execution_start_commit`; otherwise the approved behavior inventory is stale.
+Frozen node IDs are stored under
+`selections.<selection_name>.node_ids`, including separate
+`selections.original_green.node_ids` and
+`selections.t152_green_controls.node_ids` arrays. Task 11 may read those arrays
+for historical classification, but it may not add later nodes to them.
 
-`tests/run_g1_node_inventory.py` is a test-side command that accepts
-`--inventory`, `--selection`, expected pass/fail outcome, and optional expected
-classification counts. It executes exactly the stored node IDs through pytest,
-parses the JUnit outcome, and rejects any missing, extra, reordered, or
-misclassified node. It is not imported by production code.
+`tests/run_g1_node_inventory.py` is a test-side command for immutable named
+selections that already exist at Task 1: `t152_expected_red`,
+`t152_green_controls`, `original_green`, `intentional_future_red`, and
+`exact_hard_limit`. It accepts `--inventory`, one of those exact selections,
+expected pass/fail outcome, and optional expected classification counts. It
+executes exactly the frozen node IDs through pytest, parses the JUnit outcome,
+and rejects any missing, extra, reordered, or misclassified node. It is not
+imported by production code. It must not expose a selection that purports to
+contain GREEN node IDs introduced later by Tasks 2–10; dynamic current-GREEN
+verification belongs exclusively to Task 11.
 
 The migration manifest has one row per sphere-specific node expansion:
 
@@ -168,7 +178,7 @@ TRACKING_SHA=$(git rev-parse @{u})
 LIVE_ORIGIN_SHA=$(
   git ls-remote --heads origin codex/g1-press-button-safety | awk '{print $1}'
 )
-PR_HEAD_SHA=$(gh api repos/{owner}/{repo}/pulls/2 --jq .head.sha)
+PR_HEAD_SHA=$(gh api repos/lss0627/tactile_benchmark/pulls/2 --jq .head.sha)
 test -z "$(git status --porcelain)"
 test "$EXECUTION_START_COMMIT" = "$LOCAL_BRANCH_SHA"
 test "$EXECUTION_START_COMMIT" = "$TRACKING_SHA"
@@ -1574,16 +1584,27 @@ allowed.
 
 The function below is executed once at `E_impl` and again at `P`. Its 12
 ordered checks are: geometry schema, analytic geometry, mechanism/task card,
-T152, affected runtime/safety, exact hard limit, original 748 GREEN, all current
-non-future GREEN, intentional future-RED 125, full collection, deprecated/import
-checks, and detached clean-checkout.
+T152, affected runtime/safety, exact hard limit, original 748 GREEN, dynamically
+collected current GREEN, intentional future-RED 125, full classification,
+deprecated/import checks, and detached clean-checkout. Dynamic current GREEN is
+derived from the current complete collection minus the exact frozen 125
+future-RED IDs; it is not an immutable Task 1 selection.
 
 ```bash
+set -euo pipefail
+
 run_t152_verification() {
   VERIFY_COMMIT=$1
   VERIFY_LABEL=$2
+  EXPECTED_CURRENT_GREEN_NODEIDS=${3-}
+  EXPECTED_CURRENT_GREEN_DIGEST=${4-}
+  EXPECTED_CURRENT_GREEN_COUNT=${5-}
   test "$(git rev-parse HEAD)" = "$VERIFY_COMMIT"
   test -z "$(git status --porcelain)"
+
+  VERIFY_DIR="/tmp/g1-t152-${VERIFY_LABEL}"
+  test ! -e "$VERIFY_DIR"
+  mkdir -p "$VERIFY_DIR"
 
   python -m pytest -q tests/test_press_button_geometry_contract.py
   python -m pytest -q tests/test_g1_contact_exclusion_geometry.py
@@ -1605,15 +1626,95 @@ run_t152_verification() {
   python tests/run_g1_node_inventory.py \
     --inventory tests/fixtures/g1_t152_baseline_inventory.json \
     --selection original_green --expect-pass 748
-  python tests/run_g1_node_inventory.py \
-    --inventory tests/fixtures/g1_t152_baseline_inventory.json \
-    --selection all_non_future_red --expect-outcome pass
+
+  FUTURE_NODEIDS="$VERIFY_DIR/intentional-future-red-nodeids.txt"
+  awk 'NF && $1 !~ /^#/' \
+    configs/repository/intentional-future-red-nodeids.txt | sort -u \
+    > "$FUTURE_NODEIDS"
+  test "$(wc -l < "$FUTURE_NODEIDS")" -eq 125
+
+  ALL_COLLECTION_LOG="$VERIFY_DIR/full-collection.log"
+  ALL_NODEIDS="$VERIFY_DIR/all-nodeids.txt"
+  python -m pytest --collect-only -q > "$ALL_COLLECTION_LOG"
+  awk '/^tests\// && /::/' "$ALL_COLLECTION_LOG" > "$VERIFY_DIR/all-nodeids.raw"
+  sort -u "$VERIFY_DIR/all-nodeids.raw" > "$ALL_NODEIDS"
+  test "$(wc -l < "$VERIFY_DIR/all-nodeids.raw")" \
+    -eq "$(wc -l < "$ALL_NODEIDS")"
+  comm -23 "$FUTURE_NODEIDS" "$ALL_NODEIDS" \
+    > "$VERIFY_DIR/missing-future-red-nodeids.txt"
+  test ! -s "$VERIFY_DIR/missing-future-red-nodeids.txt"
+
+  CURRENT_GREEN_NODEIDS="$VERIFY_DIR/current-green-nodeids.txt"
+  comm -23 "$ALL_NODEIDS" "$FUTURE_NODEIDS" > "$CURRENT_GREEN_NODEIDS"
+  DESELECT=()
+  while IFS= read -r node; do DESELECT+=(--deselect "$node"); done \
+    < "$FUTURE_NODEIDS"
+  CURRENT_GREEN_JUNIT="$VERIFY_DIR/current-green.xml"
+  python -m pytest -q "${DESELECT[@]}" --junitxml="$CURRENT_GREEN_JUNIT"
+
+  CURRENT_GREEN_COUNT=$(wc -l < "$CURRENT_GREEN_NODEIDS")
+  python - "$CURRENT_GREEN_JUNIT" "$CURRENT_GREEN_COUNT" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+root = ET.parse(sys.argv[1]).getroot()
+suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
+totals = {
+    key: sum(int(suite.attrib.get(key, "0")) for suite in suites)
+    for key in ("tests", "failures", "errors", "skipped")
+}
+expected_tests = int(sys.argv[2])
+if totals != {
+    "tests": expected_tests,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+}:
+    raise SystemExit(f"unexpected current-GREEN JUnit totals: {totals}")
+PY
+
+  ORIGINAL_CURRENT_NODEIDS="$VERIFY_DIR/original-current-green-nodeids.txt"
+  python - tests/fixtures/g1_t152_baseline_inventory.json \
+    "$ORIGINAL_CURRENT_NODEIDS" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    inventory = json.load(stream)
+original = inventory["selections"]["original_green"]["node_ids"]
+controls = inventory["selections"]["t152_green_controls"]["node_ids"]
+if len(original) != 748 or len(controls) != 4:
+    raise SystemExit("immutable original GREEN inventory count mismatch")
+node_ids = sorted(set(original) | set(controls))
+if len(node_ids) != 752:
+    raise SystemExit("duplicate immutable original GREEN node ID")
+with open(sys.argv[2], "w", encoding="utf-8") as stream:
+    stream.write("\n".join(node_ids) + "\n")
+PY
+  comm -23 "$ORIGINAL_CURRENT_NODEIDS" "$CURRENT_GREEN_NODEIDS" \
+    > "$VERIFY_DIR/missing-original-green-nodeids.txt"
+  test ! -s "$VERIFY_DIR/missing-original-green-nodeids.txt"
+  MIGRATED_NEW_GREEN_NODEIDS="$VERIFY_DIR/migrated-new-current-green-nodeids.txt"
+  comm -23 "$CURRENT_GREEN_NODEIDS" "$ORIGINAL_CURRENT_NODEIDS" \
+    > "$MIGRATED_NEW_GREEN_NODEIDS"
+  cat "$ORIGINAL_CURRENT_NODEIDS" "$MIGRATED_NEW_GREEN_NODEIDS" \
+    "$FUTURE_NODEIDS" | sort -u > "$VERIFY_DIR/classified-nodeids.txt"
+  cmp "$ALL_NODEIDS" "$VERIFY_DIR/classified-nodeids.txt"
+
+  CURRENT_GREEN_DIGEST=$(sha256sum "$CURRENT_GREEN_NODEIDS" | awk '{print $1}')
+  printf '%s\n' "$CURRENT_GREEN_COUNT" > "$VERIFY_DIR/current-green-count.txt"
+  printf '%s\n' "$CURRENT_GREEN_DIGEST" > "$VERIFY_DIR/current-green-sha256.txt"
+  if test -n "$EXPECTED_CURRENT_GREEN_NODEIDS"; then
+    cmp "$EXPECTED_CURRENT_GREEN_NODEIDS" "$CURRENT_GREEN_NODEIDS"
+    test "$EXPECTED_CURRENT_GREEN_DIGEST" = "$CURRENT_GREEN_DIGEST"
+    test "$EXPECTED_CURRENT_GREEN_COUNT" = "$CURRENT_GREEN_COUNT"
+  fi
+
   python tests/run_g1_node_inventory.py \
     --inventory tests/fixtures/g1_t152_baseline_inventory.json \
     --selection intentional_future_red --expect-fail 125 \
     --expect-classification C2=78 --expect-classification C3=29 \
     --expect-classification freshness=10 --expect-classification task9=8
-  python -m pytest --collect-only -q
   python scripts/check_isaacsim6_imports.py --deprecated-as-error
   python scripts/run_g1_tracking_envelope.py --help
   python scripts/run_g1_static_pose_qualification.py --help
@@ -1633,12 +1734,26 @@ Expected at both commits: all focused/current GREEN nodes pass; the exact
 original 748 remain GREEN; exactly 125 intentional future-REDs retain the
 78/29/10/8 classifications with no unexpected pass/error/skip; all collection
 and import/help checks succeed; exact hard limit remains `0.0005`; and the clean
-archive passes from tracked files only. No command launches Isaac Sim.
+archive passes from tracked files only. The dynamic current-GREEN JUnit must
+record failures=0, errors=0, skipped=0, and its node-ID list, count, digest, and
+outcomes at `P` must equal `E_impl`. Every collected node is classified as one
+of the 752 immutable original GREEN/control IDs, a migrated/new current GREEN
+ID, or one of the exact 125 intentional future-RED IDs. No command launches
+Isaac Sim.
 
 **Steps**
 
 - [ ] Bind `E_IMPL=$(git rev-parse HEAD)` after Task 10, verify the worktree is
-  clean, and run `run_t152_verification "$E_IMPL" pre-projection`.
+  clean, run `run_t152_verification "$E_IMPL" pre-projection`, and retain the
+  dynamic current-GREEN snapshot:
+
+  ```bash
+  EIMPL_CURRENT_GREEN_NODEIDS=/tmp/g1-t152-pre-projection/current-green-nodeids.txt
+  EIMPL_CURRENT_GREEN_DIGEST=$(cat \
+    /tmp/g1-t152-pre-projection/current-green-sha256.txt)
+  EIMPL_CURRENT_GREEN_COUNT=$(cat \
+    /tmp/g1-t152-pre-projection/current-green-count.txt)
+  ```
 - [ ] After the suite passes, change only T152 to `[x]` in `tasks.md`; leave T151
   and T070 `[ ]` and attempt-04 prohibited.
 - [ ] Record the literal `E_impl` SHA in this plan without attempting to record
@@ -1658,7 +1773,10 @@ archive passes from tracked files only. No command launches Isaac Sim.
   ```bash
   FINAL_E2=$(git rev-parse HEAD)
   test "$(git rev-parse "${FINAL_E2}^")" = "$E_IMPL"
-  run_t152_verification "$FINAL_E2" final-projection
+  run_t152_verification "$FINAL_E2" final-projection \
+    "$EIMPL_CURRENT_GREEN_NODEIDS" \
+    "$EIMPL_CURRENT_GREEN_DIGEST" \
+    "$EIMPL_CURRENT_GREEN_COUNT"
   ```
 
 - [ ] Produce final G0 evidence bound only to `FINAL_E2=P`:
