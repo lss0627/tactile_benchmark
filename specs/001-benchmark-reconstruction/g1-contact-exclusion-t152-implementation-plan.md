@@ -1041,105 +1041,213 @@ and confirm the T152 loader/orchestration refresh-blocker nodes remain RED for
 Task 9. Task 6 depends on Task 4; Task 7 depends on this versioned config. Isaac
 Sim is not allowed.
 
-## Task 7: Share the parsed geometry object with the USD stage builder
+## Task 7: Separate geometry-only receipt authoring from complete USD stage build
+
+**Approved design**
+
+Follow
+[`g1-press-button-geometry-authoring-receipt-design.md`](g1-press-button-geometry-authoring-receipt-design.md).
+The former combined adapter/build contract is replaced by an import-safe
+geometry-only receipt seam plus a real complete `build_stage()` path. Task 7 is
+split into RED correction and GREEN implementation; neither stage authorizes
+Isaac Sim.
+
+### Task 7A: Correct the RED contracts for the approved seam
+
+**Files**
+
+- Modify: `tests/test_press_button_mechanism.py`
+- Do not modify production code, YAML, configs, evidence, or task status.
+
+**Corrected RED ownership**
+
+Correct the six historical Task 7 RED nodes one-for-one instead of weakening or
+deleting them:
+
+| Historical behavior | Corrected RED behavior |
+|---|---|
+| exact root/housing/button calls | call `author_declared_geometry()` with a recording declared-geometry adapter and verify `root -> housing -> button` plus exact arguments |
+| shared object and digests | receipt retains `config.geometry_contract` by identity and copies both contract digests exactly |
+| import-safe fake path | importing the module and running the geometry-only seam loads none of `pxr`, `omni`, or `isaacsim` |
+| lazy real USD adapter | `UsdPressButtonDeclaredGeometryAuthoringAdapter` imports `pxr` only when the real adapter is constructed or called |
+| geometry-literal guard | the real geometry adapter and complete builder contain none of the formal geometry authority literals |
+| complete physical semantics | `build_stage()` has no adapter-injection parameter and still contains collision, rigid body, mass, joint, relationships, anchors, rotations, limits, and drive behavior |
+
+The corrected or additional node IDs are:
+
+- `test_declared_geometry_seam_records_root_housing_button_order_and_exact_values`
+- `test_geometry_authoring_receipt_reuses_loaded_contract_and_matching_digests`
+- `test_declared_geometry_seam_and_recording_fake_are_import_safe`
+- `test_real_usd_declared_geometry_adapter_keeps_pxr_import_lazy_and_uses_full_dimensions`
+- `test_formal_stage_builder_and_geometry_adapter_contain_no_geometry_authority_literals`
+- `test_complete_build_stage_has_no_adapter_injection_and_preserves_physics_semantics`
+- `test_geometry_authoring_receipt_is_geometry_only_and_never_benchmark_eligible`
+- `test_declared_geometry_seam_rejects_legacy_before_adapter_call`
+- `test_complete_build_stage_signature_accepts_only_real_stage`
+
+The RED receipt assertions require:
+
+```text
+schema_version = g1.press_button.geometry_authoring_receipt.v1
+receipt.contract is config.geometry_contract
+geometry_only = true
+complete_stage = false
+benchmark_cap_eligible = false
+```
+
+Legacy rejection must use `G1_PRESS_BUTTON_FORMAL_GEOMETRY_REQUIRED` with a
+non-empty message before any adapter call. The complete builder signature must
+accept `self` and `stage` only. A geometry receipt cannot satisfy complete-stage,
+C1, cap, gate, or runtime truth. The complete-builder source guard also rejects
+branching or reflection based on adapter identity, caller identity, class name,
+or module name.
+
+**Task 7A commands and expected result**
+
+```bash
+python -m pytest --collect-only -q tests/test_press_button_mechanism.py
+# Expected: all corrected and additional node IDs collect; 0 import, fixture,
+# path, syntax, or collection errors.
+
+python -m pytest -q tests/test_press_button_mechanism.py \
+  -k 'declared_geometry or geometry_authoring_receipt or complete_build_stage or formal_stage_builder'
+# Expected before production changes: every corrected/new Task 7 node is an
+# assertion RED caused by missing approved capability; 0 errors and 0 skips.
+
+python -m pytest -q tests/test_press_button_mechanism.py \
+  -k 'not declared_geometry and not geometry_authoring_receipt and not complete_build_stage and not formal_stage_builder'
+# Expected: all Task 6 and prior mechanism nodes remain GREEN.
+```
+
+**Task 7A stop conditions**
+
+Stop if a corrected node disappears without a one-to-one behavior mapping, a
+failure is caused by import/fixture/collection/environment setup, a receipt is
+treated as complete stage success, a fake calls the complete builder, or an
+approved Task 6 assertion is changed.
+
+**Task 7A commit**
+
+`test(g1): correct geometry-only authoring contracts`
+
+This commit contains tests only. Observe the RED partition before committing
+and rerun the same collection and selections after committing.
+
+### Task 7B: Implement the receipt seam and real complete builder
 
 **Files**
 
 - Modify: `isaac_tactile_libero/tasks/press_button_mechanism.py`
-- Modify: `tests/test_press_button_mechanism.py`
-- Add or modify the existing fake-stage authoring tests.
+- Use the corrected `tests/test_press_button_mechanism.py` without weakening its
+  assertions.
+- Do not modify geometry/config values, physics policy, task status, or evidence.
 
-**Adapter seam and signatures**
+**Interfaces**
 
 ```python
-class PressButtonStageAuthoringAdapter(Protocol):
+class PressButtonDeclaredGeometryAuthoringAdapter(Protocol):
     def author_root(
-        self,
-        *,
-        root_path: str,
-        position_m: tuple[float, float, float],
+        self, *, root_path: str, position_m: tuple[float, float, float],
         orientation_xyzw: tuple[float, float, float, float],
-    ) -> None: ...
-    def author_capped_cylinder(
-        self, *, path: str, center_local_m: tuple[float, float, float],
-        axis_token: str, radius_m: float, height_m: float,
     ) -> None: ...
     def author_oriented_box(
         self, *, path: str, center_local_m: tuple[float, float, float],
         half_extents_m: tuple[float, float, float],
     ) -> None: ...
+    def author_capped_cylinder(
+        self, *, path: str, center_local_m: tuple[float, float, float],
+        axis_token: str, radius_m: float, height_m: float,
+    ) -> None: ...
 
-class UsdPressButtonStageAuthoringAdapter:
-    """Lazy pxr-backed implementation; pxr imports occur inside construction."""
+@dataclass(frozen=True)
+class PressButtonGeometryAuthoringReceipt:
+    schema_version: str
+    mechanism_version: str
+    contract: PressButtonGeometryContract
+    geometry_sha256: str
+    world_from_mechanism_root_sha256: str
+    root_prim_path: str
+    housing_prim_path: str
+    button_prim_path: str
+    geometry_only: bool
+    complete_stage: bool
+    benchmark_cap_eligible: bool
 
-def build_stage(
+def author_declared_geometry(
     self,
-    stage: Any,
     *,
-    authoring_adapter: PressButtonStageAuthoringAdapter | None = None,
-) -> dict[str, str]: ...
+    authoring_adapter: PressButtonDeclaredGeometryAuthoringAdapter,
+) -> PressButtonGeometryAuthoringReceipt: ...
+
+class UsdPressButtonDeclaredGeometryAuthoringAdapter:
+    """Lazy USD adapter for root and declared solids only."""
+
+def build_stage(self, stage: Any) -> dict[str, Any]: ...
 ```
 
-`PressButtonMechanism.build_stage()` first requires formal 1.1.0, then passes
-the same `PressButtonGeometryContract` already used by analytic route derivation
-to the adapter. The real adapter writes root translation and xyzw orientation,
-passes `axis_token` directly to `UsdGeom.Cylinder.CreateAxisAttr`, sets
-`height=2*half_height_m`, and authors the Cube's full dimensions as
-`2*half_extents_m`. Local centers come from the contract. Joint state/limit/drive
-authoring continues to use existing config fields.
+**GREEN phase 1: receipt and import-safe seam**
 
-The recording fake must prove call order and exact arguments without importing
-USD:
+- [ ] Define the three-method declared-geometry protocol.
+- [ ] Define the frozen receipt with the exact schema version and no-claim
+  fields.
+- [ ] Require formal 1.1.0 and reuse the exact `config.geometry_contract`.
+- [ ] Call root, housing, and button in that order with contract-derived values.
+- [ ] Return the receipt only after all calls succeed.
+- [ ] Keep this seam free of `pxr`, `omni`, and `isaacsim` imports.
+- [ ] Fail legacy calls before the first adapter call.
 
-```python
-adapter = RecordingPressButtonStageAuthoringAdapter()
-mechanism.build_stage(FakeStage(), authoring_adapter=adapter)
-assert adapter.calls[:3] == [
-    ("root", (0.55, 0.0, 0.47), (0.0, 0.0, 0.0, 1.0)),
-    ("housing", (0.0, 0.0, -0.025), (0.045, 0.045, 0.010)),
-    ("button", (0.0, 0.0, 0.0), "Z", 0.035, 0.018),
-]
-```
-
-Add a source contract that rejects formal literals for `.035`, `.018`, `.09`,
-and `.025` within the builder body. Values may appear in tests/config only.
-
-**Steps**
-
-- [ ] Define the injected adapter protocol and recording fake.
-- [ ] Move all root/solid authoring through the parsed contract.
-- [ ] Keep the `pxr` imports inside the real adapter/runtime call.
-- [ ] Prove exact root, axis token, dimensions, centers, and authoring order with
-  fake tests.
-- [ ] Prove the analytic world geometry and fake USD inputs share the identical
-  parsed object/digest.
-- [ ] Run mechanism tests without Isaac.
-
-**Commands and expected results**
+Run:
 
 ```bash
 python -m pytest -q tests/test_press_button_mechanism.py \
-  -k 'stage or geometry or version or legacy'
-# Before refactor: fake authoring/shared-object assertions are RED.
-# After refactor: selected tests pass without Isaac.
-
-python -m pytest -q tests/test_press_button_geometry_contract.py
-# Expected after refactor: all pass.
+  -k 'declared_geometry or geometry_authoring_receipt or legacy'
+# Expected: receipt/seam/legacy nodes GREEN; complete real-builder nodes remain
+# assertion RED; no Isaac import or startup.
 ```
 
-**Stop conditions**
+Commit:
 
-Stop if fake tests cannot observe authoring order, if the builder and analytic
-path do not share the same contract instance/digest, if any formal geometry
-literal remains, or if unit tests require Isaac.
+`feat(g1): add declared geometry authoring receipt`
 
-**Commit**
+**GREEN phase 2: real complete stage**
 
-`refactor(g1): share declared geometry with USD stage`
+- [ ] Implement the lazy `UsdPressButtonDeclaredGeometryAuthoringAdapter(stage)`.
+- [ ] Convert xyzw root orientation to USD quaternion ordering.
+- [ ] Derive full cylinder height and Cube dimensions from the contract.
+- [ ] Keep the complete builder signature limited to the real stage.
+- [ ] Call the geometry-only seam, validate authored prims, then apply every
+  existing collision, rigid body, mass, prismatic joint, relationship, anchor,
+  rotation, limit, and drive operation.
+- [ ] Derive the housing-side joint anchor from button/housing contract centers.
+- [ ] Remove formal geometry authority literals from the adapter and builder.
+- [ ] Return a complete scene contract only after all physical authoring
+  succeeds.
 
-Before and after commit run the focused stage and geometry files. All must be
-GREEN with no application startup. Task 7 depends on Tasks 4 and 6; Task 8
-depends on its shared contract and Task 5 validator. Isaac Sim is not allowed.
+Run:
+
+```bash
+python -m pytest -q tests/test_press_button_mechanism.py
+python -m pytest -q tests/test_press_button_geometry_contract.py
+python -m pytest -q tests/test_g1_contact_exclusion_geometry.py
+python -m pytest -q tests/test_press_button_task_card_contract.py
+# Expected: all Task 4–7 nodes GREEN; no application startup.
+```
+
+Commit:
+
+`refactor(g1): share declared geometry with complete USD stage`
+
+**Task 7B stop conditions**
+
+Stop if the geometry-only seam imports Isaac/USD, the receipt claims a complete
+stage or benchmark eligibility, persistent provenance uses object identity,
+the real builder accepts an injected fake/custom adapter, complete physical
+authoring is skipped, root/solid/joint geometry requires a source literal,
+analytic and authoring paths do not share the same contract/digests, or any unit
+test needs Isaac Sim.
+
+Task 7 depends on Tasks 4 and 6. Task 8 depends on Task 7B GREEN plus the Task 5
+continuous validator. Isaac Sim is not allowed in Task 7A or Task 7B.
 
 ## Task 8: Derive and validate all six T152 routes
 
@@ -1245,7 +1353,7 @@ invalid input, or revives the sphere shape as formal authority.
 
 Before and after commit run the two focused commands and the migration manifest.
 All mapped replacement nodes and Task 8-owned nodes must be GREEN; all remaining
-T152 nodes keep their recorded RED ownership. Task 8 depends on Tasks 5 and 7;
+T152 nodes keep their recorded RED ownership. Task 8 depends on Task 5 and Task 7B GREEN;
 Task 9 depends on validated pre-runtime routes. Isaac Sim is not allowed.
 
 ## Task 9: Verify selected C2a evidence and current-input freshness
@@ -1895,29 +2003,32 @@ GREEN/RED partition stated below.
 | 4 | `feat(g1): define PressButton geometry contract` | `python -m pytest -q tests/test_press_button_geometry_contract.py` | all schema/type/digest nodes GREEN; analytic nodes remain RED |
 | 5 | `feat(g1): validate continuous TCP clearance` | `python -m pytest -q tests/test_g1_contact_exclusion_geometry.py` | all analytic nodes GREEN |
 | 6 | `feat(g1): migrate PressButton mechanism 1.1` | `python -m pytest -q tests/test_press_button_geometry_contract.py tests/test_press_button_mechanism.py tests/test_press_button_task_card_contract.py` | schema/version/current-digest nodes GREEN and attempt-02 classified stale; complete CLI refresh-blocker nodes remain RED for Task 9 |
-| 7 | `refactor(g1): share declared geometry with USD stage` | `python -m pytest -q tests/test_press_button_mechanism.py -k 'stage or geometry or version or legacy'` | exact recording-adapter calls and shared-object tests GREEN |
+| 7A | `test(g1): correct geometry-only authoring contracts` | `python -m pytest -q tests/test_press_button_mechanism.py -k 'declared_geometry or geometry_authoring_receipt or complete_build_stage or formal_stage_builder'` | corrected receipt/seam/complete-builder nodes are exact assertion RED; prior mechanism nodes GREEN |
+| 7B.1 | `feat(g1): add declared geometry authoring receipt` | `python -m pytest -q tests/test_press_button_mechanism.py -k 'declared_geometry or geometry_authoring_receipt or legacy'` | import-safe geometry receipt/seam nodes GREEN; complete real-builder nodes remain RED |
+| 7B.2 | `refactor(g1): share declared geometry with complete USD stage` | `python -m pytest -q tests/test_press_button_mechanism.py tests/test_press_button_geometry_contract.py tests/test_g1_contact_exclusion_geometry.py tests/test_press_button_task_card_contract.py` | all Task 4–7 nodes GREEN; full physical authoring source contract retained without Isaac startup |
 | 8 | `feat(g1): derive pose-conditioned exclusion routes` | `python -m pytest -q tests/test_g1_pose_conditioned_tracking_cli.py -k 'route or motif or scalar_schedule or float64'` | all route/motif-owned nodes GREEN; factory remains untouched on invalid route |
 | 9 | `feat(g1): verify current C2a pose evidence` | `python -m pytest -q tests/test_g1_pose_conditioned_tracking_cli.py -k 'c2a_evidence or selected_candidate or selected_pose or current_input or provenance'` | all loader/freshness nodes GREEN; attempt-02 rejected as historical |
 | 10 | `feat(g1): wire pose-conditioned multiclass CLI` | `python -m pytest -q tests/test_g1_pose_conditioned_tracking_cli.py` | complete file GREEN; no legacy real-main path |
 | 11 | `docs(g1): complete T152 geometry integration` | complete suite at `E_impl`, projection commit `P`, complete suite and G0 at `P` | `P^=E_impl`, `E2=P`, T152 `[x]`, T151/T070 `[ ]`, attempt-04 prohibited, no tracked change after `P` |
 
-Tasks 2 and 3 are deliberately RED-only commits. No production change may be
-included with them. Tasks 4–10 may not modify approved RED assertions except the
-one-to-one schema-specific migration already committed in Task 2.
+Tasks 2, 3, and 7A are deliberately RED-only commits. No production change may
+be included with them. Tasks 4–10 may not modify approved RED assertions except
+the one-to-one schema-specific migration committed in Task 2 and the
+architecture-approved geometry-only seam correction in Task 7A.
 
 ## Approved design-section coverage
 
 | Architecture review section | Implementing tasks | Verification |
 |---|---|---|
 | 1. Scope and truth boundary | 2, 5, 8, 10 | TCP-only fields plus mandatory runtime truth nodes |
-| 2. One authoritative geometry source | 4, 6, 7 | strict YAML parser, shared parsed object, literal-source guard |
+| 2. One authoritative geometry source | 4, 6, 7A, 7B | strict YAML parser, geometry-only receipt identity/digests, complete-builder literal-source guard |
 | 3. Geometry parsing and validation | 2, 4, 6 | schema/dimension/token/quaternion/digest tests |
 | 4. Distance, clearance, continuous mathematics | 3, 5 | slab/quadratic/boundary/degenerate analytic tests |
 | 5. Six-route design-time assessment | 8 | six canonical continuous routes; no runtime 21 mm claim |
 | 6. Derived route evidence schema | 5, 8, 10 | obstacle/segment/root/config provenance cross-recording |
 | 7. Fail-closed taxonomy | 2–10 | exact code and non-empty-message assertions at each boundary |
 | 8. RED fixture correction | 1–3 | one-to-one migration manifest and observed schema RED |
-| 9. Version migration/consumer synchronization | 6, 7, 9 | formal 1.1.0, state-only legacy, card/config/digest synchronization |
+| 9. Version migration/consumer synchronization | 6, 7A, 7B, 9 | formal 1.1.0, state-only legacy, card/config/digest synchronization |
 | 10. Freshness/C2a invalidation | 6, 9, 11, 12 | Task 6 proves stale digests, Task 9 propagates the blocker, and a fresh run is separately gated at final `E2=P` |
 | 11. Non-goals/fixed invariants | every task | matrix, limits, clearance, physics, truth, and task-state stop checks |
 | 12. Architecture conclusion/task state | 11, 12 | only T152 closes after GREEN; T151/T070 and attempt-04 stay blocked |
@@ -1933,7 +2044,7 @@ claim.
 | 2 | Quaternion shape/order/finite/nonzero normalization, canonical sign, transform/digest | Task 2 root nodes | Task 4 |
 | 3 | Exact X/Y/Z token mapping, dual-field rejection, joint-axis collinearity | Task 2 button nodes | Task 4 |
 | 4 | Every missing/unknown/nonfinite/malformed/invalid field rejected | Task 2 nested-field parameters | Tasks 4 and 6 |
-| 5 | `build_stage()` consumes root/geometry and writes axis token/dimensions | Task 2 mechanism nodes | Task 7 |
+| 5 | geometry-only seam transfers the parsed contract and real `build_stage()` completes physical authoring | Task 2 mechanism nodes plus Task 7A corrected receipt/builder nodes | Task 7B |
 | 6 | Root-plus-local transform derives centers/axis/OBB orientation | Task 2 transform nodes | Task 4 |
 | 7 | Capped-cylinder point/segment distance correct | Task 3 cylinder nodes | Task 5 |
 | 8 | OBB point/segment distance correct | Task 3 OBB nodes | Task 5 |
@@ -2030,7 +2141,10 @@ canonical motif fixtures, and fake-factory import safety.
 | `validate_segment_against_expanded_obb` | Task 5 | Task 8 route validation |
 | `validate_segment_against_expanded_capped_cylinder` | Task 5 | Task 8 route validation |
 | `validate_contact_exclusion_routes` | Task 5 | Task 8 orchestration validator |
-| `PressButtonStageAuthoringAdapter` | Task 7 | Task 7 mechanism builder tests/runtime |
+| `PressButtonDeclaredGeometryAuthoringAdapter` | Task 7B | Task 7A recording tests and Task 7B real USD geometry adapter |
+| `PressButtonGeometryAuthoringReceipt` | Task 7B | Task 7A receipt truth tests and Task 7B complete builder |
+| `author_declared_geometry` | Task 7B | Task 7A recording tests and Task 7B real complete builder |
+| `UsdPressButtonDeclaredGeometryAuthoringAdapter` | Task 7B | Task 7A lazy-import/source tests and Task 7B complete builder |
 | `derive_g1_pose_conditioned_routes` | Task 8 | Tasks 8–10 script orchestration |
 | `validate_g1_pose_conditioned_routes` | Task 8 | Tasks 8–10 script orchestration |
 | `G1CurrentInputDigests` | Task 9 | Tasks 9–10 |

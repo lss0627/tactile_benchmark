@@ -1,0 +1,274 @@
+# G1 PressButton Geometry Authoring Receipt Design
+
+**Status:** `APPROVED_DESIGN_PENDING_RED_CORRECTION_AND_GREEN_IMPLEMENTATION`
+
+**Decision:** `APPROVED_OPTION_A`
+
+**Architecture:** `GEOMETRY_ONLY_RECEIPT_SEAM_PLUS_REAL_COMPLETE_BUILD_STAGE`
+
+This document resolves the stage-authoring gap recorded in
+[`g1-press-button-stage-authoring-adapter-blocker.md`](g1-press-button-stage-authoring-adapter-blocker.md).
+It approves an import-safe geometry-only seam and retains the real
+`PressButtonMechanism.build_stage()` as the sole complete USD/PhysX stage
+operation. It does not implement Task 7, complete T152, authorize runtime
+execution, or create evidence.
+
+## 1. Decision and separation of responsibilities
+
+Declared geometry transfer and complete physical stage construction are two
+different operations:
+
+| Operation | Permitted responsibility | Explicitly excluded |
+|---|---|---|
+| `author_declared_geometry()` | Transfer the already parsed root, housing, and button geometry to a three-method adapter and return a geometry-only receipt | Collision, rigid bodies, mass, joint, drive, runtime success, cap eligibility |
+| `build_stage()` | Create real USD geometry through the geometry-only seam, then complete every required USD/PhysX physical and joint property | Fake/custom adapter injection, early success from a geometry receipt |
+
+The geometry-only operation is import-safe and testable with a recording fake.
+The complete operation is the real runtime path and performs lazy `pxr`
+imports. Production control flow may not depend on fake identity, caller
+identity, adapter class name, or test module identity.
+
+## 2. Geometry-only adapter
+
+The approved protocol name states its limited scope:
+
+```python
+class PressButtonDeclaredGeometryAuthoringAdapter(Protocol):
+    def author_root(
+        self,
+        *,
+        root_path: str,
+        position_m: tuple[float, float, float],
+        orientation_xyzw: tuple[float, float, float, float],
+    ) -> None: ...
+
+    def author_oriented_box(
+        self,
+        *,
+        path: str,
+        center_local_m: tuple[float, float, float],
+        half_extents_m: tuple[float, float, float],
+    ) -> None: ...
+
+    def author_capped_cylinder(
+        self,
+        *,
+        path: str,
+        center_local_m: tuple[float, float, float],
+        axis_token: str,
+        radius_m: float,
+        height_m: float,
+    ) -> None: ...
+```
+
+The protocol has exactly these three responsibilities. It does not acquire
+collision APIs, rigid bodies, mass, joints, drives, Contact validity, runtime
+qualification, or benchmark eligibility.
+
+## 3. Geometry-only receipt
+
+The seam returns a frozen, pure-Python receipt:
+
+```python
+@dataclass(frozen=True)
+class PressButtonGeometryAuthoringReceipt:
+    schema_version: str
+    mechanism_version: str
+    contract: PressButtonGeometryContract
+    geometry_sha256: str
+    world_from_mechanism_root_sha256: str
+    root_prim_path: str
+    housing_prim_path: str
+    button_prim_path: str
+    geometry_only: bool
+    complete_stage: bool
+    benchmark_cap_eligible: bool
+```
+
+The receipt contract is exact:
+
+```text
+schema_version = g1.press_button.geometry_authoring_receipt.v1
+mechanism_version = 1.1.0
+receipt.contract is config.geometry_contract
+geometry_sha256 = contract.geometry_sha256
+world_from_mechanism_root_sha256 = contract.world_from_mechanism_root_sha256
+geometry_only = true
+complete_stage = false
+benchmark_cap_eligible = false
+```
+
+Object identity is an in-process invariant used by unit tests. Persistent
+provenance uses the two stable SHA-256 values and never `id(contract)`. The
+receipt is neither runtime evidence nor proof of a complete stage. It cannot be
+promoted to stage success, C1 success, a selected command cap, gate status, or
+benchmark eligibility.
+
+## 4. Geometry-only seam
+
+The approved method is:
+
+```python
+def author_declared_geometry(
+    self,
+    *,
+    authoring_adapter: PressButtonDeclaredGeometryAuthoringAdapter,
+) -> PressButtonGeometryAuthoringReceipt:
+    ...
+```
+
+Its ordered behavior is normative:
+
+1. Require exact formal mechanism version `1.1.0`.
+2. Require `geometry_contract_available=true` and the existing non-null
+   `config.geometry_contract`.
+3. Retain that exact contract object; do not parse YAML again and do not build a
+   second geometry object from scalar constants.
+4. Call `author_root`, then `author_oriented_box` for housing, then
+   `author_capped_cylinder` for button.
+5. Pass root and solid paths from mechanism config and all geometry values from
+   the retained contract.
+6. Pass button full height as `2 * contract.button.half_height_m`.
+7. Return the receipt defined in section 3 only after all three calls complete.
+
+This method imports none of `pxr`, `omni`, or `isaacsim`. It creates no
+collision, rigid body, mass, joint, or drive. Adapter failure propagates and no
+receipt is returned. A legacy mechanism call fails closed with
+`G1_PRESS_BUTTON_FORMAL_GEOMETRY_REQUIRED` and a non-empty message.
+
+## 5. Recording fake boundary
+
+The recording fake calls only:
+
+```python
+receipt = mechanism.author_declared_geometry(
+    authoring_adapter=recording_adapter,
+)
+```
+
+It verifies:
+
+- exact call order `root -> housing -> button`;
+- exact parsed paths and values;
+- the same in-process contract object;
+- matching geometry and root-transform digests;
+- absence of Isaac/USD imports;
+- `geometry_only=true`, `complete_stage=false`, and
+  `benchmark_cap_eligible=false`.
+
+It does not call the complete stage builder. Its result cannot assert collision,
+rigid body, joint, drive, runtime qualification, C1 success, or cap eligibility.
+
+## 6. Real complete stage build
+
+The complete interface remains un-injected:
+
+```python
+def build_stage(self, stage: Any) -> dict[str, Any]:
+    ...
+```
+
+Its required sequence is:
+
+1. Check formal mechanism and runtime-stage eligibility before importing USD.
+2. Lazily import the required `pxr` modules.
+3. Construct `UsdPressButtonDeclaredGeometryAuthoringAdapter(stage)`.
+4. Call `author_declared_geometry()` with that real adapter.
+5. Verify the authored root, housing, and button prims exist and are valid.
+6. Apply housing collision, rigid body, rigid-body enabled, and kinematic
+   enabled attributes.
+7. Apply button collision, rigid body, rigid-body enabled, and configured mass.
+8. Define the prismatic joint, Body0/Body1 relationships, local anchors, local
+   rotations, lower/upper limits, linear drive type, drive target, stiffness,
+   and damping.
+9. Return the complete scene contract only after every required operation
+   succeeds.
+
+The geometry receipt is an internal intermediate value. It is not an early
+return and cannot satisfy the complete build result.
+
+## 7. Real USD geometry adapter
+
+`UsdPressButtonDeclaredGeometryAuthoringAdapter` receives the real stage at
+construction and lazily imports `pxr`. Its authoring rules are:
+
+- root translation is the parsed `position_m`;
+- root orientation converts configured xyzw to USD quaternion ordering as
+  `Gf.Quatd(w, Gf.Vec3d(x, y, z))`;
+- housing local translation is `center_local_m`;
+- Cube full dimensions are `2 * half_extents_m`;
+- button local translation is `center_local_m`;
+- Cylinder axis receives the parsed `axis_token` unchanged;
+- Cylinder radius is the parsed `radius_m`;
+- Cylinder height is the supplied full height derived from
+  `2 * half_height_m`.
+
+The adapter authors declared geometry only. It neither applies physics APIs nor
+returns a complete-stage or benchmark claim.
+
+## 8. Single geometry authority and joint derivation
+
+The same `PressButtonGeometryContract` supplies all of these values:
+
+- root position and orientation;
+- housing center and dimensions;
+- button center, axis token, radius, and height;
+- geometry and root-transform digests.
+
+Formal builder and adapter source may not retain the physical geometry literals
+`0.035`, `0.018`, `0.09`, or `0.025`. The existing joint housing anchor is
+derived from the parsed centers:
+
+```python
+joint_local_pos0_m = tuple(
+    button - housing
+    for button, housing in zip(
+        contract.button.center_local_m,
+        contract.housing.center_local_m,
+    )
+)
+joint_local_pos1_m = (0.0, 0.0, 0.0)
+```
+
+For the approved contract this derivation yields the unchanged physical anchor.
+The joint axis token is the same parsed button axis token; existing matching
+local rotations retain the configured travel direction, whose collinearity was
+already validated by the geometry parser. Display colors may remain independent
+visual constants because they do not determine geometry, collision shape, or
+provenance.
+
+## 9. Failure and truth boundaries
+
+The implementation remains fail closed:
+
+- missing formal geometry or a legacy caller:
+  `G1_PRESS_BUTTON_FORMAL_GEOMETRY_REQUIRED`;
+- receipt digest or retained-contract mismatch:
+  `G1_C1_CONTACT_EXCLUSION_DIGEST_MISMATCH`;
+- authored USD prim missing or invalid, or incomplete physics/joint authoring:
+  a non-empty exact stage-build blocker defined by the corrected RED contract.
+
+No geometry/schema operation may set `benchmark_cap_eligible=true`.
+Static analytic clearance remains
+`TCP_POINT_VS_DECLARED_MECHANISM_SOLIDS`, never full-robot collision clearance.
+Every real runtime action still requires Contact, collision, penetration, and
+post-action safety truth. `force_vector_valid=false`, `wrench_valid=false`, and
+`raw_impulse_used_as_force=false` remain mandatory.
+
+## 10. Delivery sequence and fixed state
+
+The next authorized implementation sequence is:
+
+```text
+Task 7A RED correction
+-> receipt/seam GREEN
+-> real complete build GREEN
+-> Task 7B full verification
+-> Task 8 route integration
+```
+
+Task 6 remains complete. Task 7 and T152 remain incomplete until their separate
+GREEN and repository-wide verification pass. Task 8 has not started. T150
+remains `[x]`; T151, T152, and T070 remain `[ ]`; attempt-04 remains
+`ATTEMPT_04_PROHIBITED`. Fresh C2a remains separately approval-gated after the
+final T152 implementation commit E2.
