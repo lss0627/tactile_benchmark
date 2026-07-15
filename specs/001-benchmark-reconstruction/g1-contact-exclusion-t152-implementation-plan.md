@@ -1825,37 +1825,81 @@ allowed.
 
 **Files**
 
-- Modify: `specs/001-benchmark-reconstruction/tasks.md` only after every
-  pre-projection check passes, changing T152 from `[ ]` to `[x]`.
-- Modify: `specs/001-benchmark-reconstruction/g1-contact-exclusion-t152-implementation-plan.md`
-  in the same projection commit to record only `E_impl`, the already-existing
-  parent implementation SHA.
-- Produce final G0 repository-integrity evidence at projection commit `P`; this
-  is repository evidence, not runtime/physical evidence.
+- Design authority:
+  `specs/001-benchmark-reconstruction/g1-task11-portable-verification-closure-design.md`.
+- Verification-infrastructure commit `V` may create
+  `configs/repository/external-evidence-nodeids.txt` and modify
+  `scripts/check_clean_checkout.py`, `tests/test_clean_checkout_cli.py`, and
+  this Task 11 verification helper/plan.
+- Projection commit `P` may modify only
+  `specs/001-benchmark-reconstruction/tasks.md`, changing T152 from `[ ]` to
+  `[x]`, and this plan, recording the already-known implementation, design, and
+  verification SHAs.
+- Produce final G0 repository-integrity evidence at `P`; this is repository
+  evidence, not runtime or physical evidence.
 
 **Commit identities and no-self-reference rule**
 
-- `E_impl` is the last production implementation commit after Tasks 1–10.
-- Run the complete pre-projection verification suite at clean `E_impl`.
+- `E_impl=aa47af3946f2f9f934147b4b263affe345a9d450` is the last production
+  implementation commit after Tasks 1–10.
+- `D` is the approved portable-closure design checkpoint and satisfies
+  `D^=E_impl`.
+- `V` is the later RED-to-GREEN verification-infrastructure commit and must
+  satisfy `V^=D`.
+- Run the complete pre-projection verification suite only at clean `V`.
 - After it passes, edit only `tasks.md` and this plan, record the literal
-  already-known `E_impl`, and create the one projection/status commit `P` with
-  message `docs(g1): complete T152 geometry integration`.
-- Do not write `P`'s SHA into either tracked file. Define final `E2=P` only after
-  commit creation with `FINAL_E2=$(git rev-parse HEAD)`.
-- Verify `P^ == E_impl`, rerun the complete suite at `P`, and create G0 evidence
-  bound to `P`.
+  already-known `E_impl`, `D`, and `V`, and create the unique projection/status
+  commit `P` with message `docs(g1): complete T152 geometry integration`.
+- Do not write `P`'s SHA into either tracked file. Define `FINAL_E2=P` only
+  after commit creation with `FINAL_E2=$(git rev-parse HEAD)`.
+- Verify `P^=V`, rerun the complete suite at `P`, compare its four node-ID
+  lists, two current-GREEN digests, counts, and normalized JUnit outcomes with
+  the clean `V` snapshot, then create G0 evidence bound to `P`.
 - After `P`, no tracked file may change. Any tracked change invalidates final
   verification/freshness and requires a new reviewed projection commit.
 
+The required topology is therefore:
+
+```text
+E_impl = aa47af3946f2f9f934147b4b263affe345a9d450
+→ D = portable-closure design
+→ V = verification infrastructure
+→ P = final projection/status
+→ FINAL_E2 = P
+```
+
 **Reusable verification suite**
 
-The function below is executed once at `E_impl` and again at `P`. Its 12
-ordered checks are: geometry schema, analytic geometry, mechanism/task card,
-T152, affected runtime/safety, exact hard limit, original 748 GREEN, dynamically
-collected current GREEN, intentional future-RED 125, full classification,
-deprecated/import checks, and detached clean-checkout. Dynamic current GREEN is
-derived from the current complete collection minus the exact frozen 125
-future-RED IDs; it is not an immutable Task 1 selection.
+The function below is finalized and made executable by `V`, then executed once
+at clean `V` and again at `P`. Its ordered checks are: geometry schema, analytic
+geometry, mechanism/task card, T152, affected runtime/safety, exact hard limit,
+original 748 GREEN, dynamic main-checkout current GREEN, intentional future-RED
+125, full portable/external/future classification, dual list/digest snapshots,
+deprecated/import checks, and a tracked-only portable archive. Dynamic current
+GREEN is derived from the current complete collection minus the exact frozen
+125 future-RED IDs; it is not an immutable Task 1 selection.
+
+The four authoritative files are:
+
+```text
+all-nodeids.collection.txt       # 1091, pytest collection order
+all-nodeids.sorted.txt           # 1091, sort/comm authority only
+current-green.collection.txt     # 966, collection order retained
+current-green.sorted.txt         # 966, classification authority only
+```
+
+The two approved current-GREEN digests are independent:
+
+```text
+collection-order SHA-256 = 1c8e6a8e9b09da6b06435ea6c75191c5fb4b3c3fa7e1b97161951e65249d45ad
+sorted SHA-256           = 00a6e84c5d2e1f623f2211db8272ca95859e8050417f7c25cbfeef9afd84efc7
+```
+
+The external-evidence manifest contains exactly this one node:
+
+```text
+tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_attempt02_is_historical_and_emits_exact_refresh_blocker_before_close
+```
 
 ```bash
 set -euo pipefail
@@ -1863,9 +1907,7 @@ set -euo pipefail
 run_t152_verification() {
   VERIFY_COMMIT=$1
   VERIFY_LABEL=$2
-  EXPECTED_CURRENT_GREEN_NODEIDS=${3-}
-  EXPECTED_CURRENT_GREEN_DIGEST=${4-}
-  EXPECTED_CURRENT_GREEN_COUNT=${5-}
+  EXPECTED_VERIFY_DIR=${3-}
   test "$(git rev-parse HEAD)" = "$VERIFY_COMMIT"
   test -z "$(git status --porcelain)"
 
@@ -1900,27 +1942,96 @@ run_t152_verification() {
     > "$FUTURE_NODEIDS"
   test "$(wc -l < "$FUTURE_NODEIDS")" -eq 125
 
+  EXTERNAL_NODEIDS="$VERIFY_DIR/external-evidence-nodeids.txt"
+  awk 'NF && $1 !~ /^#/' \
+    configs/repository/external-evidence-nodeids.txt \
+    > "$EXTERNAL_NODEIDS"
+  test "$(wc -l < "$EXTERNAL_NODEIDS")" -eq 1
+  test "$(sort -u "$EXTERNAL_NODEIDS" | wc -l)" -eq 1
+  test "$(cat "$EXTERNAL_NODEIDS")" = \
+    'tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_attempt02_is_historical_and_emits_exact_refresh_blocker_before_close'
+  sha256sum configs/repository/external-evidence-nodeids.txt \
+    > "$VERIFY_DIR/external-evidence-manifest.sha256"
+  comm -12 "$FUTURE_NODEIDS" "$EXTERNAL_NODEIDS" \
+    > "$VERIFY_DIR/future-external-overlap.txt"
+  test ! -s "$VERIFY_DIR/future-external-overlap.txt"
+
   ALL_COLLECTION_LOG="$VERIFY_DIR/full-collection.log"
-  ALL_NODEIDS="$VERIFY_DIR/all-nodeids.txt"
+  ALL_COLLECTION_NODEIDS="$VERIFY_DIR/all-nodeids.collection.txt"
+  ALL_SORTED_NODEIDS="$VERIFY_DIR/all-nodeids.sorted.txt"
   python -m pytest --collect-only -q > "$ALL_COLLECTION_LOG"
-  awk '/^tests\// && /::/' "$ALL_COLLECTION_LOG" > "$VERIFY_DIR/all-nodeids.raw"
-  sort -u "$VERIFY_DIR/all-nodeids.raw" > "$ALL_NODEIDS"
-  test "$(wc -l < "$VERIFY_DIR/all-nodeids.raw")" \
-    -eq "$(wc -l < "$ALL_NODEIDS")"
-  comm -23 "$FUTURE_NODEIDS" "$ALL_NODEIDS" \
+  awk '/^tests\// && /::/' "$ALL_COLLECTION_LOG" \
+    > "$ALL_COLLECTION_NODEIDS"
+  sort -u "$ALL_COLLECTION_NODEIDS" > "$ALL_SORTED_NODEIDS"
+  test "$(wc -l < "$ALL_COLLECTION_NODEIDS")" -eq 1091
+  test "$(wc -l < "$ALL_SORTED_NODEIDS")" -eq 1091
+  comm -23 "$FUTURE_NODEIDS" "$ALL_SORTED_NODEIDS" \
     > "$VERIFY_DIR/missing-future-red-nodeids.txt"
   test ! -s "$VERIFY_DIR/missing-future-red-nodeids.txt"
+  comm -23 "$EXTERNAL_NODEIDS" "$ALL_SORTED_NODEIDS" \
+    > "$VERIFY_DIR/missing-external-evidence-nodeids.txt"
+  test ! -s "$VERIFY_DIR/missing-external-evidence-nodeids.txt"
 
-  CURRENT_GREEN_NODEIDS="$VERIFY_DIR/current-green-nodeids.txt"
-  comm -23 "$ALL_NODEIDS" "$FUTURE_NODEIDS" > "$CURRENT_GREEN_NODEIDS"
+  CURRENT_COLLECTION_NODEIDS="$VERIFY_DIR/current-green.collection.txt"
+  CURRENT_SORTED_NODEIDS="$VERIFY_DIR/current-green.sorted.txt"
+  python - "$ALL_COLLECTION_NODEIDS" "$FUTURE_NODEIDS" \
+    "$CURRENT_COLLECTION_NODEIDS" <<'PY'
+import sys
+
+with open(sys.argv[2], encoding="utf-8") as stream:
+    future = {line.rstrip("\n") for line in stream if line.strip()}
+with open(sys.argv[1], encoding="utf-8") as stream:
+    collection = [line.rstrip("\n") for line in stream if line.strip()]
+current = [node for node in collection if node not in future]
+with open(sys.argv[3], "w", encoding="utf-8") as stream:
+    stream.write("\n".join(current) + "\n")
+PY
+  sort -u "$CURRENT_COLLECTION_NODEIDS" > "$CURRENT_SORTED_NODEIDS"
+  test "$(wc -l < "$CURRENT_COLLECTION_NODEIDS")" -eq 966
+  test "$(wc -l < "$CURRENT_SORTED_NODEIDS")" -eq 966
+  COLLECTION_DIGEST=$(sha256sum "$CURRENT_COLLECTION_NODEIDS" | awk '{print $1}')
+  SORTED_DIGEST=$(sha256sum "$CURRENT_SORTED_NODEIDS" | awk '{print $1}')
+  test "$COLLECTION_DIGEST" = \
+    1c8e6a8e9b09da6b06435ea6c75191c5fb4b3c3fa7e1b97161951e65249d45ad
+  test "$SORTED_DIGEST" = \
+    00a6e84c5d2e1f623f2211db8272ca95859e8050417f7c25cbfeef9afd84efc7
+  printf '1091\n' > "$VERIFY_DIR/all-nodeids-count.txt"
+  printf '966\n' > "$VERIFY_DIR/current-green.collection.count.txt"
+  printf '966\n' > "$VERIFY_DIR/current-green.sorted.count.txt"
+  printf '%s\n' "$COLLECTION_DIGEST" \
+    > "$VERIFY_DIR/current-green.collection.sha256.txt"
+  printf '%s\n' "$SORTED_DIGEST" \
+    > "$VERIFY_DIR/current-green.sorted.sha256.txt"
+
+  PORTABLE_NODEIDS="$VERIFY_DIR/portable-current-green.sorted.txt"
+  comm -23 "$CURRENT_SORTED_NODEIDS" "$EXTERNAL_NODEIDS" > "$PORTABLE_NODEIDS"
+  test "$(wc -l < "$PORTABLE_NODEIDS")" -eq 965
+  comm -23 "$EXTERNAL_NODEIDS" "$CURRENT_SORTED_NODEIDS" \
+    > "$VERIFY_DIR/external-not-current-green.txt"
+  test ! -s "$VERIFY_DIR/external-not-current-green.txt"
+  comm -12 "$PORTABLE_NODEIDS" "$EXTERNAL_NODEIDS" \
+    > "$VERIFY_DIR/portable-external-overlap.txt"
+  comm -12 "$PORTABLE_NODEIDS" "$FUTURE_NODEIDS" \
+    > "$VERIFY_DIR/portable-future-overlap.txt"
+  test ! -s "$VERIFY_DIR/portable-external-overlap.txt"
+  test ! -s "$VERIFY_DIR/portable-future-overlap.txt"
+  cat "$PORTABLE_NODEIDS" "$EXTERNAL_NODEIDS" "$FUTURE_NODEIDS" | sort -u \
+    > "$VERIFY_DIR/classified-nodeids.txt"
+  cmp "$ALL_SORTED_NODEIDS" "$VERIFY_DIR/classified-nodeids.txt"
+
+  ATTEMPT02_CHECKSUMS=outputs/evidence/G1/c2a-static-preliminary-0ace57ce7169-attempt-02/checksums.sha256
+  ATTEMPT02_SHA_BEFORE=$(sha256sum "$ATTEMPT02_CHECKSUMS" | awk '{print $1}')
+  test "$ATTEMPT02_SHA_BEFORE" = \
+    cc53c4b4bc3cefdc7a2363c6446741e3abfc65e768ac0db71123aa593be528ed
   DESELECT=()
   while IFS= read -r node; do DESELECT+=(--deselect "$node"); done \
     < "$FUTURE_NODEIDS"
   CURRENT_GREEN_JUNIT="$VERIFY_DIR/current-green.xml"
   python -m pytest -q "${DESELECT[@]}" --junitxml="$CURRENT_GREEN_JUNIT"
 
-  CURRENT_GREEN_COUNT=$(wc -l < "$CURRENT_GREEN_NODEIDS")
-  python - "$CURRENT_GREEN_JUNIT" "$CURRENT_GREEN_COUNT" <<'PY'
+  python - "$CURRENT_GREEN_JUNIT" \
+    "$VERIFY_DIR/current-green-junit-totals.json" 966 <<'PY'
+import json
 import sys
 import xml.etree.ElementTree as ET
 
@@ -1930,7 +2041,7 @@ totals = {
     key: sum(int(suite.attrib.get(key, "0")) for suite in suites)
     for key in ("tests", "failures", "errors", "skipped")
 }
-expected_tests = int(sys.argv[2])
+expected_tests = int(sys.argv[3])
 if totals != {
     "tests": expected_tests,
     "failures": 0,
@@ -1938,7 +2049,34 @@ if totals != {
     "skipped": 0,
 }:
     raise SystemExit(f"unexpected current-GREEN JUnit totals: {totals}")
+with open(sys.argv[2], "w", encoding="utf-8") as stream:
+    json.dump(totals, stream, sort_keys=True, separators=(",", ":"))
+    stream.write("\n")
 PY
+
+  python -m pytest -q \
+    'tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_attempt02_is_historical_and_emits_exact_refresh_blocker_before_close' \
+    --junitxml="$VERIFY_DIR/external-evidence.xml"
+  python - "$VERIFY_DIR/external-evidence.xml" \
+    "$VERIFY_DIR/external-evidence-junit-totals.json" <<'PY'
+import json
+import sys
+import xml.etree.ElementTree as ET
+
+root = ET.parse(sys.argv[1]).getroot()
+suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
+totals = {
+    key: sum(int(suite.attrib.get(key, "0")) for suite in suites)
+    for key in ("tests", "failures", "errors", "skipped")
+}
+if totals != {"tests": 1, "failures": 0, "errors": 0, "skipped": 0}:
+    raise SystemExit(f"unexpected external-evidence JUnit totals: {totals}")
+with open(sys.argv[2], "w", encoding="utf-8") as stream:
+    json.dump(totals, stream, sort_keys=True, separators=(",", ":"))
+    stream.write("\n")
+PY
+  ATTEMPT02_SHA_AFTER=$(sha256sum "$ATTEMPT02_CHECKSUMS" | awk '{print $1}')
+  test "$ATTEMPT02_SHA_AFTER" = "$ATTEMPT02_SHA_BEFORE"
 
   ORIGINAL_CURRENT_NODEIDS="$VERIFY_DIR/original-current-green-nodeids.txt"
   python - tests/fixtures/g1_t152_baseline_inventory.json \
@@ -1958,24 +2096,12 @@ if len(node_ids) != 752:
 with open(sys.argv[2], "w", encoding="utf-8") as stream:
     stream.write("\n".join(node_ids) + "\n")
 PY
-  comm -23 "$ORIGINAL_CURRENT_NODEIDS" "$CURRENT_GREEN_NODEIDS" \
+  comm -23 "$ORIGINAL_CURRENT_NODEIDS" "$CURRENT_SORTED_NODEIDS" \
     > "$VERIFY_DIR/missing-original-green-nodeids.txt"
   test ! -s "$VERIFY_DIR/missing-original-green-nodeids.txt"
   MIGRATED_NEW_GREEN_NODEIDS="$VERIFY_DIR/migrated-new-current-green-nodeids.txt"
-  comm -23 "$CURRENT_GREEN_NODEIDS" "$ORIGINAL_CURRENT_NODEIDS" \
+  comm -23 "$CURRENT_SORTED_NODEIDS" "$ORIGINAL_CURRENT_NODEIDS" \
     > "$MIGRATED_NEW_GREEN_NODEIDS"
-  cat "$ORIGINAL_CURRENT_NODEIDS" "$MIGRATED_NEW_GREEN_NODEIDS" \
-    "$FUTURE_NODEIDS" | sort -u > "$VERIFY_DIR/classified-nodeids.txt"
-  cmp "$ALL_NODEIDS" "$VERIFY_DIR/classified-nodeids.txt"
-
-  CURRENT_GREEN_DIGEST=$(sha256sum "$CURRENT_GREEN_NODEIDS" | awk '{print $1}')
-  printf '%s\n' "$CURRENT_GREEN_COUNT" > "$VERIFY_DIR/current-green-count.txt"
-  printf '%s\n' "$CURRENT_GREEN_DIGEST" > "$VERIFY_DIR/current-green-sha256.txt"
-  if test -n "$EXPECTED_CURRENT_GREEN_NODEIDS"; then
-    cmp "$EXPECTED_CURRENT_GREEN_NODEIDS" "$CURRENT_GREEN_NODEIDS"
-    test "$EXPECTED_CURRENT_GREEN_DIGEST" = "$CURRENT_GREEN_DIGEST"
-    test "$EXPECTED_CURRENT_GREEN_COUNT" = "$CURRENT_GREEN_COUNT"
-  fi
 
   python tests/run_g1_node_inventory.py \
     --inventory tests/fixtures/g1_t152_baseline_inventory.json \
@@ -1988,43 +2114,93 @@ PY
 
   CLEAN_DIR=$(mktemp -d "/tmp/g1-t152-${VERIFY_LABEL}-XXXXXX")
   git archive "$VERIFY_COMMIT" | tar -x -C "$CLEAN_DIR"
-  (cd "$CLEAN_DIR" && python -m pytest -q \
-    tests/test_press_button_geometry_contract.py \
-    tests/test_g1_contact_exclusion_geometry.py \
-    tests/test_press_button_mechanism.py \
-    tests/test_press_button_task_card_contract.py \
-    tests/test_g1_pose_conditioned_tracking_cli.py)
+  (
+    cd "$CLEAN_DIR"
+    python -m pytest --collect-only -q > "$VERIFY_DIR/archive-collection.log"
+    awk '/^tests\// && /::/' "$VERIFY_DIR/archive-collection.log" \
+      > "$VERIFY_DIR/archive-nodeids.collection.txt"
+    cmp "$ALL_COLLECTION_NODEIDS" "$VERIFY_DIR/archive-nodeids.collection.txt"
+    ARCHIVE_DESELECT=()
+    while IFS= read -r node; do
+      ARCHIVE_DESELECT+=(--deselect "$node")
+    done < configs/repository/intentional-future-red-nodeids.txt
+    while IFS= read -r node; do
+      ARCHIVE_DESELECT+=(--deselect "$node")
+    done < configs/repository/external-evidence-nodeids.txt
+    python -m pytest -q "${ARCHIVE_DESELECT[@]}" \
+      --junitxml="$VERIFY_DIR/portable-current-green.xml"
+  )
+  python - "$VERIFY_DIR/portable-current-green.xml" \
+    "$VERIFY_DIR/portable-current-green-junit-totals.json" 965 <<'PY'
+import json
+import sys
+import xml.etree.ElementTree as ET
+
+root = ET.parse(sys.argv[1]).getroot()
+suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
+totals = {
+    key: sum(int(suite.attrib.get(key, "0")) for suite in suites)
+    for key in ("tests", "failures", "errors", "skipped")
+}
+if totals != {"tests": int(sys.argv[3]), "failures": 0, "errors": 0, "skipped": 0}:
+    raise SystemExit(f"unexpected portable-GREEN JUnit totals: {totals}")
+with open(sys.argv[2], "w", encoding="utf-8") as stream:
+    json.dump(totals, stream, sort_keys=True, separators=(",", ":"))
+    stream.write("\n")
+PY
+
+  if test -n "$EXPECTED_VERIFY_DIR"; then
+    for name in \
+      all-nodeids.collection.txt \
+      all-nodeids.sorted.txt \
+      current-green.collection.txt \
+      current-green.sorted.txt \
+      all-nodeids-count.txt \
+      current-green.collection.count.txt \
+      current-green.sorted.count.txt \
+      current-green.collection.sha256.txt \
+      current-green.sorted.sha256.txt \
+      current-green-junit-totals.json \
+      external-evidence-junit-totals.json \
+      portable-current-green-junit-totals.json; do
+      cmp "$EXPECTED_VERIFY_DIR/$name" "$VERIFY_DIR/$name"
+    done
+  fi
 }
 ```
 
-Expected at both commits: all focused/current GREEN nodes pass; the exact
+Expected at both `V` and `P`: all focused/current GREEN nodes pass; the exact
 original 748 remain GREEN; exactly 125 intentional future-REDs retain the
 78/29/10/8 classifications with no unexpected pass/error/skip; all collection
-and import/help checks succeed; exact hard limit remains `0.0005`; and the clean
-archive passes from tracked files only. The dynamic current-GREEN JUnit must
-record failures=0, errors=0, skipped=0, and its node-ID list, count, digest, and
-outcomes at `P` must equal `E_impl`. Every collected node is classified as one
-of the 752 immutable original GREEN/control IDs, a migrated/new current GREEN
-ID, or one of the exact 125 intentional future-RED IDs. No command launches
-Isaac Sim.
+and import/help checks succeed; exact hard limit remains `0.0005`; and the
+tracked-only archive passes exactly 965 portable current-GREEN nodes. The main
+checkout passes all 966 current-GREEN nodes, including the one external-evidence
+node, with attempt-02 unchanged and factory call count zero. The external node
+is neither future-RED nor skipped. Every collected node belongs to exactly one
+of the 965 portable GREEN, one external-evidence GREEN, or exact 125 intentional
+future-RED sets. The partition is `965+1+125=1091`; there are no unclassified
+nodes. No command launches Isaac Sim.
 
 **Steps**
 
-- [ ] Bind `E_IMPL=$(git rev-parse HEAD)` after Task 10, verify the worktree is
-  clean, run `run_t152_verification "$E_IMPL" pre-projection`, and retain the
-  dynamic current-GREEN snapshot:
+- [ ] After approval of the portable-closure design, implement `V` with
+  RED-to-GREEN coverage for the external manifest, dual list/digest handling,
+  965-node archive selection, set partition, G0 schema, original-worktree
+  isolation, and main-checkout attempt-02 preservation. Do not run Isaac Sim.
+- [ ] Verify `V^=D`, bind `VERIFY_IMPL=$(git rev-parse HEAD)`, require a clean
+  worktree, run `run_t152_verification "$VERIFY_IMPL" pre-projection`, and
+  retain the whole snapshot directory:
 
   ```bash
-  EIMPL_CURRENT_GREEN_NODEIDS=/tmp/g1-t152-pre-projection/current-green-nodeids.txt
-  EIMPL_CURRENT_GREEN_DIGEST=$(cat \
-    /tmp/g1-t152-pre-projection/current-green-sha256.txt)
-  EIMPL_CURRENT_GREEN_COUNT=$(cat \
-    /tmp/g1-t152-pre-projection/current-green-count.txt)
+  E_IMPL=aa47af3946f2f9f934147b4b263affe345a9d450
+  D=$(git rev-parse "${VERIFY_IMPL}^")
+  test "$(git rev-parse "${D}^")" = "$E_IMPL"
+  PREPROJECTION_VERIFY_DIR=/tmp/g1-t152-pre-projection
   ```
 - [ ] After the suite passes, change only T152 to `[x]` in `tasks.md`; leave T151
   and T070 `[ ]` and attempt-04 prohibited.
-- [ ] Record the literal `E_impl` SHA in this plan without attempting to record
-  the not-yet-created projection SHA.
+- [ ] Record the literal, already-known `E_impl`, `D`, and `V` SHAs in this plan
+  without attempting to record the not-yet-created projection SHA.
 - [ ] Run `git diff --check`, stage only the two Markdown files, verify their
   diff, and create the unique projection commit:
 
@@ -2039,11 +2215,9 @@ Isaac Sim.
 
   ```bash
   FINAL_E2=$(git rev-parse HEAD)
-  test "$(git rev-parse "${FINAL_E2}^")" = "$E_IMPL"
+  test "$(git rev-parse "${FINAL_E2}^")" = "$VERIFY_IMPL"
   run_t152_verification "$FINAL_E2" final-projection \
-    "$EIMPL_CURRENT_GREEN_NODEIDS" \
-    "$EIMPL_CURRENT_GREEN_DIGEST" \
-    "$EIMPL_CURRENT_GREEN_COUNT"
+    "$PREPROJECTION_VERIFY_DIR"
   ```
 
 - [ ] Produce final G0 evidence bound only to `FINAL_E2=P`:
@@ -2056,6 +2230,35 @@ Isaac Sim.
   python scripts/review_gate.py --gate G0 \
     --evidence "$G0_OUTPUT/manifest.json"
   (cd "$G0_OUTPUT" && sha256sum -c checksums.sha256)
+  python - "$G0_OUTPUT/report.json" "$G0_OUTPUT/manifest.json" \
+    configs/repository/external-evidence-nodeids.txt <<'PY'
+import hashlib
+import json
+import sys
+
+expected = {
+    "total_collected": 1091,
+    "current_green_total": 966,
+    "portable_green_selected_count": 965,
+    "portable_green_passed_count": 965,
+    "external_evidence_count": 1,
+    "intentional_future_red_count": 125,
+    "reads_original_worktree": False,
+}
+external_node = "tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_attempt02_is_historical_and_emits_exact_refresh_blocker_before_close"
+with open(sys.argv[3], "rb") as stream:
+    external_manifest_sha256 = hashlib.sha256(stream.read()).hexdigest()
+for path in sys.argv[1:3]:
+    with open(path, encoding="utf-8") as stream:
+        record = json.load(stream)
+    for key, value in expected.items():
+        if record.get(key) != value:
+            raise SystemExit(f"unexpected G0 {path} {key}: {record.get(key)!r}")
+    if record.get("external_evidence_nodeids") != [external_node]:
+        raise SystemExit(f"unexpected G0 {path} external node IDs")
+    if record.get("external_evidence_manifest_sha256") != external_manifest_sha256:
+        raise SystemExit(f"unexpected G0 {path} external manifest SHA-256")
+PY
   test -z "$(git status --porcelain --untracked-files=no)"
   ```
 
@@ -2067,16 +2270,21 @@ Isaac Sim.
 
 Stop on any node-ID/classification drift, unexpected pass/error/skip,
 hard-limit/clearance/matrix/truth change, deprecated diagnostic, help-time Isaac
-startup, dirty archive dependency, projection parent mismatch, tracked change
-after `P`, G0 checksum failure, or pressure to advance T151/T070/attempt-04.
+startup, loss of either current-GREEN digest, sorting before the collection-order
+digest, external/future overlap, an external node that is absent or does not
+pass in the main checkout, attempt-02 checksum drift, archive selection other
+than 965, archive access to the original worktree, a partition other than
+`965+1+125=1091`, `D^!=E_impl`, `V^!=D`, `P^!=V`, tracked change after `P`, G0
+checksum failure, or pressure to advance T151/T070/attempt-04.
 
 **Commit**
 
 `docs(g1): complete T152 geometry integration`
 
 This is the sole projection/status commit `P` and final `E2`. Its parent is
-`E_impl`; tracked files contain only the parent implementation SHA. Task 11
-depends on Tasks 1–10. Isaac Sim is not allowed.
+`V`; tracked files record only the already-existing `E_impl`, `D`, and `V` SHAs.
+Task 11 depends on Tasks 1–10 plus the approved design `D` and verification
+infrastructure `V`. Isaac Sim is not allowed.
 
 ## Task 12: Prepare the separately approved fresh C2a refresh; do not execute it
 
@@ -2091,8 +2299,9 @@ directory, accept an attempt number without approval, or assume a selected pose.
 
 **Preparation checklist**
 
-- [ ] Bind `FINAL_E2=$(git rev-parse HEAD)` only after Task 11's projection
-  commit, final verification replay, and G0 review.
+- [ ] Bind `FINAL_E2=$(git rev-parse HEAD)` only after Task 11's clean-`V`
+  pre-projection verification, `P^=V` projection commit, final verification
+  replay, and G0 review.
 - [ ] Obtain a separate user authorization containing the one permitted attempt
   ID and exact output path.
 - [ ] Verify worktree clean and local/tracking/live-origin/PR heads equal
@@ -2144,9 +2353,10 @@ the driver/physics policy differs, or an approval does not bind exactly one run.
 
 **Commit and dependency**
 
-No commit. Task 12 depends on final `E2=P` from Task 11 and a new user
-authorization. Isaac Sim is explicitly forbidden during plan implementation and
-T152 GREEN; it is permitted only by that later one-run authorization.
+No commit. Task 12 depends on final `E2=P` from the
+`E_impl -> D -> V -> P` Task 11 chain and a new user authorization. Isaac Sim is
+explicitly forbidden during plan implementation and T152 GREEN; it is permitted
+only by that later one-run authorization.
 
 ## Commit and checkpoint map
 
@@ -2171,7 +2381,9 @@ GREEN/RED partition stated below.
 | 8B.2 | `feat(g1): validate command-bound declared-solid routes` | all exact Task 8 node IDs plus `tests/test_g1_contact_exclusion_geometry.py` | Task 8 bundle/validation/re-export GREEN; Task 10 plan/executor/orchestration nodes remain RED |
 | 9 | `feat(g1): verify current C2a pose evidence` | `python -m pytest -q tests/test_g1_pose_conditioned_tracking_cli.py -k 'c2a_evidence or selected_candidate or selected_pose or current_input or provenance'` | all loader/freshness nodes GREEN; attempt-02 rejected as historical |
 | 10 | `feat(g1): wire pose-conditioned multiclass CLI` | `python -m pytest -q tests/test_g1_pose_conditioned_tracking_cli.py` | complete file GREEN; no legacy real-main path |
-| 11 | `docs(g1): complete T152 geometry integration` | complete suite at `E_impl`, projection commit `P`, complete suite and G0 at `P` | `P^=E_impl`, `E2=P`, T152 `[x]`, T151/T070 `[ ]`, attempt-04 prohibited, no tracked change after `P` |
+| 11 design | `docs(g1): define portable T152 verification closure` | documentation consistency checks only | `D^=E_impl`, dual digest and external-evidence design fixed, T152/T151/T070 unchanged, attempt-04 prohibited |
+| 11 verification | separately approved RED-to-GREEN verification-infrastructure commit `V` | external manifest, dual digest, portable 965, full 1091 classification, G0 schema | `V^=D`; main 966 GREEN, portable 965 GREEN, external 1 GREEN, future-RED 125 |
+| 11 projection | `docs(g1): complete T152 geometry integration` | complete suite at `V`, projection commit `P`, identical suite and G0 at `P` | `P^=V`, `FINAL_E2=P`, T152 `[x]`, T151/T070 `[ ]`, attempt-04 prohibited, no tracked change after `P` |
 
 Tasks 2, 3, 7A, and 8A are deliberately RED-only commits. No production change may
 be included with them. Tasks 4–10 may not modify approved RED assertions except
@@ -2192,7 +2404,7 @@ command-bound ownership correction in Task 8A.
 | 7. Fail-closed taxonomy | 2–10 | exact code and non-empty-message assertions at each boundary |
 | 8. RED fixture correction | 1–3 | one-to-one migration manifest and observed schema RED |
 | 9. Version migration/consumer synchronization | 6, 7A, 7B, 9 | formal 1.1.0, state-only legacy, card/config/digest synchronization |
-| 10. Freshness/C2a invalidation | 6, 9, 11, 12 | Task 6 proves stale digests, Task 9 propagates the blocker, and a fresh run is separately gated at final `E2=P` |
+| 10. Freshness/C2a invalidation | 6, 9, 11, 12 | Task 6 proves stale digests, Task 9 propagates the blocker, Task 11 verifies attempt-02 externally in the main checkout while the portable archive excludes it explicitly, and a fresh run is separately gated at final `E2=P` |
 | 11. Non-goals/fixed invariants | every task | matrix, limits, clearance, physics, truth, and task-state stop checks |
 | 12. Architecture conclusion/task state | 11, 12 | only T152 closes after GREEN; T151/T070 and attempt-04 stay blocked |
 
@@ -2363,6 +2575,7 @@ if any condition occurs:
 - [x] Every task explicitly forbids Isaac Sim; Task 12 prepares but does not run
   the separately gated command.
 - [x] Freshness ordering is schema/config migration → T152 GREEN at `E_impl` →
+  portable-closure design `D` → verification infrastructure `V` → clean-`V`
   pre-projection verification → projection/final `E2` commit `P` → final
   verification and G0 evidence at `P` → separately approved fresh C2a at `P` →
   evidence review → T151 review → separately approved attempt-04.
