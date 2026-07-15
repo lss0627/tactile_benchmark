@@ -46,6 +46,7 @@ from isaac_tactile_libero.robots.fr3_runtime_safety import (  # noqa: E402
 )
 from isaac_tactile_libero.runtime.g1_tracking import (  # noqa: E402
     ACTIONS_PER_TRIAL,
+    G1_TRACKING_COMMANDS_M,
     G1ValidationError,
     PHYSICS_SUBSTEPS_PER_ACTION,
     PUBLIC_ACTION_HZ,
@@ -69,7 +70,7 @@ from scripts.run_fr3_press_button_press_smoke import (  # noqa: E402
 
 
 OBSERVED_HARD_LIMIT_M = 0.0005
-TRACKING_COMMANDS_M = (0.0, 0.00025, 0.00035, 0.00040, 0.00045)
+TRACKING_COMMANDS_M = G1_TRACKING_COMMANDS_M
 NONZERO_TRACKING_COMMANDS_M = TRACKING_COMMANDS_M[1:]
 SCENES_PER_COMMAND = 3
 READINESS_ACTIONS = 64

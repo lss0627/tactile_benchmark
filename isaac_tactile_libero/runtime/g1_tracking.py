@@ -25,6 +25,22 @@ G1_TRAJECTORY_CLASS_IDS = (
     "C1_CONTINUOUS_RETRACT_LEG_V1",
 )
 
+G1_TRACKING_COMMANDS_M = (
+    0.0,
+    0.00025,
+    0.00035,
+    0.00040,
+    0.00045,
+)
+
+G1_TRACKING_COMMAND_DECIMAL_STRINGS = (
+    "0",
+    "0.00025",
+    "0.00035",
+    "0.00040",
+    "0.00045",
+)
+
 
 class G1ValidationError(ValueError):
     """A structured, stable failure from a G1 diagnostic validator."""
@@ -905,6 +921,23 @@ def _motif_digest(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def g1_press_button_task_route_geometry() -> dict[str, Any]:
+    """Return the canonical world-frame PressButton route geometry."""
+
+    payload: dict[str, Any] = {
+        "schema_version": "g1.press_button.task_route_geometry.v1",
+        "frame": "world",
+        "approach_world_m": [0.55, 0.0, 0.50],
+        "press_world_m": [0.55, 0.0, 0.46],
+        "retract_world_m": [0.55, 0.0, 0.51],
+        "press_axis_world": [0.0, 0.0, -1.0],
+    }
+    return {
+        **payload,
+        "task_route_geometry_sha256": _motif_digest(payload),
+    }
+
+
 def build_g1_local_round_trip_motif(
     *,
     command_m: str | float,
@@ -1063,7 +1096,6 @@ def validate_g1_trajectory_routes(
 def build_g1_multiclass_tracking_plan(*, seed: int) -> dict[str, Any]:
     """Build the fixed 6-class x 5-command x 3-scene acquisition plan."""
 
-    commands = (0.0, 0.00025, 0.00035, 0.00040, 0.00045)
     trials = [
         {
             "class_id": class_id,
@@ -1077,7 +1109,7 @@ def build_g1_multiclass_tracking_plan(*, seed: int) -> dict[str, Any]:
             "measurement_actions": 256,
             "physics_substeps": 3,
         }
-        for command in commands
+        for command in G1_TRACKING_COMMANDS_M
         for class_id in G1_TRAJECTORY_CLASS_IDS
         for scene_index in range(3)
     ]
@@ -1085,7 +1117,7 @@ def build_g1_multiclass_tracking_plan(*, seed: int) -> dict[str, Any]:
         "seed": int(seed),
         "class_ids": list(G1_TRAJECTORY_CLASS_IDS),
         "class_definitions": g1_trajectory_class_definitions(),
-        "commands_m": list(commands),
+        "commands_m": list(G1_TRACKING_COMMANDS_M),
         "readiness_actions": 64,
         "measurement_actions": 256,
         "window_sizes": [64, 64, 64, 64],
@@ -1449,6 +1481,8 @@ __all__ = [
     "WINDOW_COUNT",
     "WINDOW_SIZE",
     "G1_TRAJECTORY_CLASS_IDS",
+    "G1_TRACKING_COMMANDS_M",
+    "G1_TRACKING_COMMAND_DECIMAL_STRINGS",
     "aggregate_g1_tracking_envelope",
     "aggregate_g1_multiclass_tracking_envelope",
     "build_g1_local_round_trip_motif",
@@ -1456,6 +1490,7 @@ __all__ = [
     "build_g1_phase_reflected_motif",
     "classify_g1_late_window_growth",
     "g1_trajectory_class_definitions",
+    "g1_press_button_task_route_geometry",
     "run_g1_multiclass_tracking_plan",
     "select_g1_tested_command_cap",
     "validate_g1_command_cap",
