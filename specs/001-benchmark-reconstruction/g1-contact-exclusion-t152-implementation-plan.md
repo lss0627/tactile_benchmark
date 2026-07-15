@@ -1827,34 +1827,45 @@ allowed.
 
 - Design authority:
   `specs/001-benchmark-reconstruction/g1-task11-portable-verification-closure-design.md`.
+- Documentation revision `D2` modifies only that design authority and this
+  Task 11 plan. It does not implement verification.
 - Verification-infrastructure commit `V` may create
   `configs/repository/external-evidence-nodeids.txt` and modify
-  `scripts/check_clean_checkout.py`, `tests/test_clean_checkout_cli.py`, and
-  this Task 11 verification helper/plan.
+  `scripts/check_clean_checkout.py`, only bodies, non-parametrizing
+  fixtures/helpers, and assertions of existing nodes in
+  `tests/test_clean_checkout_cli.py`, and this Task 11 verification
+  helper/plan. It may not add, delete, or rename a test function or add,
+  remove, rename, or alter a parameterized expansion.
 - Projection commit `P` may modify only
   `specs/001-benchmark-reconstruction/tasks.md`, changing T152 from `[ ]` to
-  `[x]`, and this plan, recording the already-known implementation, design, and
-  verification SHAs.
-- Produce final G0 repository-integrity evidence at `P`; this is repository
-  evidence, not runtime or physical evidence.
+  `[x]`, and this plan, recording the already-known implementation, both design
+  checkpoint, and verification SHAs.
+- Produce a commit-bound external-verification attestation and final G0
+  repository-integrity evidence at `P`. Neither is runtime or physical
+  evidence.
 
 **Commit identities and no-self-reference rule**
 
 - `E_impl=aa47af3946f2f9f934147b4b263affe345a9d450` is the last production
   implementation commit after Tasks 1–10.
-- `D` is the approved portable-closure design checkpoint and satisfies
-  `D^=E_impl`.
+- `D1=d561f3be49b3ba059286818e325adc81b5b0b269` is the first approved
+  portable-closure design checkpoint and satisfies `D1^=E_impl`.
+- `D2` is this documentation revision and must satisfy `D2^=D1`.
 - `V` is the later RED-to-GREEN verification-infrastructure commit and must
-  satisfy `V^=D`.
+  satisfy `V^=D2`.
+- Before editing for `V`, capture clean-`D2` full/current node-ID lists. After
+  `V`, compare all four lists byte-for-byte and stop on any drift.
 - Run the complete pre-projection verification suite only at clean `V`.
 - After it passes, edit only `tasks.md` and this plan, record the literal
-  already-known `E_impl`, `D`, and `V`, and create the unique projection/status
-  commit `P` with message `docs(g1): complete T152 geometry integration`.
+  already-known `E_impl`, `D1`, `D2`, and `V`, and create the unique
+  projection/status commit `P` with message
+  `docs(g1): complete T152 geometry integration`.
 - Do not write `P`'s SHA into either tracked file. Define `FINAL_E2=P` only
   after commit creation with `FINAL_E2=$(git rev-parse HEAD)`.
 - Verify `P^=V`, rerun the complete suite at `P`, compare its four node-ID
   lists, two current-GREEN digests, counts, and normalized JUnit outcomes with
-  the clean `V` snapshot, then create G0 evidence bound to `P`.
+  the clean `V` snapshot, create the `P`-bound external-verification
+  attestation, then create G0 evidence bound to `P`.
 - After `P`, no tracked file may change. Any tracked change invalidates final
   verification/freshness and requires a new reviewed projection commit.
 
@@ -1862,7 +1873,8 @@ The required topology is therefore:
 
 ```text
 E_impl = aa47af3946f2f9f934147b4b263affe345a9d450
-→ D = portable-closure design
+→ D1 = d561f3be49b3ba059286818e325adc81b5b0b269
+→ D2 = this documentation revision
 → V = verification infrastructure
 → P = final projection/status
 → FINAL_E2 = P
@@ -1901,19 +1913,109 @@ The external-evidence manifest contains exactly this one node:
 tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_attempt02_is_historical_and_emits_exact_refresh_blocker_before_close
 ```
 
+**Fixed V test-node contract**
+
+At clean `D2`, `tests/test_clean_checkout_cli.py` has nine test functions and
+exactly 12 collected node IDs because one existing function has four frozen
+parameterized expansions. `V` preserves these exact node IDs byte-for-byte:
+
+```text
+tests/test_clean_checkout_cli.py::test_clean_checkout_green_command_deselects_only_manifest_nodes
+tests/test_clean_checkout_cli.py::test_clean_checkout_parses_future_red_junit_without_calling_failures_passes
+tests/test_clean_checkout_cli.py::test_clean_checkout_plan_has_required_isolated_steps
+tests/test_clean_checkout_cli.py::test_clean_checkout_rejects_duplicate_manifest_node
+tests/test_clean_checkout_cli.py::test_clean_checkout_rejects_invalid_future_red_junit_outcomes[0-changes0-return code]
+tests/test_clean_checkout_cli.py::test_clean_checkout_rejects_invalid_future_red_junit_outcomes[1-changes1-unexpected passes]
+tests/test_clean_checkout_cli.py::test_clean_checkout_rejects_invalid_future_red_junit_outcomes[1-changes2-errors]
+tests/test_clean_checkout_cli.py::test_clean_checkout_rejects_invalid_future_red_junit_outcomes[1-changes3-skipped]
+tests/test_clean_checkout_cli.py::test_clean_checkout_rejects_missing_manifest_node
+tests/test_clean_checkout_cli.py::test_clean_checkout_rejects_uncollected_future_node
+tests/test_clean_checkout_cli.py::test_clean_checkout_report_records_future_red_count_and_digest
+tests/test_clean_checkout_cli.py::test_future_red_manifest_has_exact_unique_nodeids
+```
+
+The ten approved D1 RED contracts use only that fixed set:
+
+| D1 RED contract | Exact existing node ID or IDs |
+|---|---|
+| 1. Exact external-manifest count, ordering, uniqueness, and spelling | `tests/test_clean_checkout_cli.py::test_future_red_manifest_has_exact_unique_nodeids` |
+| 2. Collection membership of the external node | `tests/test_clean_checkout_cli.py::test_clean_checkout_rejects_uncollected_future_node` |
+| 3. Disjoint external and future-RED sets | `tests/test_clean_checkout_cli.py::test_clean_checkout_rejects_duplicate_manifest_node` |
+| 4. Portable deselection of exactly 125 future-RED plus one external node | `tests/test_clean_checkout_cli.py::test_clean_checkout_green_command_deselects_only_manifest_nodes` |
+| 5. Portable selection and PASS count of exactly 965 | `tests/test_clean_checkout_cli.py::test_clean_checkout_parses_future_red_junit_without_calling_failures_passes`<br>`tests/test_clean_checkout_cli.py::test_clean_checkout_rejects_invalid_future_red_junit_outcomes[0-changes0-return code]`<br>`tests/test_clean_checkout_cli.py::test_clean_checkout_rejects_invalid_future_red_junit_outcomes[1-changes1-unexpected passes]`<br>`tests/test_clean_checkout_cli.py::test_clean_checkout_rejects_invalid_future_red_junit_outcomes[1-changes2-errors]`<br>`tests/test_clean_checkout_cli.py::test_clean_checkout_rejects_invalid_future_red_junit_outcomes[1-changes3-skipped]` |
+| 6. Complete classification of exactly 1091 nodes | `tests/test_clean_checkout_cli.py::test_clean_checkout_rejects_missing_manifest_node` |
+| 7. Required G0 report/manifest fields and counts | `tests/test_clean_checkout_cli.py::test_clean_checkout_report_records_future_red_count_and_digest` |
+| 8. Portable archive isolation and no external-evidence projection into the archive | `tests/test_clean_checkout_cli.py::test_clean_checkout_plan_has_required_isolated_steps` |
+| 9. Generation and comparison of both current-GREEN list views and digests | `tests/test_clean_checkout_cli.py::test_clean_checkout_report_records_future_red_count_and_digest`; `tests/test_clean_checkout_cli.py::test_future_red_manifest_has_exact_unique_nodeids` |
+| 10. P-bound attestation validation, exact stale blocker/factory-zero contract, and attempt checksum preservation | `tests/test_clean_checkout_cli.py::test_clean_checkout_plan_has_required_isolated_steps`<br>`tests/test_clean_checkout_cli.py::test_clean_checkout_report_records_future_red_count_and_digest`<br>`tests/test_clean_checkout_cli.py::test_clean_checkout_rejects_invalid_future_red_junit_outcomes[0-changes0-return code]`<br>`tests/test_clean_checkout_cli.py::test_clean_checkout_rejects_invalid_future_red_junit_outcomes[1-changes1-unexpected passes]`<br>`tests/test_clean_checkout_cli.py::test_clean_checkout_rejects_invalid_future_red_junit_outcomes[1-changes2-errors]`<br>`tests/test_clean_checkout_cli.py::test_clean_checkout_rejects_invalid_future_red_junit_outcomes[1-changes3-skipped]` |
+
+Reuse is intentional: an existing node may assert more than one related
+contract, but no new node or expansion is permitted. Full collection remains
+exactly 1091, current GREEN remains exactly 966, and both approved digests
+remain unchanged.
+
 ```bash
 set -euo pipefail
+
+capture_t152_nodeids() {
+  SNAPSHOT_COMMIT=$1
+  SNAPSHOT_DIR=$2
+  test "$(git rev-parse HEAD)" = "$SNAPSHOT_COMMIT"
+  test -z "$(git status --porcelain)"
+  test ! -e "$SNAPSHOT_DIR"
+  mkdir -p "$SNAPSHOT_DIR"
+
+  awk 'NF && $1 !~ /^#/' \
+    configs/repository/intentional-future-red-nodeids.txt | sort -u \
+    > "$SNAPSHOT_DIR/intentional-future-red-nodeids.txt"
+  test "$(wc -l < "$SNAPSHOT_DIR/intentional-future-red-nodeids.txt")" -eq 125
+  python -m pytest --collect-only -q > "$SNAPSHOT_DIR/full-collection.log"
+  awk '/^tests\// && /::/' "$SNAPSHOT_DIR/full-collection.log" \
+    > "$SNAPSHOT_DIR/all-nodeids.collection.txt"
+  sort -u "$SNAPSHOT_DIR/all-nodeids.collection.txt" \
+    > "$SNAPSHOT_DIR/all-nodeids.sorted.txt"
+  test "$(wc -l < "$SNAPSHOT_DIR/all-nodeids.collection.txt")" -eq 1091
+  test "$(wc -l < "$SNAPSHOT_DIR/all-nodeids.sorted.txt")" -eq 1091
+  python - \
+    "$SNAPSHOT_DIR/all-nodeids.collection.txt" \
+    "$SNAPSHOT_DIR/intentional-future-red-nodeids.txt" \
+    "$SNAPSHOT_DIR/current-green.collection.txt" <<'PY'
+import sys
+
+with open(sys.argv[2], encoding="utf-8") as stream:
+    future = {line.rstrip("\n") for line in stream if line.strip()}
+with open(sys.argv[1], encoding="utf-8") as stream:
+    collection = [line.rstrip("\n") for line in stream if line.strip()]
+current = [node for node in collection if node not in future]
+with open(sys.argv[3], "w", encoding="utf-8") as stream:
+    stream.write("\n".join(current) + "\n")
+PY
+  sort -u "$SNAPSHOT_DIR/current-green.collection.txt" \
+    > "$SNAPSHOT_DIR/current-green.sorted.txt"
+  test "$(wc -l < "$SNAPSHOT_DIR/current-green.collection.txt")" -eq 966
+  test "$(wc -l < "$SNAPSHOT_DIR/current-green.sorted.txt")" -eq 966
+  test "$(sha256sum "$SNAPSHOT_DIR/current-green.collection.txt" | awk '{print $1}')" = \
+    1c8e6a8e9b09da6b06435ea6c75191c5fb4b3c3fa7e1b97161951e65249d45ad
+  test "$(sha256sum "$SNAPSHOT_DIR/current-green.sorted.txt" | awk '{print $1}')" = \
+    00a6e84c5d2e1f623f2211db8272ca95859e8050417f7c25cbfeef9afd84efc7
+}
 
 run_t152_verification() {
   VERIFY_COMMIT=$1
   VERIFY_LABEL=$2
   EXPECTED_VERIFY_DIR=${3-}
+  PRE_V_NODEID_DIR=${4-}
   test "$(git rev-parse HEAD)" = "$VERIFY_COMMIT"
   test -z "$(git status --porcelain)"
 
   VERIFY_DIR="/tmp/g1-t152-${VERIFY_LABEL}"
   test ! -e "$VERIFY_DIR"
   mkdir -p "$VERIFY_DIR"
+
+  ATTEMPT02_CHECKSUMS=outputs/evidence/G1/c2a-static-preliminary-0ace57ce7169-attempt-02/checksums.sha256
+  ATTEMPT02_SHA_BEFORE=$(sha256sum "$ATTEMPT02_CHECKSUMS" | awk '{print $1}')
+  test "$ATTEMPT02_SHA_BEFORE" = \
+    cc53c4b4bc3cefdc7a2363c6446741e3abfc65e768ac0db71123aa593be528ed
 
   python -m pytest -q tests/test_press_button_geometry_contract.py
   python -m pytest -q tests/test_g1_contact_exclusion_geometry.py
@@ -2019,10 +2121,18 @@ PY
     > "$VERIFY_DIR/classified-nodeids.txt"
   cmp "$ALL_SORTED_NODEIDS" "$VERIFY_DIR/classified-nodeids.txt"
 
-  ATTEMPT02_CHECKSUMS=outputs/evidence/G1/c2a-static-preliminary-0ace57ce7169-attempt-02/checksums.sha256
-  ATTEMPT02_SHA_BEFORE=$(sha256sum "$ATTEMPT02_CHECKSUMS" | awk '{print $1}')
-  test "$ATTEMPT02_SHA_BEFORE" = \
-    cc53c4b4bc3cefdc7a2363c6446741e3abfc65e768ac0db71123aa593be528ed
+  EXTERNAL_VERIFY_DIR="$VERIFY_DIR/external-verification"
+  mkdir "$EXTERNAL_VERIFY_DIR"
+  printf '%s\n' "$VERIFY_COMMIT" \
+    > "$EXTERNAL_VERIFY_DIR/verification-commit.txt"
+  cp configs/repository/external-evidence-nodeids.txt \
+    "$EXTERNAL_VERIFY_DIR/external-evidence-nodeids.txt"
+  cmp configs/repository/external-evidence-nodeids.txt \
+    "$EXTERNAL_VERIFY_DIR/external-evidence-nodeids.txt"
+  sha256sum configs/repository/external-evidence-nodeids.txt | awk '{print $1}' \
+    > "$EXTERNAL_VERIFY_DIR/external-evidence-manifest.sha256"
+  printf '%s\n' "$ATTEMPT02_SHA_BEFORE" \
+    > "$EXTERNAL_VERIFY_DIR/attempt02-checksum-before.txt"
   DESELECT=()
   while IFS= read -r node; do DESELECT+=(--deselect "$node"); done \
     < "$FUTURE_NODEIDS"
@@ -2054,11 +2164,13 @@ with open(sys.argv[2], "w", encoding="utf-8") as stream:
     stream.write("\n")
 PY
 
+  EXTERNAL_PYTEST_TMP="$VERIFY_DIR/external-pytest-tmp"
   python -m pytest -q \
     'tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_attempt02_is_historical_and_emits_exact_refresh_blocker_before_close' \
-    --junitxml="$VERIFY_DIR/external-evidence.xml"
-  python - "$VERIFY_DIR/external-evidence.xml" \
-    "$VERIFY_DIR/external-evidence-junit-totals.json" <<'PY'
+    --basetemp="$EXTERNAL_PYTEST_TMP" \
+    --junitxml="$EXTERNAL_VERIFY_DIR/external-evidence.xml"
+  python - "$EXTERNAL_VERIFY_DIR/external-evidence.xml" \
+    "$EXTERNAL_VERIFY_DIR/external-evidence-junit-totals.json" <<'PY'
 import json
 import sys
 import xml.etree.ElementTree as ET
@@ -2075,8 +2187,78 @@ with open(sys.argv[2], "w", encoding="utf-8") as stream:
     json.dump(totals, stream, sort_keys=True, separators=(",", ":"))
     stream.write("\n")
 PY
+
+  mapfile -t BLOCKER_REPORTS < <(
+    find "$EXTERNAL_PYTEST_TMP" -type f -name report.json -print
+  )
+  test "${#BLOCKER_REPORTS[@]}" -eq 1
   ATTEMPT02_SHA_AFTER=$(sha256sum "$ATTEMPT02_CHECKSUMS" | awk '{print $1}')
   test "$ATTEMPT02_SHA_AFTER" = "$ATTEMPT02_SHA_BEFORE"
+  test "$ATTEMPT02_SHA_AFTER" = \
+    cc53c4b4bc3cefdc7a2363c6446741e3abfc65e768ac0db71123aa593be528ed
+  printf '%s\n' "$ATTEMPT02_SHA_AFTER" \
+    > "$EXTERNAL_VERIFY_DIR/attempt02-checksum-after.txt"
+  cmp "$EXTERNAL_VERIFY_DIR/attempt02-checksum-before.txt" \
+    "$EXTERNAL_VERIFY_DIR/attempt02-checksum-after.txt"
+
+  python - "$VERIFY_COMMIT" "${BLOCKER_REPORTS[0]}" \
+    "$EXTERNAL_VERIFY_DIR/attempt02-checksum-before.txt" \
+    "$EXTERNAL_VERIFY_DIR/attempt02-checksum-after.txt" \
+    "$EXTERNAL_VERIFY_DIR/blocker.json" <<'PY'
+import json
+import sys
+
+commit, source_path, before_path, after_path, output_path = sys.argv[1:]
+nodeid = (
+    "tests/test_g1_pose_conditioned_tracking_cli.py::"
+    "test_t152_attempt02_is_historical_and_emits_exact_refresh_blocker_before_close"
+)
+with open(source_path, encoding="utf-8") as stream:
+    source = json.load(stream)
+code = source.get("systemic_failure_code")
+message = source.get("systemic_failure_message")
+if code != "CURRENT_C2A_REFRESH_REQUIRED_AFTER_GEOMETRY_SCHEMA_CHANGE":
+    raise SystemExit(f"unexpected external blocker code: {code!r}")
+if not isinstance(message, str) or not message.strip():
+    raise SystemExit("external blocker message is empty")
+with open(before_path, encoding="utf-8") as stream:
+    checksum_before = stream.read().strip()
+with open(after_path, encoding="utf-8") as stream:
+    checksum_after = stream.read().strip()
+approved_checksum = (
+    "cc53c4b4bc3cefdc7a2363c6446741e3abfc65e768ac0db71123aa593be528ed"
+)
+if checksum_before != approved_checksum or checksum_after != approved_checksum:
+    raise SystemExit("external blocker attempt-02 checksum mismatch")
+record = {
+    "verification_commit": commit,
+    "node_id": nodeid,
+    "systemic_failure_code": code,
+    "systemic_failure_message": message,
+    # The exact focused node passes only after asserting no factory calls.
+    "factory_call_count": 0,
+    "attempt02_checksum_before": checksum_before,
+    "attempt02_checksum_after": checksum_after,
+}
+with open(output_path, "w", encoding="utf-8") as stream:
+    json.dump(record, stream, sort_keys=True, separators=(",", ":"))
+    stream.write("\n")
+PY
+
+  (
+    cd "$EXTERNAL_VERIFY_DIR"
+    sha256sum \
+      verification-commit.txt \
+      external-evidence-nodeids.txt \
+      external-evidence-manifest.sha256 \
+      external-evidence.xml \
+      external-evidence-junit-totals.json \
+      attempt02-checksum-before.txt \
+      attempt02-checksum-after.txt \
+      blocker.json \
+      > checksums.sha256
+    sha256sum -c checksums.sha256
+  )
 
   ORIGINAL_CURRENT_NODEIDS="$VERIFY_DIR/original-current-green-nodeids.txt"
   python - tests/fixtures/g1_t152_baseline_inventory.json \
@@ -2149,6 +2331,16 @@ with open(sys.argv[2], "w", encoding="utf-8") as stream:
     stream.write("\n")
 PY
 
+  if test -n "$PRE_V_NODEID_DIR"; then
+    for name in \
+      all-nodeids.collection.txt \
+      all-nodeids.sorted.txt \
+      current-green.collection.txt \
+      current-green.sorted.txt; do
+      cmp "$PRE_V_NODEID_DIR/$name" "$VERIFY_DIR/$name"
+    done
+  fi
+
   if test -n "$EXPECTED_VERIFY_DIR"; then
     for name in \
       all-nodeids.collection.txt \
@@ -2161,10 +2353,42 @@ PY
       current-green.collection.sha256.txt \
       current-green.sorted.sha256.txt \
       current-green-junit-totals.json \
-      external-evidence-junit-totals.json \
       portable-current-green-junit-totals.json; do
       cmp "$EXPECTED_VERIFY_DIR/$name" "$VERIFY_DIR/$name"
     done
+    for name in \
+      external-evidence-nodeids.txt \
+      external-evidence-manifest.sha256 \
+      external-evidence-junit-totals.json \
+      attempt02-checksum-before.txt \
+      attempt02-checksum-after.txt; do
+      cmp "$EXPECTED_VERIFY_DIR/external-verification/$name" \
+        "$EXTERNAL_VERIFY_DIR/$name"
+    done
+    python - \
+      "$EXPECTED_VERIFY_DIR/external-verification/blocker.json" \
+      "$EXTERNAL_VERIFY_DIR/blocker.json" "$VERIFY_COMMIT" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    before = json.load(stream)
+with open(sys.argv[2], encoding="utf-8") as stream:
+    after = json.load(stream)
+expected_commit = sys.argv[3]
+if after.get("verification_commit") != expected_commit:
+    raise SystemExit("final blocker is not bound to the verification commit")
+for key in (
+    "node_id",
+    "systemic_failure_code",
+    "systemic_failure_message",
+    "factory_call_count",
+    "attempt02_checksum_before",
+    "attempt02_checksum_after",
+):
+    if after.get(key) != before.get(key):
+        raise SystemExit(f"external attestation drift for {key}")
+PY
   fi
 }
 ```
@@ -2179,28 +2403,50 @@ node, with attempt-02 unchanged and factory call count zero. The external node
 is neither future-RED nor skipped. Every collected node belongs to exactly one
 of the 965 portable GREEN, one external-evidence GREEN, or exact 125 intentional
 future-RED sets. The partition is `965+1+125=1091`; there are no unclassified
-nodes. No command launches Isaac Sim.
+nodes. The external-verification directory contains exactly the nine required
+files, is bound to the verified commit, records the exact 1/0/0/0 JUnit totals,
+exact blocker code, non-empty message, zero factory calls, and equal approved
+attempt checksums, and is not runtime or physical evidence. No attempt-02 file
+is copied or modified. Portable archive tests do not read the original
+worktree. No command launches Isaac Sim.
 
 **Steps**
 
-- [ ] After approval of the portable-closure design, implement `V` with
-  RED-to-GREEN coverage for the external manifest, dual list/digest handling,
-  965-node archive selection, set partition, G0 schema, original-worktree
-  isolation, and main-checkout attempt-02 preservation. Do not run Isaac Sim.
-- [ ] Verify `V^=D`, bind `VERIFY_IMPL=$(git rev-parse HEAD)`, require a clean
-  worktree, run `run_t152_verification "$VERIFY_IMPL" pre-projection`, and
-  retain the whole snapshot directory:
+- [ ] After review, commit only this `D2` documentation revision. At clean
+  `D2`, before any `V` edit, verify topology and capture the immutable pre-V
+  node-ID snapshot:
 
   ```bash
   E_IMPL=aa47af3946f2f9f934147b4b263affe345a9d450
-  D=$(git rev-parse "${VERIFY_IMPL}^")
-  test "$(git rev-parse "${D}^")" = "$E_IMPL"
+  D1=d561f3be49b3ba059286818e325adc81b5b0b269
+  D2=$(git rev-parse HEAD)
+  test "$(git rev-parse "${D2}^")" = "$D1"
+  test "$(git rev-parse "${D1}^")" = "$E_IMPL"
+  PRE_V_NODEID_DIR=/tmp/g1-t152-pre-v-nodeids
+  capture_t152_nodeids "$D2" "$PRE_V_NODEID_DIR"
+  ```
+
+- [ ] Implement `V` with RED-to-GREEN coverage using only the exact existing
+  node mapping above. Do not add/delete/rename test functions, do not change
+  any parameterized expansion, and do not run Isaac Sim. Implement the
+  external manifest, dual lists/digests, 965-node archive selection, complete
+  partition, G0 attestation consumer/schema, portable-archive isolation, and
+  main-checkout attempt-02 preservation.
+- [ ] Verify `V^=D2`, bind `VERIFY_IMPL=$(git rev-parse HEAD)`, require a clean
+  worktree, run the complete suite, and compare every post-V node-ID list
+  byte-for-byte with clean `D2`:
+
+  ```bash
+  VERIFY_IMPL=$(git rev-parse HEAD)
+  test "$(git rev-parse "${VERIFY_IMPL}^")" = "$D2"
+  run_t152_verification "$VERIFY_IMPL" pre-projection "" \
+    "$PRE_V_NODEID_DIR"
   PREPROJECTION_VERIFY_DIR=/tmp/g1-t152-pre-projection
   ```
 - [ ] After the suite passes, change only T152 to `[x]` in `tasks.md`; leave T151
   and T070 `[ ]` and attempt-04 prohibited.
-- [ ] Record the literal, already-known `E_impl`, `D`, and `V` SHAs in this plan
-  without attempting to record the not-yet-created projection SHA.
+- [ ] Record the literal, already-known `E_impl`, `D1`, `D2`, and `V` SHAs in
+  this plan without attempting to record the not-yet-created projection SHA.
 - [ ] Run `git diff --check`, stage only the two Markdown files, verify their
   diff, and create the unique projection commit:
 
@@ -2217,21 +2463,29 @@ nodes. No command launches Isaac Sim.
   FINAL_E2=$(git rev-parse HEAD)
   test "$(git rev-parse "${FINAL_E2}^")" = "$VERIFY_IMPL"
   run_t152_verification "$FINAL_E2" final-projection \
-    "$PREPROJECTION_VERIFY_DIR"
+    "$PREPROJECTION_VERIFY_DIR" "$PRE_V_NODEID_DIR"
   ```
 
+- [ ] Confirm the final attestation is the exact `P`-bound directory generated
+  by the final-projection run. G0 consumes only this directory; it does not
+  rerun the external node or read attempt-02.
 - [ ] Produce final G0 evidence bound only to `FINAL_E2=P`:
 
   ```bash
   FINAL_E2_SHORT=${FINAL_E2:0:12}
   G0_OUTPUT="outputs/evidence/G0/t152-geometry-${FINAL_E2_SHORT}"
+  EXTERNAL_VERIFICATION=/tmp/g1-t152-final-projection/external-verification
   test ! -e "$G0_OUTPUT"
-  python scripts/check_clean_checkout.py --output "$G0_OUTPUT"
+  test "$(cat "$EXTERNAL_VERIFICATION/verification-commit.txt")" = "$FINAL_E2"
+  python scripts/check_clean_checkout.py \
+    --output "$G0_OUTPUT" \
+    --external-verification \
+      /tmp/g1-t152-final-projection/external-verification
   python scripts/review_gate.py --gate G0 \
     --evidence "$G0_OUTPUT/manifest.json"
   (cd "$G0_OUTPUT" && sha256sum -c checksums.sha256)
   python - "$G0_OUTPUT/report.json" "$G0_OUTPUT/manifest.json" \
-    configs/repository/external-evidence-nodeids.txt <<'PY'
+    configs/repository/external-evidence-nodeids.txt "$FINAL_E2" <<'PY'
 import hashlib
 import json
 import sys
@@ -2243,7 +2497,15 @@ expected = {
     "portable_green_passed_count": 965,
     "external_evidence_count": 1,
     "intentional_future_red_count": 125,
-    "reads_original_worktree": False,
+    "portable_archive_reads_original_worktree": False,
+    "external_verification_attestation_consumed": True,
+    "external_verification_commit": sys.argv[4],
+    "external_verification_junit": {
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+    },
 }
 external_node = "tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_attempt02_is_historical_and_emits_exact_refresh_blocker_before_close"
 with open(sys.argv[3], "rb") as stream:
@@ -2262,29 +2524,47 @@ PY
   test -z "$(git status --porcelain --untracked-files=no)"
   ```
 
+  Before archive creation, `check_clean_checkout.py` must reject a missing,
+  extra, non-regular, symlinked, checksum-invalid, wrong-commit, wrong-manifest,
+  wrong-node, non-1/0/0/0-JUnit, wrong-blocker, empty-message, nonzero-factory,
+  or unequal/unapproved attempt-checksum attestation. In particular, it
+  validates `blocker.json` fields `attempt02_checksum_before` and
+  `attempt02_checksum_after` against the corresponding checksum text files and
+  the approved SHA. G0 may copy or summarize attestation content and checksums,
+  but it labels them external-verification metadata rather than portable test
+  output.
+
 - [ ] Freeze `FINAL_E2=P`: do not modify any tracked file after the final suite
   and G0 evidence. A separately approved fresh C2a must bind this SHA, not
   `E_impl`.
 
 **Stop conditions**
 
-Stop on any node-ID/classification drift, unexpected pass/error/skip,
-hard-limit/clearance/matrix/truth change, deprecated diagnostic, help-time Isaac
-startup, loss of either current-GREEN digest, sorting before the collection-order
-digest, external/future overlap, an external node that is absent or does not
-pass in the main checkout, attempt-02 checksum drift, archive selection other
-than 965, archive access to the original worktree, a partition other than
-`965+1+125=1091`, `D^!=E_impl`, `V^!=D`, `P^!=V`, tracked change after `P`, G0
-checksum failure, or pressure to advance T151/T070/attempt-04.
+Stop on any test-function or parameter-expansion add/delete/rename/change, any
+byte of pre-V/post-V node-ID drift, any full count other than 1091, any
+current-GREEN count other than 966, unexpected pass/error/skip,
+hard-limit/clearance/matrix/truth change, deprecated diagnostic, help-time
+Isaac startup, loss of either approved current-GREEN digest, sorting before the
+collection-order digest, external/future overlap, an external node that is
+absent or does not pass in the main checkout, attempt-02 checksum drift or
+copy/modification, archive selection other than 965, portable archive tests
+reading the original worktree, a partition other than `965+1+125=1091`,
+malformed/checksum-invalid/wrong-commit/wrong-node/wrong-JUnit/wrong-blocker/
+empty-message/nonzero-factory/unapproved-attempt external attestation,
+`D1^!=E_impl`, `D2^!=D1`, `V^!=D2`, `P^!=V`, tracked change after `P`, G0
+checksum failure, an old G0 invocation without `--external-verification`, or
+pressure to run Task 12 or advance T151/T070/attempt-04.
 
 **Commit**
 
 `docs(g1): complete T152 geometry integration`
 
 This is the sole projection/status commit `P` and final `E2`. Its parent is
-`V`; tracked files record only the already-existing `E_impl`, `D`, and `V` SHAs.
-Task 11 depends on Tasks 1–10 plus the approved design `D` and verification
-infrastructure `V`. Isaac Sim is not allowed.
+`V`; tracked files record only the already-existing `E_impl`, `D1`, `D2`, and
+`V` SHAs and never record `P`'s SHA. Task 11 depends on Tasks 1–10 plus both
+approved design checkpoints and verification infrastructure `V`. Isaac Sim,
+fresh C2a, Task 12 execution, attempt-04, and PressButton episodes are not
+allowed.
 
 ## Task 12: Prepare the separately approved fresh C2a refresh; do not execute it
 
@@ -2354,9 +2634,9 @@ the driver/physics policy differs, or an approval does not bind exactly one run.
 **Commit and dependency**
 
 No commit. Task 12 depends on final `E2=P` from the
-`E_impl -> D -> V -> P` Task 11 chain and a new user authorization. Isaac Sim is
-explicitly forbidden during plan implementation and T152 GREEN; it is permitted
-only by that later one-run authorization.
+`E_impl -> D1 -> D2 -> V -> P` Task 11 chain and a new user authorization.
+Isaac Sim is explicitly forbidden during plan implementation and T152 GREEN;
+it is permitted only by that later one-run authorization.
 
 ## Commit and checkpoint map
 
@@ -2381,9 +2661,10 @@ GREEN/RED partition stated below.
 | 8B.2 | `feat(g1): validate command-bound declared-solid routes` | all exact Task 8 node IDs plus `tests/test_g1_contact_exclusion_geometry.py` | Task 8 bundle/validation/re-export GREEN; Task 10 plan/executor/orchestration nodes remain RED |
 | 9 | `feat(g1): verify current C2a pose evidence` | `python -m pytest -q tests/test_g1_pose_conditioned_tracking_cli.py -k 'c2a_evidence or selected_candidate or selected_pose or current_input or provenance'` | all loader/freshness nodes GREEN; attempt-02 rejected as historical |
 | 10 | `feat(g1): wire pose-conditioned multiclass CLI` | `python -m pytest -q tests/test_g1_pose_conditioned_tracking_cli.py` | complete file GREEN; no legacy real-main path |
-| 11 design | `docs(g1): define portable T152 verification closure` | documentation consistency checks only | `D^=E_impl`, dual digest and external-evidence design fixed, T152/T151/T070 unchanged, attempt-04 prohibited |
-| 11 verification | separately approved RED-to-GREEN verification-infrastructure commit `V` | external manifest, dual digest, portable 965, full 1091 classification, G0 schema | `V^=D`; main 966 GREEN, portable 965 GREEN, external 1 GREEN, future-RED 125 |
-| 11 projection | `docs(g1): complete T152 geometry integration` | complete suite at `V`, projection commit `P`, identical suite and G0 at `P` | `P^=V`, `FINAL_E2=P`, T152 `[x]`, T151/T070 `[ ]`, attempt-04 prohibited, no tracked change after `P` |
+| 11 design D1 | `docs(g1): define portable T152 verification closure` | documentation consistency checks only | `D1=d561f3be49b3ba059286818e325adc81b5b0b269`, `D1^=E_impl`, dual digest and external classification fixed, T152/T151/T070 unchanged, attempt-04 prohibited |
+| 11 design D2 | this documentation-only revision | documentation consistency checks only | `D2^=D1`, fixed 12-node V inventory, P-bound external attestation and G0 consumption fixed, no implementation |
+| 11 verification | separately approved RED-to-GREEN verification-infrastructure commit `V` | exact existing-node mapping, pre-V/post-V list comparison, external manifest, P/V-bound attestation, dual digest, portable 965, full 1091 classification, G0 schema | `V^=D2`; main 966 GREEN, portable 965 GREEN, external 1 GREEN, future-RED 125 |
+| 11 projection | `docs(g1): complete T152 geometry integration` | complete suite at `V`, projection commit `P`, identical suite, P-bound attestation, and G0 at `P` | `P^=V`, `FINAL_E2=P`, tracked files record `E_impl`/`D1`/`D2`/`V` only, T152 `[x]`, T151/T070 `[ ]`, attempt-04 prohibited, no tracked change after `P` |
 
 Tasks 2, 3, 7A, and 8A are deliberately RED-only commits. No production change may
 be included with them. Tasks 4–10 may not modify approved RED assertions except
@@ -2575,9 +2856,11 @@ if any condition occurs:
 - [x] Every task explicitly forbids Isaac Sim; Task 12 prepares but does not run
   the separately gated command.
 - [x] Freshness ordering is schema/config migration → T152 GREEN at `E_impl` →
-  portable-closure design `D` → verification infrastructure `V` → clean-`V`
+  portable-closure design `D1` → documentation revision `D2` → clean-`D2`
+  pre-V node snapshot → verification infrastructure `V` → clean-`V`
   pre-projection verification → projection/final `E2` commit `P` → final
-  verification and G0 evidence at `P` → separately approved fresh C2a at `P` →
-  evidence review → T151 review → separately approved attempt-04.
+  verification, P-bound external attestation, and G0 evidence at `P` →
+  separately approved fresh C2a at `P` → evidence review → T151 review →
+  separately approved attempt-04.
 - [x] T150 remains `[x]`; T151, T152, and T070 remain `[ ]` while this plan is
   authored; attempt-04 remains `ATTEMPT_04_PROHIBITED`.
