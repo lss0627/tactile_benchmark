@@ -92,9 +92,14 @@ def test_t152_migration_manifest_maps_every_retired_node_exactly_once() -> None:
     assert all(row["replacement_node_ids"] for row in mappings)
     assert all(row["replacement_reason"].strip() for row in mappings)
 
-    if manifest["replacement_checkpoint"] == "TASK_2_PENDING":
+    checkpoint = manifest["replacement_checkpoint"]
+    assert checkpoint in {
+        "TASK_2_PENDING",
+        "TASK_2_ASSERTION_RED",
+        "TASK_8B_GREEN",
+    }
+    if checkpoint == "TASK_2_PENDING":
         return
-    assert manifest["replacement_checkpoint"] == "TASK_2_ASSERTION_RED"
     collect = subprocess.run(
         [sys.executable, "-m", "pytest", "--collect-only", "-q", *replacements],
         cwd=ROOT,
@@ -127,15 +132,24 @@ def test_t152_migration_manifest_maps_every_retired_node_exactly_once() -> None:
             text=True,
         )
         cases = ElementTree.parse(junit).getroot().findall(".//testcase")
-    assert run.returncode == 1
     assert len(cases) == len(replacements)
-    assert all(case.find("failure") is not None for case in cases)
-    assert all(case.find("error") is None for case in cases)
-    assert all(case.find("skipped") is None for case in cases)
-    assert all(
-        case.find("failure").attrib.get("message", "").startswith("AssertionError")
-        for case in cases
-    )
+    failures = [case.find("failure") for case in cases]
+    errors = [case.find("error") for case in cases]
+    skips = [case.find("skipped") for case in cases]
+    assert all(error is None for error in errors)
+    assert all(skip is None for skip in skips)
+    if checkpoint == "TASK_2_ASSERTION_RED":
+        assert run.returncode == 1
+        assert all(failure is not None for failure in failures)
+        assert all(
+            failure.attrib.get("message", "").startswith("AssertionError")
+            for failure in failures
+            if failure is not None
+        )
+        return
+    assert checkpoint == "TASK_8B_GREEN"
+    assert run.returncode == 0
+    assert all(failure is None for failure in failures)
 
 
 def test_t152_migration_manifest_preserves_each_safety_behavior() -> None:
