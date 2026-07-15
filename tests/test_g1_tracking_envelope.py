@@ -1301,11 +1301,20 @@ def test_c1_main_returns_orchestrated_cli_status_without_isaac_shutdown_exit(
     expected_exit_code: int,
 ) -> None:
     runner = _tracking_runner()
-    helper = getattr(runner, "orchestrate_g1_tracking_diagnostic", None)
-    assert callable(helper), "G1 C1 missing failure-evidence lifecycle orchestration"
+    helper = getattr(runner, "orchestrate_g1_pose_conditioned_tracking", None)
+    assert callable(helper), "G1 C1 missing pose-conditioned lifecycle orchestration"
     evidence_dir = tmp_path / "selected-c2a-evidence"
     current_digests = object()
-    selected_evidence = object()
+    selected_evidence = type(
+        "SelectedEvidence",
+        (),
+        {
+            "candidate_record": {"candidate_id": "selected-test-pose"},
+            "selected_pose_id": "selected-test-pose",
+            "selected_pose_sha256": "a" * 64,
+            "report": {"status": "PRELIMINARY"},
+        },
+    )()
     events: list[object] = []
     current_paths = {
         "task_config": tmp_path / "task.yaml",
@@ -1344,7 +1353,18 @@ def test_c1_main_returns_orchestrated_cli_status_without_isaac_shutdown_exit(
     )
     monkeypatch.setattr(
         runner,
-        "orchestrate_g1_tracking_diagnostic",
+        "build_g1_current_pose_conditioned_route_bundle",
+        lambda **kwargs: events.append(("routes", kwargs))
+        or ({"bundle_sha256": "b" * 64}, object()),
+    )
+    monkeypatch.setattr(
+        runner,
+        "build_g1_pose_conditioned_tracking_plan",
+        lambda **kwargs: events.append(("plan", kwargs)) or {"trials": []},
+    )
+    monkeypatch.setattr(
+        runner,
+        "orchestrate_g1_pose_conditioned_tracking",
         lambda **kwargs: events.append(("orchestrate", kwargs))
         or {
             "exit_code": expected_exit_code,
@@ -1367,6 +1387,8 @@ def test_c1_main_returns_orchestrated_cli_status_without_isaac_shutdown_exit(
         "compute",
         "load",
         "validate",
+        "routes",
+        "plan",
         "orchestrate",
     ]
     assert events[2] == ("load", evidence_dir)
@@ -1377,6 +1399,9 @@ def test_c1_main_returns_orchestrated_cli_status_without_isaac_shutdown_exit(
         "fr3_asset_path": current_paths["fr3_asset"],
         "task_card_path": current_paths["task_card"],
     }
+    assert events[4][1]["selected_evidence"] is selected_evidence
+    assert events[5][1]["selected_candidate"] == selected_evidence.candidate_record
+    assert events[6][1]["plan"] == {"trials": []}
     assert constructed == []
 
 

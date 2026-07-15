@@ -1047,6 +1047,11 @@ def build_g1_phase_reflected_motif(
             {
                 **digest_item,
                 "requested_norm_m": float(requested),
+                # The phase-reflected builder is intentionally direction-free.
+                # Preserve the exact signed scalar as a canonical x-axis vector
+                # for import-safe schedule consumers; command-bound routes carry
+                # their authoritative class-specific float64 materialization.
+                "requested_vector_m": [float(Decimal(sign) * requested), 0.0, 0.0],
             }
         )
     digest_inputs = {
