@@ -121,14 +121,30 @@ class C2ARealSceneFactory:
         *,
         config_path: Path,
         robot_config_path: Path,
+        task_card_path: Path,
         headless: bool,
         seed: int,
     ) -> None:
         self.root = Path(__file__).resolve().parents[2]
         self.config_path = Path(config_path).resolve()
         self.robot_config_path = Path(robot_config_path).resolve()
+        self.task_card_path = Path(task_card_path).resolve()
         self.config = _read_yaml(self.config_path)
         self.robot_safe = _read_yaml(self.robot_config_path)
+        if not self.task_card_path.is_file():
+            _fail(
+                "G1_C2A_DIGEST_MISSING",
+                f"configured PressButton task card does not exist: {self.task_card_path}",
+            )
+        self.mechanism_config = load_press_button_mechanism_config(self.config_path)
+        if (
+            self.mechanism_config.geometry_contract is None
+            or not self.mechanism_config.runtime_stage_build_eligible
+        ):
+            _fail(
+                "G1_C2A_DIGEST_MISSING",
+                "formal PressButton geometry contract is unavailable",
+            )
         if str(self.config.get("runtime", {}).get("physics_device", "")).lower() != "cpu":
             _fail("GPU_CONTACT_NATIVE_INSTABILITY", "C2a requires CPU physics Contact")
         self.seed = int(seed)
@@ -171,6 +187,8 @@ class C2ARealSceneFactory:
             "asset_sha256": sha256_file(self.asset_path),
             "task_config_sha256": sha256_file(self.config_path),
             "robot_config_sha256": sha256_file(self.robot_config_path),
+            "task_card_sha256": sha256_file(self.task_card_path),
+            "geometry_sha256": self.mechanism_config.geometry_contract.geometry_sha256,
             "dependency_lock_sha256": sha256_file(dependency_path),
         }
 
@@ -198,9 +216,7 @@ class C2ARealSceneFactory:
         )
 
         timeline = self._stop_timeline()
-        mechanism = PressButtonMechanism(
-            load_press_button_mechanism_config(self.config_path)
-        )
+        mechanism = PressButtonMechanism(self.mechanism_config)
         capture: dict[str, Any] = {"scene_api": None, "policy": {}}
 
         def stage_builder(stage: Any) -> None:
@@ -308,6 +324,8 @@ class C2ARealSceneFactory:
             "asset_sha256": self.runtime_metadata["asset_sha256"],
             "task_config_sha256": self.runtime_metadata["task_config_sha256"],
             "robot_config_sha256": self.runtime_metadata["robot_config_sha256"],
+            "task_card_sha256": self.runtime_metadata["task_card_sha256"],
+            "geometry_sha256": self.runtime_metadata["geometry_sha256"],
             "dependency_lock_sha256": self.runtime_metadata["dependency_lock_sha256"],
             "reference_scene_token": f"c2a-reference-{self.seed}-{id(stage)}",
             "transform_sha256": transform_sha256,
@@ -385,6 +403,8 @@ class C2ARealSceneFactory:
                     "dependency_lock_sha256": self.runtime_metadata["dependency_lock_sha256"],
                     "task_config_sha256": self.runtime_metadata["task_config_sha256"],
                     "robot_config_sha256": self.runtime_metadata["robot_config_sha256"],
+                    "task_card_sha256": self.runtime_metadata["task_card_sha256"],
+                    "geometry_sha256": self.runtime_metadata["geometry_sha256"],
                     "code_sha256": code_sha256,
                     "pose_list_sha256": pose_list_sha256,
                     "actuation_performed": False,

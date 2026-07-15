@@ -594,8 +594,24 @@ def test_t152_cli_main_selects_pose_conditioned_multiclass_path_not_legacy(runne
 def test_t152_invalid_selected_candidate_fails_before_factory_construction(
     runner: Any, tmp_path: Path, case: str
 ) -> None:
-    orchestrate = _capability(runner, "orchestrate_g1_pose_conditioned_tracking")
+    prepare = _capability(runner, "prepare_g1_c2a_tracking_inputs")
+    paths, _candidate, evidence_dir, _selected_sha256 = _current_input_fixture(
+        tmp_path
+    )
     records = _candidate_records()
+    current = _selected_candidate()
+    current.update(
+        task_config_sha256=_sha256_path(paths["task_config"]),
+        robot_config_sha256=_sha256_path(paths["robot_config"]),
+        asset_sha256=_sha256_path(paths["fr3_asset"]),
+        task_card_sha256=_sha256_path(paths["task_card"]),
+        geometry_sha256=_parsed_geometry_sha256(paths["task_config"]),
+    )
+    current["orientation_source"]["asset_sha256"] = current["asset_sha256"]
+    current["orientation_source_sha256"] = _canonical_sha256(
+        current["orientation_source"]
+    )
+    records = _records_for_selected_candidate(current)
     if case == "missing":
         records = records[1:]
     elif case == "duplicate":
@@ -605,33 +621,66 @@ def test_t152_invalid_selected_candidate_fails_before_factory_construction(
         records[0]["real_runtime_truth"] = False
     else:
         records[0].pop("articulation_joint_values")
-    factory = _CountingFactory()
+    fixture_selected = records[0] if case in {"synthetic", "malformed"} else current
+    _write_c2a_evidence_fixture(
+        tmp_path, selected_candidate=fixture_selected, candidate_records=records
+    )
+    factory_builder = _FactoryBuilderProbe(_FakeSceneFactory())
 
     with pytest.raises(G1ValidationError) as caught:
-        orchestrate(
-            **_orchestration_kwargs(tmp_path, factory, candidate_records=records)
+        prepare(
+            **_c2a_preflight_kwargs(
+                evidence_dir=evidence_dir,
+                current_input_paths=paths,
+                factory_builder=factory_builder,
+            )
         )
 
     assert caught.value.code == "G1_C1_SELECTED_POSE_INVALID"
     assert caught.value.message.strip()
-    assert factory.construction_count == 0
-    assert factory.close_calls == []
+    assert factory_builder.calls == []
 
 
 def test_t152_selected_candidate_hash_is_recomputed_not_trusted_from_report(
     runner: Any, tmp_path: Path
 ) -> None:
-    orchestrate = _capability(runner, "orchestrate_g1_pose_conditioned_tracking")
-    records = _candidate_records()
+    prepare = _capability(runner, "prepare_g1_c2a_tracking_inputs")
+    paths, _selected, evidence_dir, selected_sha256 = _current_input_fixture(tmp_path)
+    records = [
+        json.loads(line)
+        for line in (evidence_dir / "offline_candidates.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
     records[0]["articulation_joint_values"][0] += 0.001
-    factory = _CountingFactory()
+    (evidence_dir / "offline_candidates.jsonl").write_text(
+        "".join(json.dumps(record, sort_keys=True) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    manifest = json.loads((evidence_dir / "manifest.json").read_text(encoding="utf-8"))
+    next(
+        artifact
+        for artifact in manifest["artifacts"]
+        if artifact["path"] == "offline_candidates.jsonl"
+    )["sha256"] = _sha256_path(evidence_dir / "offline_candidates.jsonl")
+    (evidence_dir / "manifest.json").write_text(
+        json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    _rewrite_c2a_checksums(evidence_dir)
+    factory_builder = _FactoryBuilderProbe(_FakeSceneFactory())
 
     with pytest.raises(G1ValidationError) as caught:
-        orchestrate(**_orchestration_kwargs(tmp_path, factory, candidate_records=records))
+        prepare(
+            **_c2a_preflight_kwargs(
+                evidence_dir=evidence_dir,
+                current_input_paths=paths,
+                factory_builder=factory_builder,
+            )
+        )
 
     assert caught.value.code == "G1_C1_SELECTED_POSE_HASH_MISMATCH"
-    assert EXPECTED_POSE_SHA256 in caught.value.message
-    assert factory.construction_count == 0
+    assert selected_sha256 in caught.value.message
+    assert factory_builder.calls == []
 
 
 @pytest.mark.parametrize(
@@ -641,30 +690,38 @@ def test_t152_selected_candidate_hash_is_recomputed_not_trusted_from_report(
 def test_t152_selected_pose_identity_mismatch_fails_before_factory(
     runner: Any, tmp_path: Path, mismatch: str
 ) -> None:
-    orchestrate = _capability(runner, "orchestrate_g1_pose_conditioned_tracking")
-    report = _selection_report()
-    records = _candidate_records()
+    prepare = _capability(runner, "prepare_g1_c2a_tracking_inputs")
+    paths, selected, evidence_dir, _selected_sha256 = _current_input_fixture(tmp_path)
+    report_changes: dict[str, Any] = {}
     if mismatch == "pose_id":
-        report["selected_pose_id"] = "task-ready-z-0p54"
+        report_changes["selected_pose_id"] = "task-ready-z-0p54"
     elif mismatch == "joint_order":
-        records[0]["articulation_joint_names"] = list(reversed(JOINT_NAMES))
+        selected["articulation_joint_names"] = list(reversed(JOINT_NAMES))
     elif mismatch == "frame":
-        records[0]["ee_frame"] = "/World/FR3/fr3_link8"
+        selected["ee_frame"] = "/World/FR3/fr3_link8"
     elif mismatch == "asset_digest":
-        records[0]["asset_sha256"] = "0" * 64
+        selected["asset_sha256"] = "0" * 64
+        selected["orientation_source"]["asset_sha256"] = "0" * 64
+        selected["orientation_source_sha256"] = _canonical_sha256(
+            selected["orientation_source"]
+        )
     elif mismatch == "task_config_digest":
-        records[0]["task_config_sha256"] = "0" * 64
+        selected["task_config_sha256"] = "0" * 64
     else:
-        records[0]["robot_config_sha256"] = "0" * 64
-    factory = _CountingFactory()
+        selected["robot_config_sha256"] = "0" * 64
+    _write_c2a_evidence_fixture(
+        tmp_path,
+        selected_candidate=selected,
+        report_changes=report_changes,
+    )
+    factory_builder = _FactoryBuilderProbe(_FakeSceneFactory())
 
     with pytest.raises(G1ValidationError) as caught:
-        orchestrate(
-            **_orchestration_kwargs(
-                tmp_path,
-                factory,
-                selection_report=report,
-                candidate_records=records,
+        prepare(
+            **_c2a_preflight_kwargs(
+                evidence_dir=evidence_dir,
+                current_input_paths=paths,
+                factory_builder=factory_builder,
             )
         )
 
@@ -674,7 +731,7 @@ def test_t152_selected_pose_identity_mismatch_fails_before_factory(
         "G1_C1_SELECTED_POSE_PROVENANCE_MISMATCH",
     }
     assert caught.value.message.strip()
-    assert factory.construction_count == 0
+    assert factory_builder.calls == []
 
 
 def test_t152_pose_conditioned_plan_is_exact_90_trial_order_and_pose_bound(runner: Any) -> None:
@@ -1488,7 +1545,8 @@ def _records_for_selected_candidate(selected: Mapping[str, Any]) -> list[dict[st
 def _rewrite_c2a_checksums(evidence_dir: Path) -> None:
     entries = [
         f"{_sha256_path(evidence_dir / name)}  {name}"
-        for name in ("report.json", "offline_candidates.jsonl")
+        for name in ("report.json", "offline_candidates.jsonl", "manifest.json")
+        if (evidence_dir / name).is_file()
     ]
     (evidence_dir / "checksums.sha256").write_text(
         "\n".join(entries) + "\n", encoding="utf-8"
@@ -1499,9 +1557,11 @@ def _write_c2a_evidence_fixture(
     root: Path,
     *,
     selected_candidate: Mapping[str, Any] | None = None,
+    candidate_records: list[Mapping[str, Any]] | None = None,
+    report_changes: Mapping[str, Any] | None = None,
 ) -> tuple[Path, str]:
     evidence_dir = root / "c2a-evidence"
-    evidence_dir.mkdir()
+    evidence_dir.mkdir(exist_ok=True)
     selected = deepcopy(
         dict(selected_candidate) if selected_candidate is not None else _selected_candidate()
     )
@@ -1510,16 +1570,62 @@ def _write_c2a_evidence_fixture(
         selected_pose_id=selected["candidate_id"],
         selected_pose_sha256=selected_sha256,
     )
+    report["runtime_metadata"] = {
+        "asset_sha256": selected["asset_sha256"],
+        "task_config_sha256": selected["task_config_sha256"],
+        "robot_config_sha256": selected["robot_config_sha256"],
+    }
+    report.update(dict(report_changes or {}))
+    if "task_card_sha256" in selected and "geometry_sha256" in selected:
+        report["current_input_digests"] = {
+            "task_config_sha256": selected["task_config_sha256"],
+            "robot_config_sha256": selected["robot_config_sha256"],
+            "fr3_asset_sha256": selected["asset_sha256"],
+            "task_card_sha256": selected["task_card_sha256"],
+            "geometry_sha256": selected["geometry_sha256"],
+        }
+        report["selected_candidate_provenance"] = {
+            "candidate_id": selected["candidate_id"],
+            "candidate_sha256": selected_sha256,
+            "solver_joint_names": list(selected["solver_joint_names"]),
+            "articulation_joint_names": list(selected["articulation_joint_names"]),
+            "solver_frame": selected["solver_frame"],
+            "base_frame": selected["base_frame"],
+            "ee_frame": selected["ee_frame"],
+            "solver_identity": selected["solver_identity"],
+        }
     (evidence_dir / "report.json").write_text(
         json.dumps(report, sort_keys=True) + "\n", encoding="utf-8"
     )
-    records = _records_for_selected_candidate(selected)
+    records = list(candidate_records or _records_for_selected_candidate(selected))
     (evidence_dir / "offline_candidates.jsonl").write_text(
         "".join(json.dumps(record, sort_keys=True) + "\n" for record in records),
         encoding="utf-8",
     )
+    manifest = {
+        **report,
+        "run_id": evidence_dir.name,
+        "gate_id": "G1",
+        "artifacts": [
+            {
+                "path": name,
+                "sha256": _sha256_path(evidence_dir / name),
+            }
+            for name in ("report.json", "offline_candidates.jsonl")
+        ],
+    }
+    (evidence_dir / "manifest.json").write_text(
+        json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8"
+    )
     _rewrite_c2a_checksums(evidence_dir)
     return evidence_dir, selected_sha256
+
+
+def _parsed_geometry_sha256(task_config_path: Path) -> str:
+    config = load_press_button_mechanism_config(task_config_path)
+    contract = config.geometry_contract
+    assert isinstance(contract, PressButtonGeometryContract)
+    return contract.geometry_sha256
 
 
 def _current_input_fixture(
@@ -1531,14 +1637,18 @@ def _current_input_fixture(
         "task_config": input_dir / "press_button_physical.yaml",
         "robot_config": input_dir / "fr3_press_button_safe.yaml",
         "fr3_asset": input_dir / "fr3.usd",
+        "task_card": input_dir / "press_button.v1.yaml",
     }
-    paths["task_config"].write_text("runtime:\n  physics_device: cpu\n", encoding="utf-8")
-    paths["robot_config"].write_text("joint_limits:\n  names: []\n", encoding="utf-8")
+    paths["task_config"].write_bytes(TASK_CONFIG_PATH.read_bytes())
+    paths["robot_config"].write_bytes(ROBOT_CONFIG_PATH.read_bytes())
     paths["fr3_asset"].write_bytes(b"#usda 1.0\ndef Xform \"FR3\" {}\n")
+    paths["task_card"].write_bytes(TASK_CARD_PATH.read_bytes())
     selected = _selected_candidate()
     selected["task_config_sha256"] = _sha256_path(paths["task_config"])
     selected["robot_config_sha256"] = _sha256_path(paths["robot_config"])
     selected["asset_sha256"] = _sha256_path(paths["fr3_asset"])
+    selected["task_card_sha256"] = _sha256_path(paths["task_card"])
+    selected["geometry_sha256"] = _parsed_geometry_sha256(paths["task_config"])
     selected["orientation_source"]["asset_sha256"] = selected["asset_sha256"]
     selected["orientation_source_sha256"] = _canonical_sha256(
         selected["orientation_source"]
@@ -1569,27 +1679,20 @@ class _FactoryBuilderProbe:
         return self.factory
 
 
-def _from_evidence_orchestration_kwargs(
-    tmp_path: Path,
+def _c2a_preflight_kwargs(
     *,
     evidence_dir: Path | None,
-    selected_pose_sha256: str,
     current_input_paths: Mapping[str, Path],
     factory_builder: Any,
-    **changes: Any,
 ) -> dict[str, Any]:
-    payload = _orchestration_kwargs(
-        tmp_path,
-        _FakeSceneFactory(),
-        selection_report=None,
-        candidate_records=None,
-        c2a_evidence_dir=evidence_dir,
-        expected_pose_sha256=selected_pose_sha256,
-        current_input_paths=dict(current_input_paths),
-        factory_builder=factory_builder,
-    )
-    payload.update(changes)
-    return payload
+    return {
+        "c2a_evidence_dir": evidence_dir,
+        "task_config_path": current_input_paths["task_config"],
+        "robot_config_path": current_input_paths["robot_config"],
+        "fr3_asset_path": current_input_paths["fr3_asset"],
+        "task_card_path": current_input_paths["task_card"],
+        "factory_builder": factory_builder,
+    }
 
 
 def test_t152_cli_requires_explicit_c2a_evidence_directory(runner: Any, tmp_path: Path) -> None:
@@ -1607,6 +1710,7 @@ def test_t152_cli_requires_explicit_c2a_evidence_directory(runner: Any, tmp_path
         ]
     )
     assert Path(args.c2a_evidence) == tmp_path / "c2a-evidence"
+    assert Path(args.task_card) == Path("configs/tasks/cards/press_button.v1.yaml")
     assert factory_builder.calls == []
 
 
@@ -1620,6 +1724,7 @@ def test_t152_main_loads_c2a_evidence_before_factory_builder(runner: Any) -> Non
     call_names = [node.func.id for node in calls]
 
     assert "load_g1_c2a_selected_pose_evidence" in call_names
+    assert "validate_g1_c2a_current_input_provenance" in call_names
     assert "_IsaacSceneFactory" in call_names
     load_line = next(
         node.lineno
@@ -1628,6 +1733,12 @@ def test_t152_main_loads_c2a_evidence_before_factory_builder(runner: Any) -> Non
     )
     factory_line = next(node.lineno for node in calls if node.func.id == "_IsaacSceneFactory")
     assert load_line < factory_line
+    validate_line = next(
+        node.lineno
+        for node in calls
+        if node.func.id == "validate_g1_c2a_current_input_provenance"
+    )
+    assert validate_line < factory_line
     assert "args.c2a_evidence" in inspect.getsource(runner.main)
 
 
@@ -1637,28 +1748,15 @@ def test_t152_loader_reads_checksums_report_candidates_and_recomputes_selected_h
     load = _capability(runner, "load_g1_c2a_selected_pose_evidence")
     evidence_dir, selected_sha256 = _write_c2a_evidence_fixture(tmp_path)
 
-    result = load(
-        evidence_dir=evidence_dir,
-        expected_pose_id=EXPECTED_POSE_ID,
-        expected_pose_sha256=selected_sha256,
-    )
+    result = load(evidence_dir)
 
-    assert result["selected_candidate"] == _selected_candidate()
-    assert result["selected_pose_sha256"] == EXPECTED_POSE_SHA256
-    assert result["selected_pose_sha256"] == _canonical_sha256(
-        result["selected_candidate"]
-    )
-    assert [record["candidate_id"] for record in result["candidate_records"]] == [
-        "task-ready-z-0p55",
-        "task-ready-z-0p54",
-        "task-ready-z-0p53",
-    ]
-    assert result["checksums_verified"] is True
-    assert result["source_paths"] == {
-        "report": str(evidence_dir / "report.json"),
-        "offline_candidates": str(evidence_dir / "offline_candidates.jsonl"),
-        "checksums": str(evidence_dir / "checksums.sha256"),
-    }
+    assert result.candidate_record == _selected_candidate()
+    assert result.selected_pose_id == EXPECTED_POSE_ID
+    assert result.selected_pose_sha256 == EXPECTED_POSE_SHA256 == selected_sha256
+    assert result.selected_pose_sha256 == _canonical_sha256(result.candidate_record)
+    assert result.evidence_dir == evidence_dir.resolve()
+    assert result.repository_commit == "0ace57ce716961a8f50ec9b75a7ba65ac544925a"
+    assert result.report["selected_pose_sha256"] == result.selected_pose_sha256
 
 
 def test_t152_loader_returns_jsonl_candidate_instead_of_hardcoded_pose(
@@ -1668,15 +1766,11 @@ def test_t152_loader_returns_jsonl_candidate_instead_of_hardcoded_pose(
     _paths, selected, evidence_dir, selected_sha256 = _current_input_fixture(tmp_path)
     assert selected_sha256 != EXPECTED_POSE_SHA256
 
-    result = load(
-        evidence_dir=evidence_dir,
-        expected_pose_id=EXPECTED_POSE_ID,
-        expected_pose_sha256=selected_sha256,
-    )
+    result = load(evidence_dir)
 
-    assert result["selected_candidate"] == selected
-    assert result["selected_pose_sha256"] == _canonical_sha256(selected)
-    assert result["selected_candidate"]["asset_sha256"] != _selected_candidate()[
+    assert result.candidate_record == selected
+    assert result.selected_pose_sha256 == _canonical_sha256(selected) == selected_sha256
+    assert result.candidate_record["asset_sha256"] != _selected_candidate()[
         "asset_sha256"
     ]
 
@@ -1684,17 +1778,15 @@ def test_t152_loader_returns_jsonl_candidate_instead_of_hardcoded_pose(
 def test_t152_missing_evidence_argument_stops_before_factory_builder(
     runner: Any, tmp_path: Path
 ) -> None:
-    orchestrate = _capability(runner, "orchestrate_g1_pose_conditioned_tracking")
-    paths, _candidate, _evidence_dir, selected_sha256 = _current_input_fixture(tmp_path)
+    prepare = _capability(runner, "prepare_g1_c2a_tracking_inputs")
+    paths, _candidate, _evidence_dir, _selected_sha256 = _current_input_fixture(tmp_path)
     factory = _FakeSceneFactory()
     factory_builder = _FactoryBuilderProbe(factory)
 
     with pytest.raises(G1ValidationError) as caught:
-        orchestrate(
-            **_from_evidence_orchestration_kwargs(
-                tmp_path,
+        prepare(
+            **_c2a_preflight_kwargs(
                 evidence_dir=None,
-                selected_pose_sha256=selected_sha256,
                 current_input_paths=paths,
                 factory_builder=factory_builder,
             )
@@ -1722,8 +1814,8 @@ def test_t152_missing_evidence_argument_stops_before_factory_builder(
 def test_t152_invalid_c2a_evidence_stops_before_factory_builder(
     runner: Any, tmp_path: Path, mutation: str
 ) -> None:
-    orchestrate = _capability(runner, "orchestrate_g1_pose_conditioned_tracking")
-    paths, _candidate, evidence_dir, selected_sha256 = _current_input_fixture(tmp_path)
+    prepare = _capability(runner, "prepare_g1_c2a_tracking_inputs")
+    paths, _candidate, evidence_dir, _selected_sha256 = _current_input_fixture(tmp_path)
     if mutation == "missing_directory":
         for path in evidence_dir.iterdir():
             path.unlink()
@@ -1759,11 +1851,9 @@ def test_t152_invalid_c2a_evidence_stops_before_factory_builder(
     factory_builder = _FactoryBuilderProbe(factory)
 
     with pytest.raises(G1ValidationError) as caught:
-        orchestrate(
-            **_from_evidence_orchestration_kwargs(
-                tmp_path,
+        prepare(
+            **_c2a_preflight_kwargs(
                 evidence_dir=evidence_dir,
-                selected_pose_sha256=selected_sha256,
                 current_input_paths=paths,
                 factory_builder=factory_builder,
             )
@@ -1780,27 +1870,36 @@ def test_t152_invalid_c2a_evidence_stops_before_factory_builder(
     assert not (tmp_path / "pose-conditioned-c1" / "manifest.json").exists()
 
 
-@pytest.mark.parametrize("mismatch", ["task_config", "robot_config", "fr3_asset"])
+@pytest.mark.parametrize(
+    "mismatch", ["task_config", "robot_config", "fr3_asset", "task_card", "geometry"]
+)
 def test_t152_current_input_digest_mismatch_stops_before_runtime_creation(
     runner: Any, tmp_path: Path, mismatch: str
 ) -> None:
-    orchestrate = _capability(runner, "orchestrate_g1_pose_conditioned_tracking")
+    prepare = _capability(runner, "prepare_g1_c2a_tracking_inputs")
     paths, selected, evidence_dir, selected_sha256 = _current_input_fixture(tmp_path)
     assert _canonical_sha256(selected) == selected_sha256
     assert json.loads((evidence_dir / "report.json").read_text(encoding="utf-8"))[
         "selected_pose_sha256"
     ] == selected_sha256
-    with paths[mismatch].open("ab") as stream:
-        stream.write(b"# current input changed after C2a evidence\n")
+    if mismatch == "geometry":
+        payload = yaml.safe_load(paths["task_config"].read_text(encoding="utf-8"))
+        payload["mechanism"]["geometry"]["button"]["radius_m"] = 0.034
+        paths["task_config"].write_text(
+            yaml.safe_dump(payload, sort_keys=False), encoding="utf-8"
+        )
+        selected["task_config_sha256"] = _sha256_path(paths["task_config"])
+        _write_c2a_evidence_fixture(tmp_path, selected_candidate=selected)
+    else:
+        with paths[mismatch].open("ab") as stream:
+            stream.write(b"# current input changed after C2a evidence\n")
     factory = _FakeSceneFactory()
     factory_builder = _FactoryBuilderProbe(factory)
 
     with pytest.raises(G1ValidationError) as caught:
-        orchestrate(
-            **_from_evidence_orchestration_kwargs(
-                tmp_path,
+        prepare(
+            **_c2a_preflight_kwargs(
                 evidence_dir=evidence_dir,
-                selected_pose_sha256=selected_sha256,
                 current_input_paths=paths,
                 factory_builder=factory_builder,
             )
@@ -1810,6 +1909,131 @@ def test_t152_current_input_digest_mismatch_stops_before_runtime_creation(
     assert mismatch in caught.value.message
     assert factory_builder.calls == []
     assert factory.scenes == []
+
+
+def test_t152_current_five_digest_provenance_is_computed_from_tracked_inputs(
+    runner: Any, tmp_path: Path
+) -> None:
+    compute = _capability(runner, "compute_g1_current_input_digests")
+    paths, selected, _evidence_dir, _selected_sha256 = _current_input_fixture(tmp_path)
+
+    current = compute(
+        task_config_path=paths["task_config"],
+        robot_config_path=paths["robot_config"],
+        fr3_asset_path=paths["fr3_asset"],
+        task_card_path=paths["task_card"],
+    )
+
+    assert current.task_config_sha256 == selected["task_config_sha256"]
+    assert current.robot_config_sha256 == selected["robot_config_sha256"]
+    assert current.fr3_asset_sha256 == selected["asset_sha256"]
+    assert current.task_card_sha256 == selected["task_card_sha256"]
+    assert current.geometry_sha256 == selected["geometry_sha256"]
+    assert all(
+        len(value) == 64
+        and value == value.lower()
+        and set(value) <= set("0123456789abcdef")
+        for value in vars(current).values()
+    )
+
+
+def test_t152_attempt02_is_historical_and_emits_exact_refresh_blocker_before_close(
+    runner: Any, tmp_path: Path
+) -> None:
+    evidence_dir = (
+        ROOT
+        / "outputs/evidence/G1/c2a-static-preliminary-0ace57ce7169-attempt-02"
+    )
+    checksum_path = evidence_dir / "checksums.sha256"
+    before = _sha256_path(checksum_path)
+    resolve = _capability(runner, "resolve_g1_current_input_paths")
+    prepare = _capability(runner, "prepare_g1_c2a_tracking_inputs")
+    finalize = _capability(runner, "finalize_g1_c2a_freshness_blocker")
+    current_paths = resolve(
+        task_config_path=TASK_CONFIG_PATH,
+        task_card_path=TASK_CARD_PATH,
+    )
+    factory_builder = _FactoryBuilderProbe(_FakeSceneFactory())
+
+    with pytest.raises(G1ValidationError) as caught:
+        prepare(
+            **_c2a_preflight_kwargs(
+                evidence_dir=evidence_dir,
+                current_input_paths=current_paths,
+                factory_builder=factory_builder,
+            )
+        )
+
+    assert caught.value.code == (
+        "CURRENT_C2A_REFRESH_REQUIRED_AFTER_GEOMETRY_SCHEMA_CHANGE"
+    )
+    assert str(evidence_dir) in caught.value.message
+    assert "fresh C2a" in caught.value.message
+    assert factory_builder.calls == []
+    close_calls: list[int] = []
+    output = tmp_path / "stale-blocker"
+    outcome = finalize(
+        output=output,
+        repository_commit="e" * 40,
+        command=[sys.executable, str(RUNNER_PATH), "--c2a-evidence", str(evidence_dir)],
+        error=caught.value,
+        historical_evidence_dir=evidence_dir,
+        current_input_digests=None,
+        close=lambda *, exit_code: close_calls.append(int(exit_code)),
+    )
+
+    assert outcome["exit_code"] == 1
+    assert outcome["systemic_failure_code"] == caught.value.code
+    assert close_calls == [1]
+    report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    for record in (report, manifest):
+        assert record["status"] == "BLOCKED"
+        assert record["systemic_failure_code"] == caught.value.code
+        assert record["systemic_failure_message"].strip()
+        assert record["historical_evidence_path"] == str(evidence_dir.resolve())
+        assert record["claim_eligible"] is False
+        assert record["selected_command_cap_m"] is None
+        assert record["gate_status_updated"] is False
+        assert record["t152_completed"] is False
+        assert record["t070_completed"] is False
+    assert (output / "checksums.sha256").is_file()
+    assert _sha256_path(checksum_path) == before
+
+
+def test_t152_stale_blocker_writer_failure_removes_pseudo_manifest_and_closes_once(
+    runner: Any, tmp_path: Path
+) -> None:
+    finalize = _capability(runner, "finalize_g1_c2a_freshness_blocker")
+    output = tmp_path / "broken-stale-blocker"
+    close_calls: list[int] = []
+    error = G1ValidationError(
+        "CURRENT_C2A_REFRESH_REQUIRED_AFTER_GEOMETRY_SCHEMA_CHANGE",
+        "historical evidence requires fresh C2a after geometry schema migration",
+    )
+
+    def broken_writer(**_kwargs: Any) -> dict[str, Any]:
+        output.mkdir()
+        (output / "manifest.json").write_text('{"status":"PASS"}\n', encoding="utf-8")
+        raise OSError("injected stale evidence writer failure")
+
+    with pytest.raises(G1ValidationError) as caught:
+        finalize(
+            output=output,
+            repository_commit="e" * 40,
+            command=[sys.executable, str(RUNNER_PATH)],
+            error=error,
+            historical_evidence_dir=tmp_path / "historical",
+            current_input_digests=None,
+            close=lambda *, exit_code: close_calls.append(int(exit_code)),
+            evidence_writer=broken_writer,
+        )
+
+    assert caught.value.code == "G1_C1_EVIDENCE_WRITE_FAILED"
+    assert "injected stale evidence writer failure" in caught.value.message
+    assert close_calls == [1]
+    assert not (output / "manifest.json").exists()
+    assert not (output / "checksums.sha256").exists()
 
 
 def _mutate_route(routes: list[dict[str, Any]], mutation: str) -> None:

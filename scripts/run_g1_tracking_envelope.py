@@ -27,6 +27,15 @@ if str(ROOT) not in sys.path:
 
 from isaac_tactile_libero.evidence.manifest import digest_reference, sha256_file  # noqa: E402
 from isaac_tactile_libero.runtime.fr3_target_latch import FR3PositionTargetLatch  # noqa: E402
+from isaac_tactile_libero.runtime.g1_c2a_evidence import (  # noqa: E402
+    C2ASelectedPoseEvidence,
+    G1CurrentInputDigests,
+    REFRESH_BLOCKER,
+    compute_g1_current_input_digests,
+    load_g1_c2a_selected_pose_evidence,
+    prepare_g1_c2a_tracking_inputs,
+    validate_g1_c2a_current_input_provenance,
+)
 from isaac_tactile_libero.runtime.g1_contact_exclusion import (  # noqa: E402
     derive_g1_pose_conditioned_routes,
     validate_g1_pose_conditioned_routes,
@@ -101,6 +110,111 @@ def _jsonable(value: Any) -> Any:
 
 def _write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(_jsonable(payload), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def write_g1_c2a_freshness_blocker_evidence(
+    *,
+    output: Path,
+    repository_commit: str,
+    command: Sequence[str],
+    error: G1ValidationError,
+    historical_evidence_dir: Path,
+    current_input_digests: G1CurrentInputDigests | None,
+) -> dict[str, Any]:
+    """Persist a no-claim Task 9 stale-evidence blocker before shutdown."""
+
+    destination = Path(output)
+    destination.mkdir(parents=True, exist_ok=False)
+    command_path = destination / "command.log"
+    command_path.write_text(
+        shlex.join([str(item) for item in command]) + "\n", encoding="utf-8"
+    )
+    report = {
+        "schema_version": "g1.c1.c2a_freshness.v1",
+        "evidence_stage": "preliminary",
+        "status": "BLOCKED",
+        "repository": {"commit": str(repository_commit), "dirty": False},
+        "historical_evidence_path": str(Path(historical_evidence_dir).resolve()),
+        "current_input_digests": (
+            _jsonable(current_input_digests)
+            if current_input_digests is not None
+            else None
+        ),
+        "systemic_failure": True,
+        "systemic_failure_code": str(error.code),
+        "systemic_failure_message": str(error.message),
+        "claim_eligible": False,
+        "selected_command_cap_m": None,
+        "gate_status_updated": False,
+        "t152_completed": False,
+        "t070_completed": False,
+    }
+    report_path = destination / "report.json"
+    _write_json(report_path, report)
+    manifest = {
+        **report,
+        "run_id": destination.name,
+        "gate_id": "G1",
+        "command": [str(item) for item in command],
+        "blockers": [str(error.code)],
+        "artifacts": [
+            {"path": path.name, "sha256": sha256_file(path)}
+            for path in (command_path, report_path)
+        ],
+    }
+    manifest_path = destination / "manifest.json"
+    _write_json(manifest_path, manifest)
+    (destination / "checksums.sha256").write_text(
+        "".join(
+            f"{sha256_file(path)}  {path.name}\n"
+            for path in (command_path, report_path, manifest_path)
+        ),
+        encoding="utf-8",
+    )
+    return report
+
+
+def finalize_g1_c2a_freshness_blocker(
+    *,
+    output: Path,
+    repository_commit: str,
+    command: Sequence[str],
+    error: G1ValidationError,
+    historical_evidence_dir: Path,
+    current_input_digests: G1CurrentInputDigests | None,
+    close: Callable[..., None],
+    evidence_writer: Callable[..., dict[str, Any]] = write_g1_c2a_freshness_blocker_evidence,
+) -> dict[str, Any]:
+    """Write the exact stale blocker and then invoke the injected close once."""
+
+    if error.code != REFRESH_BLOCKER:
+        raise error
+    try:
+        report = evidence_writer(
+            output=Path(output),
+            repository_commit=repository_commit,
+            command=command,
+            error=error,
+            historical_evidence_dir=Path(historical_evidence_dir),
+            current_input_digests=current_input_digests,
+        )
+    except Exception as writer_error:
+        destination = Path(output)
+        (destination / "checksums.sha256").unlink(missing_ok=True)
+        (destination / "manifest.json").unlink(missing_ok=True)
+        failure = G1ValidationError(
+            "G1_C1_EVIDENCE_WRITE_FAILED", str(writer_error)
+        )
+        close(exit_code=1)
+        raise failure from writer_error
+    close(exit_code=1)
+    return {
+        "exit_code": 1,
+        "systemic_failure": True,
+        "systemic_failure_code": error.code,
+        "systemic_failure_message": error.message,
+        "report": report,
+    }
 
 
 def build_g1_tracking_plan(*, seed: int) -> dict[str, Any]:
@@ -1061,10 +1175,16 @@ class _IsaacSceneFactory:
         *,
         task_config_path: Path,
         robot_safety_path: Path,
+        task_card_path: Path,
+        c2a_evidence: C2ASelectedPoseEvidence,
+        current_input_digests: G1CurrentInputDigests,
         headless: bool,
     ) -> None:
         self.task_config_path = task_config_path
         self.robot_safety_path = robot_safety_path
+        self.task_card_path = task_card_path
+        self.c2a_evidence = c2a_evidence
+        self.current_input_digests = current_input_digests
         self.task_config = yaml.safe_load(task_config_path.read_text(encoding="utf-8")) or {}
         self.robot_safe = yaml.safe_load(robot_safety_path.read_text(encoding="utf-8")) or {}
         if str(self.task_config.get("runtime", {}).get("physics_device", "")).lower() != "cpu":
@@ -1106,10 +1226,65 @@ def _repository_clean() -> bool:
     return not result.stdout.strip()
 
 
+def resolve_g1_current_input_paths(
+    *,
+    task_config_path: Path,
+    task_card_path: Path,
+) -> dict[str, Path]:
+    """Resolve the four current files whose content produces five digests."""
+
+    task_path = Path(task_config_path).resolve()
+    card_path = Path(task_card_path).resolve()
+    task_config = yaml.safe_load(task_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(task_config, Mapping):
+        raise G1ValidationError(
+            "G1_C1_SELECTED_POSE_PROVENANCE_MISMATCH",
+            f"current task config is not a mapping: {task_path}",
+        )
+    runtime = task_config.get("runtime")
+    if not isinstance(runtime, Mapping) or not runtime.get("robot_config_path"):
+        raise G1ValidationError(
+            "G1_C1_SELECTED_POSE_PROVENANCE_MISMATCH",
+            "current task config does not declare runtime.robot_config_path",
+        )
+    robot_path = Path(str(runtime["robot_config_path"]))
+    if not robot_path.is_absolute():
+        robot_path = (ROOT / robot_path).resolve()
+    robot_config = yaml.safe_load(robot_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(robot_config, Mapping) or not robot_config.get(
+        "articulation_config_path"
+    ):
+        raise G1ValidationError(
+            "G1_C1_SELECTED_POSE_PROVENANCE_MISMATCH",
+            "current robot config does not declare articulation_config_path",
+        )
+    articulation_path = Path(str(robot_config["articulation_config_path"]))
+    if not articulation_path.is_absolute():
+        articulation_path = (ROOT / articulation_path).resolve()
+    robot = load_fr3_articulation_config(articulation_path)
+    if not robot.assets.fr3_usd_path:
+        raise G1ValidationError(
+            "G1_C1_SELECTED_POSE_PROVENANCE_MISMATCH",
+            "current FR3 asset is unresolved",
+        )
+    return {
+        "task_config": task_path,
+        "robot_config": robot_path,
+        "fr3_asset": Path(robot.assets.fr3_usd_path).resolve(),
+        "task_card": card_path,
+    }
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True)
     parser.add_argument("--config", default="configs/tasks/press_button_physical.yaml")
+    parser.add_argument("--c2a-evidence", type=Path, required=True)
+    parser.add_argument(
+        "--task-card",
+        type=Path,
+        default=Path("configs/tasks/cards/press_button.v1.yaml"),
+    )
     parser.add_argument("--seed", type=int)
     parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=True)
     return parser.parse_args(argv)
@@ -1121,10 +1296,43 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("G1_C1_DIRTY_REPOSITORY: preliminary diagnostic requires a clean implementation commit", file=sys.stderr)
         return 2
     task_config_path = (ROOT / args.config).resolve() if not Path(args.config).is_absolute() else Path(args.config)
+    task_card_path = (
+        (ROOT / args.task_card).resolve()
+        if not Path(args.task_card).is_absolute()
+        else Path(args.task_card).resolve()
+    )
+    current_paths = resolve_g1_current_input_paths(
+        task_config_path=task_config_path,
+        task_card_path=task_card_path,
+    )
+    current_input_digests = compute_g1_current_input_digests(
+        task_config_path=current_paths["task_config"],
+        robot_config_path=current_paths["robot_config"],
+        fr3_asset_path=current_paths["fr3_asset"],
+        task_card_path=current_paths["task_card"],
+    )
+    try:
+        c2a_evidence = load_g1_c2a_selected_pose_evidence(args.c2a_evidence)
+        validate_g1_c2a_current_input_provenance(
+            c2a_evidence, current_input_digests
+        )
+    except G1ValidationError as error:
+        if error.code == REFRESH_BLOCKER:
+            outcome = finalize_g1_c2a_freshness_blocker(
+                output=Path(args.output),
+                repository_commit=_repository_commit(),
+                command=[sys.executable, str(Path(__file__).resolve()), *(argv or sys.argv[1:])],
+                error=error,
+                historical_evidence_dir=Path(args.c2a_evidence),
+                current_input_digests=current_input_digests,
+                close=lambda *, exit_code: None,
+            )
+            print(json.dumps(outcome["report"], indent=2, sort_keys=True))
+            return 1
+        print(f"{error.code}: {error.message}", file=sys.stderr)
+        return 1
     task_config = yaml.safe_load(task_config_path.read_text(encoding="utf-8")) or {}
-    robot_safety_path = Path(task_config["runtime"]["robot_config_path"])
-    if not robot_safety_path.is_absolute():
-        robot_safety_path = (ROOT / robot_safety_path).resolve()
+    robot_safety_path = current_paths["robot_config"]
     seed = int(args.seed if args.seed is not None else task_config["runtime"]["deterministic_reset_seed"])
     plan = build_g1_tracking_plan(seed=seed)
     outcome = orchestrate_g1_tracking_diagnostic(
@@ -1136,6 +1344,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         factory_builder=lambda: _IsaacSceneFactory(
             task_config_path=task_config_path,
             robot_safety_path=robot_safety_path,
+            task_card_path=task_card_path,
+            c2a_evidence=c2a_evidence,
+            current_input_digests=current_input_digests,
             headless=bool(args.headless),
         ),
     )

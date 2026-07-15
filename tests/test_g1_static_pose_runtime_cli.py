@@ -101,6 +101,8 @@ def _offline_record(candidate_id: str, order: int, position: list[float]) -> dic
         "dependency_lock_sha256": "5" * 64,
         "task_config_sha256": "6" * 64,
         "robot_config_sha256": "7" * 64,
+        "task_card_sha256": "a" * 64,
+        "geometry_sha256": "b" * 64,
         "code_sha256": "8" * 64,
         "pose_list_sha256": "9" * 64,
         "actuation_performed": False,
@@ -283,6 +285,8 @@ class _FakeFactory:
             "asset_sha256": "4" * 64,
             "task_config_sha256": "6" * 64,
             "robot_config_sha256": "7" * 64,
+            "task_card_sha256": "a" * 64,
+            "geometry_sha256": "b" * 64,
             "dependency_lock_sha256": "5" * 64,
             "reference_scene_token": "reference-1701",
             "transform_sha256": "3" * 64,
@@ -347,6 +351,7 @@ def _orchestrate(runner: Any, tmp_path: Path, factory: _FakeFactory, **changes: 
         "command": [sys.executable, str(RUNNER_PATH), "--output", str(tmp_path / "c2a")],
         "config_path": ROOT / "configs/tasks/press_button_physical.yaml",
         "robot_config_path": ROOT / "configs/robots/fr3_press_button_safe.yaml",
+        "task_card_path": ROOT / "configs/tasks/cards/press_button.v1.yaml",
         "headless": True,
         "seed": 1701,
         "factory_builder": lambda: factory,
@@ -361,17 +366,34 @@ def test_c2a_runtime_runner_exposes_executable_cli_and_real_factory_seams() -> N
         _capability(runner, name)
 
 
+def test_c2a_future_factory_seams_require_task_card_provenance() -> None:
+    runner = _runner()
+    build_signature = inspect.signature(
+        _capability(runner, "build_real_c2a_scene_factory")
+    )
+    orchestrate_signature = inspect.signature(
+        _capability(runner, "orchestrate_c2a_real_runtime")
+    )
+    factory_signature = inspect.signature(_real_runtime_module().C2ARealSceneFactory)
+
+    assert "task_card_path" in build_signature.parameters
+    assert "task_card_path" in orchestrate_signature.parameters
+    assert "task_card_path" in factory_signature.parameters
+
+
 def test_c2a_runtime_cli_parses_required_paths_headless_toggle_and_seed() -> None:
     parse = _capability(_runner(), "parse_args")
     args = parse([
         "--output", "out",
         "--config", "task.yaml",
         "--robot-config", "robot.yaml",
+        "--task-card", "task-card.yaml",
         "--no-headless",
     ])
     assert args.output == "out"
     assert args.config == "task.yaml"
     assert args.robot_config == "robot.yaml"
+    assert args.task_card == "task-card.yaml"
     assert args.headless is False
     assert args.seed == 1701
 
@@ -418,7 +440,8 @@ def test_c2a_reference_scene_requires_orientation_joint_fingers_transforms_and_h
     for field in (
         "target_orientation_xyzw", "articulation_joint_names", "reference_finger_values",
         "world_from_base", "base_from_world", "asset_sha256", "task_config_sha256",
-        "robot_config_sha256", "dependency_lock_sha256",
+        "robot_config_sha256", "task_card_sha256", "geometry_sha256",
+        "dependency_lock_sha256",
     ):
         broken = dict(reference)
         broken.pop(field)
@@ -764,6 +787,8 @@ def test_c2a_candidate_local_rejection_valid_failed_failed_runs_only_highest_can
             "dependency_lock_sha256",
             "task_config_sha256",
             "robot_config_sha256",
+            "task_card_sha256",
+            "geometry_sha256",
             "code_sha256",
             "pose_list_sha256",
             "orientation_source_sha256",
@@ -933,6 +958,8 @@ def test_c2a_candidate_local_rejection_real_factory_failed_solve_emits_truthful_
         "dependency_lock_sha256": "5" * 64,
         "task_config_sha256": "6" * 64,
         "robot_config_sha256": "7" * 64,
+        "task_card_sha256": "a" * 64,
+        "geometry_sha256": "b" * 64,
     }
     factory._stop_timeline = lambda: solver_calls.append("timeline-stop")
 
@@ -1153,6 +1180,7 @@ def test_c2a_evidence_schema_records_real_runtime_metadata_counts_and_zero_synth
             "broadphase_type": "MBP", "gpu_dynamics_enabled": False,
             "asset_sha256": "4" * 64, "task_config_sha256": "6" * 64,
             "robot_config_sha256": "7" * 64, "dependency_lock_sha256": "5" * 64,
+            "task_card_sha256": "a" * 64, "geometry_sha256": "b" * 64,
         },
     )
     assert report["synthetic_sample_count"] == 0
@@ -1164,6 +1192,9 @@ def test_c2a_evidence_schema_records_real_runtime_metadata_counts_and_zero_synth
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["runtime_metadata"]["physics_device"] == "cpu"
     assert manifest["runtime_metadata"]["gpu_dynamics_enabled"] is False
+    assert report["current_input_digests"]["task_card_sha256"] == "a" * 64
+    assert report["current_input_digests"]["geometry_sha256"] == "b" * 64
+    assert manifest["current_input_digests"] == report["current_input_digests"]
 
 
 def test_c2a_real_runtime_modules_are_import_safe_and_real_factory_is_lazy() -> None:

@@ -45,6 +45,7 @@ C2A_READINESS_ACTIONS = 64
 C2A_PHYSICS_SUBSTEPS = 3
 DEFAULT_TASK_CONFIG = "configs/tasks/press_button_physical.yaml"
 DEFAULT_ROBOT_CONFIG = "configs/robots/fr3_press_button_safe.yaml"
+DEFAULT_TASK_CARD = "configs/tasks/cards/press_button.v1.yaml"
 PRELIMINARY_BLOCKER = "C2A_PRELIMINARY_NOT_GATE_EVIDENCE"
 C2A_DIGEST_FIELDS = (
     "solver_config_sha256",
@@ -53,6 +54,8 @@ C2A_DIGEST_FIELDS = (
     "dependency_lock_sha256",
     "task_config_sha256",
     "robot_config_sha256",
+    "task_card_sha256",
+    "geometry_sha256",
     "code_sha256",
     "pose_list_sha256",
     "orientation_source_sha256",
@@ -153,6 +156,8 @@ def validate_c2a_reference_scene(reference: Mapping[str, Any]) -> dict[str, Any]
         "asset_sha256",
         "task_config_sha256",
         "robot_config_sha256",
+        "task_card_sha256",
+        "geometry_sha256",
         "dependency_lock_sha256",
         "reference_scene_token",
         "transform_sha256",
@@ -735,6 +740,33 @@ def write_c2a_static_evidence(
         for item in readiness_samples
     )
     metadata = _jsonable(dict(runtime_metadata or {}))
+    current_input_digests = {
+        "task_config_sha256": metadata.get("task_config_sha256"),
+        "robot_config_sha256": metadata.get("robot_config_sha256"),
+        "fr3_asset_sha256": metadata.get("asset_sha256"),
+        "task_card_sha256": metadata.get("task_card_sha256"),
+        "geometry_sha256": metadata.get("geometry_sha256"),
+    }
+    selected_candidates = [
+        item
+        for item in offline_candidates
+        if selected_pose_id is not None and item.get("candidate_id") == selected_pose_id
+    ]
+    selected_candidate_provenance = None
+    if len(selected_candidates) == 1 and selected_pose_sha256 is not None:
+        selected = selected_candidates[0]
+        selected_candidate_provenance = {
+            "candidate_id": selected.get("candidate_id"),
+            "candidate_sha256": selected_pose_sha256,
+            "solver_joint_names": list(selected.get("solver_joint_names", ())),
+            "articulation_joint_names": list(
+                selected.get("articulation_joint_names", ())
+            ),
+            "solver_frame": selected.get("solver_frame"),
+            "base_frame": selected.get("base_frame"),
+            "ee_frame": selected.get("ee_frame"),
+            "solver_identity": selected.get("solver_identity"),
+        }
     report = {
         "schema_version": "g1.c2a.static.v1",
         "evidence_stage": "preliminary",
@@ -751,6 +783,8 @@ def write_c2a_static_evidence(
         "systemic_failure_code": systemic_failure_code,
         "systemic_failure_message": systemic_failure_message,
         "runtime_metadata": metadata,
+        "current_input_digests": current_input_digests,
+        "selected_candidate_provenance": selected_candidate_provenance,
         "claim_eligible": False,
         "controlled_arrival": False,
         "direct_reset_qualified": False,
@@ -793,6 +827,7 @@ def build_real_c2a_scene_factory(
     *,
     config_path: str | Path,
     robot_config_path: str | Path,
+    task_card_path: str | Path,
     headless: bool,
     seed: int,
 ) -> Any:
@@ -803,6 +838,7 @@ def build_real_c2a_scene_factory(
     return C2ARealSceneFactory(
         config_path=Path(config_path),
         robot_config_path=Path(robot_config_path),
+        task_card_path=Path(task_card_path),
         headless=bool(headless),
         seed=int(seed),
     )
@@ -831,6 +867,7 @@ def orchestrate_c2a_real_runtime(
     command: Sequence[str],
     config_path: str | Path,
     robot_config_path: str | Path,
+    task_card_path: str | Path,
     headless: bool,
     seed: int,
     factory_builder: Callable[[], Any],
@@ -838,7 +875,7 @@ def orchestrate_c2a_real_runtime(
 ) -> dict[str, Any]:
     """Run C2a, persist all preliminary evidence, then close once with its exit code."""
 
-    del config_path, robot_config_path, headless
+    del config_path, robot_config_path, task_card_path, headless
     factory: Any | None = None
     offline_candidates: list[dict[str, Any]] = []
     static_scenes: list[dict[str, Any]] = []
@@ -980,6 +1017,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output", required=True)
     parser.add_argument("--config", default=DEFAULT_TASK_CONFIG)
     parser.add_argument("--robot-config", default=DEFAULT_ROBOT_CONFIG)
+    parser.add_argument("--task-card", default=DEFAULT_TASK_CARD)
     parser.add_argument(
         "--headless", action=argparse.BooleanOptionalAction, default=True
     )
@@ -1006,17 +1044,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     config_path = _resolve_repo_path(args.config)
     robot_config_path = _resolve_repo_path(args.robot_config)
+    task_card_path = _resolve_repo_path(args.task_card)
     outcome = orchestrate_c2a_real_runtime(
         output=output,
         repository_commit=_repository_commit(),
         command=[sys.executable, str(Path(__file__).resolve()), *(argv or sys.argv[1:])],
         config_path=config_path,
         robot_config_path=robot_config_path,
+        task_card_path=task_card_path,
         headless=bool(args.headless),
         seed=int(args.seed),
         factory_builder=lambda: build_real_c2a_scene_factory(
             config_path=config_path,
             robot_config_path=robot_config_path,
+            task_card_path=task_card_path,
             headless=bool(args.headless),
             seed=int(args.seed),
         ),

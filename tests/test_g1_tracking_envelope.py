@@ -1303,32 +1303,135 @@ def test_c1_main_returns_orchestrated_cli_status_without_isaac_shutdown_exit(
     runner = _tracking_runner()
     helper = getattr(runner, "orchestrate_g1_tracking_diagnostic", None)
     assert callable(helper), "G1 C1 missing failure-evidence lifecycle orchestration"
+    evidence_dir = tmp_path / "selected-c2a-evidence"
+    current_digests = object()
+    selected_evidence = object()
+    events: list[object] = []
+    current_paths = {
+        "task_config": tmp_path / "task.yaml",
+        "robot_config": tmp_path / "robot.yaml",
+        "fr3_asset": tmp_path / "fr3.usd",
+        "task_card": tmp_path / "task-card.yaml",
+    }
+
     monkeypatch.setattr(runner, "_repository_clean", lambda: True)
     monkeypatch.setattr(runner, "_repository_commit", lambda: "c" * 40)
     monkeypatch.setattr(
         runner,
+        "resolve_g1_current_input_paths",
+        lambda **kwargs: events.append(("resolve", kwargs)) or current_paths,
+    )
+    monkeypatch.setattr(
+        runner,
+        "compute_g1_current_input_digests",
+        lambda **kwargs: events.append(("compute", kwargs)) or current_digests,
+    )
+    monkeypatch.setattr(
+        runner,
+        "load_g1_c2a_selected_pose_evidence",
+        lambda path: events.append(("load", path)) or selected_evidence,
+    )
+    monkeypatch.setattr(
+        runner,
+        "validate_g1_c2a_current_input_provenance",
+        lambda evidence, current: events.append(("validate", evidence, current)),
+    )
+    constructed: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        runner,
+        "_IsaacSceneFactory",
+        lambda **kwargs: constructed.append(kwargs),
+    )
+    monkeypatch.setattr(
+        runner,
         "orchestrate_g1_tracking_diagnostic",
-        lambda **kwargs: {
+        lambda **kwargs: events.append(("orchestrate", kwargs))
+        or {
             "exit_code": expected_exit_code,
             "report": {"aggregation": {"systemic_failure": systemic_failure}},
         },
     )
 
-    exit_code = runner.main(["--output", str(tmp_path / "cli")])
+    exit_code = runner.main(
+        [
+            "--output",
+            str(tmp_path / "cli"),
+            "--c2a-evidence",
+            str(evidence_dir),
+        ]
+    )
 
     assert exit_code == expected_exit_code
+    assert [event[0] for event in events] == [
+        "resolve",
+        "compute",
+        "load",
+        "validate",
+        "orchestrate",
+    ]
+    assert events[2] == ("load", evidence_dir)
+    assert events[3] == ("validate", selected_evidence, current_digests)
+    assert events[1][1] == {
+        "task_config_path": current_paths["task_config"],
+        "robot_config_path": current_paths["robot_config"],
+        "fr3_asset_path": current_paths["fr3_asset"],
+        "task_card_path": current_paths["task_card"],
+    }
+    assert constructed == []
 
 
 def test_c1_main_returns_two_for_dirty_repository_without_constructing_factory(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     runner = _tracking_runner()
+    evidence_dir = tmp_path / "unused-c2a-evidence"
+    output = tmp_path / "dirty"
     monkeypatch.setattr(runner, "_repository_clean", lambda: False)
-    constructed = []
-    monkeypatch.setattr(runner, "_IsaacSceneFactory", lambda **kwargs: constructed.append(kwargs))
+    calls = {
+        "resolve": 0,
+        "compute": 0,
+        "load": 0,
+        "validate": 0,
+        "factory": 0,
+        "orchestrate": 0,
+    }
 
-    assert runner.main(["--output", str(tmp_path / "dirty")]) == 2
-    assert constructed == []
+    def record(name: str):
+        def fake(*args, **kwargs):
+            calls[name] += 1
+            return object()
+
+        return fake
+
+    monkeypatch.setattr(runner, "resolve_g1_current_input_paths", record("resolve"))
+    monkeypatch.setattr(runner, "compute_g1_current_input_digests", record("compute"))
+    monkeypatch.setattr(runner, "load_g1_c2a_selected_pose_evidence", record("load"))
+    monkeypatch.setattr(
+        runner,
+        "validate_g1_c2a_current_input_provenance",
+        record("validate"),
+    )
+    monkeypatch.setattr(runner, "_IsaacSceneFactory", record("factory"))
+    monkeypatch.setattr(runner, "orchestrate_g1_tracking_diagnostic", record("orchestrate"))
+
+    assert runner.main(
+        [
+            "--output",
+            str(output),
+            "--c2a-evidence",
+            str(evidence_dir),
+        ]
+    ) == 2
+    assert calls == {
+        "resolve": 0,
+        "compute": 0,
+        "load": 0,
+        "validate": 0,
+        "factory": 0,
+        "orchestrate": 0,
+    }
+    assert not output.exists()
+    assert not evidence_dir.exists()
 
 
 def test_c1_existing_output_refusal_still_shuts_down_once(tmp_path: Path) -> None:

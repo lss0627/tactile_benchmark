@@ -108,6 +108,8 @@ def _offline_record(**changes: Any) -> dict[str, Any]:
         "dependency_lock_sha256": "f" * 64,
         "task_config_sha256": "1" * 64,
         "robot_config_sha256": "2" * 64,
+        "task_card_sha256": "6" * 64,
+        "geometry_sha256": "7" * 64,
         "code_sha256": "3" * 64,
         "pose_list_sha256": "4" * 64,
         "orientation_source_sha256": "5" * 64,
@@ -128,6 +130,34 @@ def test_c2a_offline_candidates_have_exact_ids_order_and_positions() -> None:
         for candidate in candidates
     ) == EXPECTED_CANDIDATES
     assert [candidate["candidate_order"] for candidate in candidates] == [0, 1, 2]
+
+
+def test_c2a_future_offline_records_require_task_card_and_geometry_digests() -> None:
+    validate = getattr(_runner(), "validate_real_c2a_offline_candidates", None)
+    assert callable(validate), "Task 9 static validator seam is missing"
+    records = [
+        _offline_record(
+            candidate_id=candidate_id,
+            candidate_order=order,
+            target_position_world_m=list(position),
+            fk_position_world_m=list(position),
+            solver_identity="isaacsim_lula_fr3",
+            ik_solution_valid=True,
+            fk_residual_valid=True,
+            real_runtime_truth=True,
+            synthetic_test_double=False,
+        )
+        for order, (candidate_id, position) in enumerate(EXPECTED_CANDIDATES)
+    ]
+
+    assert len(validate(records)) == 3
+    for missing in ("task_card_sha256", "geometry_sha256"):
+        broken = json.loads(json.dumps(records))
+        broken[1].pop(missing)
+        with pytest.raises(Exception) as caught:
+            validate(broken)
+        assert getattr(caught.value, "code", None) == "G1_C2A_DIGEST_MISSING"
+        assert missing in getattr(caught.value, "message", str(caught.value))
 
 
 def test_c2a_offline_transform_fixture_is_finite_inverse_identity_4x4() -> None:
