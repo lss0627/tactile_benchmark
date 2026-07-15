@@ -1111,6 +1111,12 @@ def derive_g1_pose_conditioned_routes(
             "full_robot_static_collision_exclusion_qualified": False,
         }
         bundle["bundle_sha256"] = _canonical_sha256(bundle)
+        validate_g1_pose_conditioned_routes(
+            route_bundle=bundle,
+            geometry_contract=geometry_contract,
+            workspace_limits=workspace,
+            current_input_digests=digests,
+        )
         return bundle
     except G1ValidationError:
         raise
@@ -1118,6 +1124,510 @@ def derive_g1_pose_conditioned_routes(
         code = str(getattr(exc, "code", ROUTE_PROVENANCE_INVALID))
         message = str(getattr(exc, "message", exc))
         _task8_fail(code, message)
+
+
+def _task8_require_digest_match(
+    *,
+    supplied: Any,
+    recomputed: str,
+    field_name: str,
+) -> None:
+    try:
+        supplied_digest = _digest_mapping(supplied, field_name=field_name)
+    except _UnprovenArithmetic as exc:
+        _task8_fail(DIGEST_MISMATCH, str(exc))
+    if supplied_digest != recomputed:
+        _task8_fail(DIGEST_MISMATCH, f"{field_name} mismatch")
+
+
+def _task8_validate_bundle_schema(route_bundle: Mapping[str, object]) -> None:
+    required = {
+        "schema_version",
+        "selected_candidate",
+        "selected_pose_id",
+        "selected_pose_sha256",
+        "selected_fk_position_world_m",
+        "selected_frame",
+        "class_ids",
+        "command_matrix_decimal",
+        "command_matrix_float64",
+        "command_matrix_sha256",
+        "task_route_geometry",
+        "task_route_geometry_sha256",
+        "workspace_limits",
+        "workspace_limits_sha256",
+        "geometry_sha256",
+        "world_from_mechanism_root_sha256",
+        "contact_exclusion_policy_sha256",
+        "current_input_digests",
+        "class_routes",
+        "bundle_sha256",
+        "tcp_only_scope",
+        "full_robot_static_collision_exclusion_qualified",
+    }
+    ignored_claims = {
+        "workspace_valid",
+        "contact_exclusion_valid",
+        "route_complete",
+        "finite",
+    }
+    keys = set(route_bundle)
+    if not required.issubset(keys) or keys - required - ignored_claims:
+        _task8_fail(ROUTE_PROVENANCE_INVALID, "route bundle fields are incomplete or unknown")
+    if route_bundle.get("schema_version") != "g1.pose_conditioned.command_bound_routes.v1":
+        _task8_fail(ROUTE_PROVENANCE_INVALID, "route bundle schema version is invalid")
+    if route_bundle.get("tcp_only_scope") != CONTACT_EXCLUSION_SCOPE:
+        _task8_fail(ROUTE_PROVENANCE_INVALID, "route bundle TCP-only scope is invalid")
+    if route_bundle.get("full_robot_static_collision_exclusion_qualified") is not False:
+        _task8_fail(ROUTE_PROVENANCE_INVALID, "route bundle cannot claim full-robot static qualification")
+
+
+def _task8_validate_command_route(
+    *,
+    command_route: Mapping[str, Any],
+    definition: Mapping[str, Any],
+    command: float,
+    command_decimal: str,
+    start: Sequence[float],
+    task_geometry: Mapping[str, Any],
+    workspace: Mapping[str, Any],
+    require_canonical_motif: bool,
+) -> tuple[list[list[list[float]]], str]:
+    required = {
+        "command_decimal",
+        "command_m",
+        "motif_digest",
+        "motif_digest_inputs",
+        "exact_schedule",
+        "float64_materialization",
+        "ordered_action_endpoints_world_m",
+        "ordered_continuous_segments_world_m",
+        "segment_sha256s",
+        "float64_materialization_only",
+        "finite",
+        "workspace_result",
+        "per_obstacle_clearance_results",
+        "tcp_route_exclusion_qualified",
+        "full_robot_static_collision_exclusion_qualified",
+        "route_sha256",
+    }
+    optional = {
+        "endpoint_actions",
+        "reversal_before_actions",
+        "schedule_arithmetic",
+        "remainder_m",
+    }
+    if not isinstance(command_route, Mapping):
+        _task8_fail(ROUTE_PROVENANCE_INVALID, "command route must be a mapping")
+    keys = set(command_route)
+    if not required.issubset(keys) or keys - required - optional:
+        _task8_fail(ROUTE_PROVENANCE_INVALID, "command route fields are incomplete or unknown")
+    if command_route.get("command_decimal") != command_decimal or command_route.get("command_m") != command:
+        _task8_fail(ROUTE_PROVENANCE_INVALID, "command route order or identity is invalid")
+    if command_route.get("full_robot_static_collision_exclusion_qualified") is not False:
+        _task8_fail(ROUTE_PROVENANCE_INVALID, "command route cannot claim full-robot static qualification")
+
+    schedule = command_route.get("exact_schedule")
+    if (
+        isinstance(schedule, (str, bytes, Mapping))
+        or not isinstance(schedule, Sequence)
+        or len(schedule) != 256
+        or [item.get("measurement_action_index") for item in schedule] != list(range(256))
+    ):
+        _task8_fail(ROUTE_PROVENANCE_INVALID, "command route exact motif schedule is invalid")
+    digest_inputs = command_route.get("motif_digest_inputs")
+    if not isinstance(digest_inputs, Mapping):
+        _task8_fail(ROUTE_PROVENANCE_INVALID, "command route motif digest inputs are invalid")
+    _task8_require_digest_match(
+        supplied=command_route.get("motif_digest"),
+        recomputed=_canonical_sha256(digest_inputs),
+        field_name="motif_digest",
+    )
+    materialization = command_route.get("float64_materialization")
+    if (
+        isinstance(materialization, (str, bytes, Mapping))
+        or not isinstance(materialization, Sequence)
+        or len(materialization) != 256
+    ):
+        _task8_fail(ROUTE_PROVENANCE_INVALID, "command route float64 materialization is invalid")
+    vectors = [
+        _task8_finite_vector(vector, field_name="command route materialized action")
+        for vector in materialization
+    ]
+    if require_canonical_motif:
+        direction = _task8_direction(
+            class_id=str(definition["class_id"]),
+            start_world_m=start,
+            task_geometry=task_geometry,
+        )
+        expected_motif = _task8_motif(
+            definition=definition,
+            command_decimal=command_decimal,
+            direction_world=direction,
+        )
+        if schedule != expected_motif["schedule"]:
+            _task8_fail(ROUTE_PROVENANCE_INVALID, "command route exact motif schedule is invalid")
+        if digest_inputs != expected_motif["digest_inputs"]:
+            _task8_fail(ROUTE_PROVENANCE_INVALID, "command route motif digest inputs are invalid")
+        if command_route.get("motif_digest") != expected_motif["motif_digest"]:
+            _task8_fail(DIGEST_MISMATCH, "motif digest differs from the canonical schedule")
+        for field_name in optional:
+            if field_name in expected_motif and command_route.get(field_name) != expected_motif[field_name]:
+                _task8_fail(ROUTE_PROVENANCE_INVALID, f"command route {field_name} is invalid")
+        expected_vectors = _task8_materialize_vectors(
+            expected_motif, direction_world=direction
+        )
+        if vectors != expected_vectors:
+            _task8_fail(ROUTE_PROVENANCE_INVALID, "command route float64 materialization is invalid")
+    endpoints = command_route.get("ordered_action_endpoints_world_m")
+    segments = command_route.get("ordered_continuous_segments_world_m")
+    if (
+        isinstance(endpoints, (str, bytes, Mapping))
+        or not isinstance(endpoints, Sequence)
+        or len(endpoints) != 256
+        or isinstance(segments, (str, bytes, Mapping))
+        or not isinstance(segments, Sequence)
+        or len(segments) != 256
+    ):
+        _task8_fail(ROUTE_PROVENANCE_INVALID, "command route endpoints or segments are incomplete")
+    parsed_endpoints = [
+        _task8_finite_vector(endpoint, field_name="command route endpoint")
+        for endpoint in endpoints
+    ]
+    parsed_segments: list[list[list[float]]] = []
+    for segment in segments:
+        if (
+            isinstance(segment, (str, bytes, Mapping))
+            or not isinstance(segment, Sequence)
+            or len(segment) != 2
+        ):
+            _task8_fail(
+                ROUTE_PROVENANCE_INVALID,
+                "command route endpoints or segments are incomplete",
+            )
+        parsed_segments.append(
+            [
+                _task8_finite_vector(
+                    endpoint, field_name="command route segment endpoint"
+                )
+                for endpoint in segment
+            ]
+        )
+    if require_canonical_motif:
+        expected_endpoints, expected_segments = _task8_spatial_route(
+            start_world_m=start,
+            action_vectors=vectors,
+        )
+        if (
+            parsed_endpoints != expected_endpoints
+            or parsed_segments != expected_segments
+        ):
+            _task8_fail(
+                ROUTE_PROVENANCE_INVALID,
+                "command route endpoints or segments are incomplete",
+            )
+    else:
+        expected_endpoints = parsed_endpoints
+        expected_segments = parsed_segments
+    if len(expected_segments) != 256:
+        _task8_fail(ROUTE_PROVENANCE_INVALID, "command route must retain exactly 256 segments")
+    if not all(
+        math.isfinite(float(component))
+        for segment in expected_segments
+        for endpoint in segment
+        for component in endpoint
+    ):
+        _task8_fail(ROUTE_PROVENANCE_INVALID, "command route contains a nonfinite endpoint")
+    segment_digests = [_canonical_sha256(segment) for segment in expected_segments]
+    supplied_segment_digests = command_route.get("segment_sha256s")
+    if supplied_segment_digests != segment_digests:
+        _task8_fail(DIGEST_MISMATCH, "ordered segment digest mismatch")
+
+    lower = workspace["lower_world_m"]
+    upper = workspace["upper_world_m"]
+    workspace_passed = all(
+        all(lower[index] <= point[index] <= upper[index] for index in range(3))
+        for point in [list(start), *expected_endpoints]
+    )
+    if not workspace_passed:
+        _task8_fail(ROUTE_PROVENANCE_INVALID, "continuous route leaves the declared world workspace")
+    workspace_result = command_route.get("workspace_result")
+    if not isinstance(workspace_result, Mapping):
+        _task8_fail(ROUTE_PROVENANCE_INVALID, "command route workspace proof is missing")
+    expected_workspace_result = {
+        "frame": "world",
+        "continuous_proof": "closed_aabb_convex_endpoints",
+        "workspace_limits_sha256": _canonical_sha256(workspace),
+        "workspace_passed": True,
+    }
+    if workspace_result != expected_workspace_result:
+        _task8_fail(ROUTE_PROVENANCE_INVALID, "command route workspace proof is invalid")
+    _task8_require_digest_match(
+        supplied=command_route.get("route_sha256"),
+        recomputed=_canonical_sha256(
+            {key: value for key, value in command_route.items() if key != "route_sha256"}
+        ),
+        field_name="route_sha256",
+    )
+    return expected_segments, str(command_route["route_sha256"])
+
+
+def validate_g1_pose_conditioned_routes(
+    *,
+    route_bundle: Mapping[str, object],
+    geometry_contract: PressButtonGeometryContract,
+    workspace_limits: Mapping[str, object],
+    current_input_digests: Mapping[str, str],
+) -> ContactExclusionRouteResult:
+    """Independently validate every command-bound route and declared solid."""
+
+    try:
+        if not isinstance(route_bundle, Mapping):
+            _task8_fail(ROUTE_PROVENANCE_INVALID, "route bundle must be a mapping")
+        _task8_validate_bundle_schema(route_bundle)
+        if not isinstance(geometry_contract, PressButtonGeometryContract):
+            _task8_fail(ROUTE_PROVENANCE_INVALID, "formal parsed geometry contract is required")
+        validate_press_button_geometry_digest(
+            geometry_contract, expected_sha256=geometry_contract.geometry_sha256
+        )
+        _task8_validate_contract_semantics(geometry_contract)
+        world_geometry = derive_press_button_world_geometry(geometry_contract)
+
+        candidate, candidate_id, start, frame = _task8_selected_candidate(
+            route_bundle["selected_candidate"],
+            selected_pose_sha256=str(route_bundle["selected_pose_sha256"]),
+        )
+        if (
+            route_bundle.get("selected_pose_id") != candidate_id
+            or route_bundle.get("selected_fk_position_world_m") != start
+            or route_bundle.get("selected_frame") != frame
+            or route_bundle.get("selected_candidate") != candidate
+        ):
+            _task8_fail(ROUTE_PROVENANCE_INVALID, "selected candidate bundle binding is invalid")
+
+        definitions = g1_trajectory_class_definitions()
+        if route_bundle.get("class_ids") != list(G1_TRAJECTORY_CLASS_IDS):
+            _task8_fail(ROUTE_PROVENANCE_INVALID, "route bundle class order is invalid")
+        commands, command_decimals = _task8_command_matrix(
+            route_bundle["command_matrix_float64"]
+        )
+        if route_bundle.get("command_matrix_decimal") != list(command_decimals):
+            _task8_fail(ROUTE_PROVENANCE_INVALID, "route bundle Decimal command order is invalid")
+        _task8_require_digest_match(
+            supplied=route_bundle.get("command_matrix_sha256"),
+            recomputed=_canonical_sha256(list(command_decimals)),
+            field_name="command_matrix_sha256",
+        )
+
+        task_geometry = _task8_task_geometry(route_bundle["task_route_geometry"])
+        if route_bundle.get("task_route_geometry_sha256") != task_geometry["task_route_geometry_sha256"]:
+            _task8_fail(DIGEST_MISMATCH, "task route geometry top-level digest mismatch")
+        workspace = _task8_workspace(workspace_limits)
+        if route_bundle.get("workspace_limits") != workspace:
+            _task8_fail(ROUTE_PROVENANCE_INVALID, "bundle workspace differs from validation input")
+        _task8_require_digest_match(
+            supplied=route_bundle.get("workspace_limits_sha256"),
+            recomputed=_canonical_sha256(workspace),
+            field_name="workspace_limits_sha256",
+        )
+        digests = _task8_current_digests(
+            current_input_digests, geometry_contract=geometry_contract
+        )
+        if route_bundle.get("current_input_digests") != digests:
+            _task8_fail(DIGEST_MISMATCH, "bundle current-input digests differ from validation inputs")
+        _task8_require_digest_match(
+            supplied=route_bundle.get("geometry_sha256"),
+            recomputed=geometry_contract.geometry_sha256,
+            field_name="geometry_sha256",
+        )
+        _task8_require_digest_match(
+            supplied=route_bundle.get("world_from_mechanism_root_sha256"),
+            recomputed=geometry_contract.world_from_mechanism_root_sha256,
+            field_name="world_from_mechanism_root_sha256",
+        )
+        policy_sha256 = _canonical_sha256(asdict(geometry_contract.contact_exclusion))
+        _task8_require_digest_match(
+            supplied=route_bundle.get("contact_exclusion_policy_sha256"),
+            recomputed=policy_sha256,
+            field_name="contact_exclusion_policy_sha256",
+        )
+
+        class_routes = route_bundle.get("class_routes")
+        if (
+            isinstance(class_routes, (str, bytes, Mapping))
+            or not isinstance(class_routes, Sequence)
+            or len(class_routes) != len(G1_TRAJECTORY_CLASS_IDS)
+        ):
+            _task8_fail(ROUTE_PROVENANCE_INVALID, "all six command-bound class routes are required")
+        segments_by_command: list[list[list[list[float]]]] = [
+            [] for _ in G1_TRACKING_COMMANDS_M
+        ]
+        bundle_route_sha256s: list[list[str]] = [
+            [] for _ in G1_TRACKING_COMMANDS_M
+        ]
+        for class_index, (class_route, definition) in enumerate(
+            zip(class_routes, definitions, strict=True)
+        ):
+            if not isinstance(class_route, Mapping):
+                _task8_fail(ROUTE_PROVENANCE_INVALID, "class route must be a mapping")
+            required_class_fields = {
+                "class_id",
+                "class_version",
+                "motif_type",
+                "phase_id",
+                "direction_source",
+                "start_source",
+                "class_definition_sha256",
+                "command_routes",
+                "class_route_sha256",
+            }
+            if set(class_route) != required_class_fields:
+                _task8_fail(ROUTE_PROVENANCE_INVALID, "class route fields are incomplete or unknown")
+            for field_name in (
+                "class_id",
+                "class_version",
+                "motif_type",
+                "phase_id",
+                "direction_source",
+                "start_source",
+            ):
+                if class_route.get(field_name) != definition[field_name]:
+                    _task8_fail(ROUTE_PROVENANCE_INVALID, "class route order or definition is invalid")
+            _task8_require_digest_match(
+                supplied=class_route.get("class_definition_sha256"),
+                recomputed=_canonical_sha256(definition),
+                field_name="class_definition_sha256",
+            )
+            command_routes = class_route.get("command_routes")
+            if (
+                isinstance(command_routes, (str, bytes, Mapping))
+                or not isinstance(command_routes, Sequence)
+                or len(command_routes) != len(commands)
+            ):
+                _task8_fail(ROUTE_PROVENANCE_INVALID, "class route command matrix is incomplete")
+            for command_index, (command_route, command, command_decimal) in enumerate(
+                zip(command_routes, commands, command_decimals, strict=True)
+            ):
+                segments, route_sha256 = _task8_validate_command_route(
+                    command_route=command_route,
+                    definition=definition,
+                    command=command,
+                    command_decimal=command_decimal,
+                    start=start,
+                    task_geometry=task_geometry,
+                    workspace=workspace,
+                    require_canonical_motif=False,
+                )
+                segments_by_command[command_index].append(segments)
+                bundle_route_sha256s[command_index].append(route_sha256)
+            _task8_require_digest_match(
+                supplied=class_route.get("class_route_sha256"),
+                recomputed=_canonical_sha256(
+                    {key: value for key, value in class_route.items() if key != "class_route_sha256"}
+                ),
+                field_name="class_route_sha256",
+            )
+
+        _task8_require_digest_match(
+            supplied=route_bundle.get("bundle_sha256"),
+            recomputed=_canonical_sha256(
+                {key: value for key, value in route_bundle.items() if key != "bundle_sha256"}
+            ),
+            field_name="bundle_sha256",
+        )
+
+        command_validation_results: list[ContactExclusionRouteResult] = []
+        for command_index, command_decimal in enumerate(command_decimals):
+            ordered_routes = [
+                {
+                    "class_id": class_id,
+                    "class_version": "v1",
+                    "ordered_segments_world_m": segments_by_command[command_index][class_index],
+                }
+                for class_index, class_id in enumerate(G1_TRAJECTORY_CLASS_IDS)
+            ]
+            result = validate_contact_exclusion_routes(
+                ordered_routes=ordered_routes,
+                contract=geometry_contract,
+                world_geometry=world_geometry,
+                current_input_digests=digests,
+            )
+            command_validation_results.append(result)
+            if not result.tcp_route_exclusion_qualified:
+                code = DIGEST_MISMATCH if result.code == DIGEST_MISMATCH else ROUTE_INVALID
+                _task8_fail(
+                    code,
+                    f"command {command_decimal} declared-solid validation failed: {result.message}",
+                )
+
+        for class_route, definition in zip(class_routes, definitions, strict=True):
+            for command_route, command, command_decimal in zip(
+                class_route["command_routes"], commands, command_decimals, strict=True
+            ):
+                _task8_validate_command_route(
+                    command_route=command_route,
+                    definition=definition,
+                    command=command,
+                    command_decimal=command_decimal,
+                    start=start,
+                    task_geometry=task_geometry,
+                    workspace=workspace,
+                    require_canonical_motif=True,
+                )
+
+        transposed_class_results: list[dict[str, Any]] = []
+        for class_index, class_id in enumerate(G1_TRAJECTORY_CLASS_IDS):
+            command_results: list[dict[str, Any]] = []
+            for command_index, (command, command_decimal, validation) in enumerate(
+                zip(commands, command_decimals, command_validation_results, strict=True)
+            ):
+                lower_level = validation.class_results[class_index]
+                command_results.append(
+                    {
+                        "command_decimal": command_decimal,
+                        "command_m": command,
+                        "bundle_route_sha256": bundle_route_sha256s[command_index][class_index],
+                        "declared_solid_route_sha256": lower_level["route_sha256"],
+                        "tcp_route_exclusion_qualified": lower_level[
+                            "tcp_route_exclusion_qualified"
+                        ],
+                        "full_robot_static_collision_exclusion_qualified": False,
+                        "obstacle_results": lower_level["obstacle_results"],
+                        "code": validation.code,
+                        "message": validation.message,
+                    }
+                )
+            transposed_class_results.append(
+                {
+                    "class_id": class_id,
+                    "class_version": "v1",
+                    "command_results": command_results,
+                    "tcp_route_exclusion_qualified": all(
+                        bool(item["tcp_route_exclusion_qualified"])
+                        for item in command_results
+                    ),
+                    "full_robot_static_collision_exclusion_qualified": False,
+                }
+            )
+        return ContactExclusionRouteResult(
+            tcp_route_exclusion_qualified=all(
+                bool(item["tcp_route_exclusion_qualified"])
+                for item in transposed_class_results
+            ),
+            contact_exclusion_scope=CONTACT_EXCLUSION_SCOPE,
+            full_robot_static_collision_exclusion_qualified=False,
+            class_results=tuple(transposed_class_results),
+            code=None,
+            message=None,
+        )
+    except G1ValidationError:
+        raise
+    except Exception as exc:
+        code = str(getattr(exc, "code", ROUTE_PROVENANCE_INVALID))
+        message = str(getattr(exc, "message", exc)) or "Task 8 route validation failed"
+        if code == DIGEST_MISMATCH:
+            _task8_fail(DIGEST_MISMATCH, message)
+        _task8_fail(ROUTE_PROVENANCE_INVALID, message)
 
 
 def validate_contact_exclusion_routes(

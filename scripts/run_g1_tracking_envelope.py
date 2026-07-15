@@ -27,6 +27,10 @@ if str(ROOT) not in sys.path:
 
 from isaac_tactile_libero.evidence.manifest import digest_reference, sha256_file  # noqa: E402
 from isaac_tactile_libero.runtime.fr3_target_latch import FR3PositionTargetLatch  # noqa: E402
+from isaac_tactile_libero.runtime.g1_contact_exclusion import (  # noqa: E402
+    derive_g1_pose_conditioned_routes,
+    validate_g1_pose_conditioned_routes,
+)
 from isaac_tactile_libero.runtime.g1_nonzero_kernel import (  # noqa: E402
     execute_g1_qualifying_kernel_send as _execute_g1_qualifying_kernel_send,
     invoke_g1_qualifying_kernel as _invoke_g1_qualifying_kernel,
