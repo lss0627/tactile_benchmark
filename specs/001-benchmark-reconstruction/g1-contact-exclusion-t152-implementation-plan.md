@@ -2017,6 +2017,16 @@ run_t152_verification() {
   test "$ATTEMPT02_SHA_BEFORE" = \
     cc53c4b4bc3cefdc7a2363c6446741e3abfc65e768ac0db71123aa593be528ed
 
+  FUTURE_NODEIDS="$VERIFY_DIR/intentional-future-red-nodeids.txt"
+  awk 'NF && $1 !~ /^#/' \
+    configs/repository/intentional-future-red-nodeids.txt | sort -u \
+    > "$FUTURE_NODEIDS"
+  test "$(wc -l < "$FUTURE_NODEIDS")" -eq 125
+  FOCUSED_DESELECT=()
+  while IFS= read -r node; do
+    FOCUSED_DESELECT+=(--deselect "$node")
+  done < "$FUTURE_NODEIDS"
+
   python -m pytest -q tests/test_press_button_geometry_contract.py
   python -m pytest -q tests/test_g1_contact_exclusion_geometry.py
   python -m pytest -q \
@@ -2028,7 +2038,8 @@ run_t152_verification() {
     tests/test_g1_press_button_runner_evidence.py \
     tests/test_g1_static_pose_runtime_cli.py \
     tests/test_g1_static_pose_qualification.py \
-    tests/test_fr3_runtime_safety.py
+    tests/test_fr3_runtime_safety.py \
+    "${FOCUSED_DESELECT[@]}"
   python -m pytest -q \
     tests/test_fr3_runtime_safety.py::test_observed_public_action_displacement_equal_to_exact_hard_limit_passes \
     tests/test_fr3_runtime_safety.py::test_nextafter_above_exact_observed_hard_limit_aborts_without_epsilon \
@@ -2037,12 +2048,6 @@ run_t152_verification() {
   python tests/run_g1_node_inventory.py \
     --inventory tests/fixtures/g1_t152_baseline_inventory.json \
     --selection original_green --expect-pass 748
-
-  FUTURE_NODEIDS="$VERIFY_DIR/intentional-future-red-nodeids.txt"
-  awk 'NF && $1 !~ /^#/' \
-    configs/repository/intentional-future-red-nodeids.txt | sort -u \
-    > "$FUTURE_NODEIDS"
-  test "$(wc -l < "$FUTURE_NODEIDS")" -eq 125
 
   EXTERNAL_NODEIDS="$VERIFY_DIR/external-evidence-nodeids.txt"
   awk 'NF && $1 !~ /^#/' \
