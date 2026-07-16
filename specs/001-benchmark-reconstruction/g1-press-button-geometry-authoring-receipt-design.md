@@ -371,3 +371,28 @@ tested, fail-closed historical v1 migration boundary. A fake receipt remains
 `geometry_only=true`, `complete_stage=false`, and
 `benchmark_cap_eligible=false`; only real `build_stage()` may return the
 complete scene contract.
+
+### 11.1 Implemented v2 and authored-stage closure
+
+The hierarchy delivery is fixed at docs `2294a928798a47b08cd485248e502a011ea42d7d`,
+RED `e785369f98aa815c72ae99c67572f4eec76d291b`, and GREEN
+`15c653be66fbc7e02cc66e88459d48eeb59f1185`, in the approved parent order. The
+v2 receipt now records the configured unscaled housing body path and its fixed
+direct `Geometry` child separately. Its v1 migrator validates the entire frozen
+historical key set, contract object, digests, paths, and no-claim booleans
+before constructing v2; it never upgrades a historical receipt into a
+complete-stage claim.
+
+Real `build_stage()` applies and reads back the parent/child physics APIs,
+rigid-body enabled and kinematic values, exact transform-op stacks, reset-stack
+flags, Cube size, joint relationships, raw local anchors, and computed world
+anchors. The accepted in-memory stage has a maximum per-axis anchor delta of
+`3.725290076417309e-10 m`, below the unchanged `1e-9 m` authoring-validation
+boundary. Root orientation remains `quatd`; analytic geometry, both existing
+digests, root pose, joint/drive values, and mechanism version remain unchanged.
+
+The production-fix pre-projection passed the frozen `1091/966/965/1/125`
+partition and both approved current-GREEN digests. The tracked projection that
+contains this receipt does not predeclare its own SHA. It leaves T152 `[x]`,
+T151/T070 `[ ]`, and C2a attempt-05 unexecuted until projection-bound Task 11
+and formal G0 are regenerated and reviewed.

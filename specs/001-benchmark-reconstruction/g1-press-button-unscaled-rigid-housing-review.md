@@ -218,3 +218,64 @@ The unvalidated local driver remains `550.144.03`. Even complete local physical
 behavior can support at most `PASS_SMOKE` for G1 and must retain
 `REFERENCE_DRIVER_REVALIDATION_REQUIRED`; it cannot be represented as a release
 `PASS_BENCHMARK`.
+
+## 7. Implemented hierarchy-fix projection receipt
+
+The test-first repair is complete through the production-fix pre-projection
+boundary:
+
+```text
+D_hierarchy = 2294a928798a47b08cd485248e502a011ea42d7d
+R_hierarchy = e785369f98aa815c72ae99c67572f4eec76d291b
+F_hierarchy = 15c653be66fbc7e02cc66e88459d48eeb59f1185
+```
+
+Their parent chain is exact: `D_hierarchy^=c2412f118b195a767ba3f79345cad1ae57396d45`,
+`R_hierarchy^=D_hierarchy`, and `F_hierarchy^=R_hierarchy`. RED changes only
+the existing mechanism test file and preserves all 39 node IDs; GREEN changes
+only the production mechanism module. Independent review found no remaining
+Critical or Important finding.
+
+The real Isaac 6 no-`SimulationApp` in-memory stage acceptance printed
+`PRESS_BUTTON_UNSCALED_HOUSING_STAGE_PASS`. It observed:
+
+```text
+Housing                         Xform, translate only, rigidBodyEnabled=true,
+                                kinematicEnabled=true, no CollisionAPI
+Housing/Geometry                Cube, translate then scale, size=1,
+                                CollisionAPI, no RigidBodyAPI
+Button                          Cylinder, rigidBodyEnabled=true, dynamic
+joint localPos0                 (0, 0, 0.02500000037252903)
+joint localPos1                 (0, 0, 0)
+body0 world anchor              (0.55, 0, 0.470000000372529)
+body1 world anchor              (0.55, 0, 0.47)
+per-axis anchor delta           (0, 0, 3.725290076417309e-10)
+root xformOp:orient             quatd
+mechanism_version               1.1.0
+```
+
+The authored-stage validator also reads back the exact transform-op stacks and
+reset-stack flags, Cube size, both rigid-body enabled attributes, joint
+relationships, raw local anchors, and computed world anchors. Coherently wrong
+local anchors cannot pass merely because their world points coincide.
+
+The immutable pre-projection directory is
+`/tmp/g1-t152-press-button-housing-pre-projection`. It records
+full/current/portable/external/future counts `1091/966/965/1/125`, future
+classification `78/29/10/8`, original GREEN 748/748, T152 113/113, Task 8
+40/40, Task 9 32/32, static qualification 80/80, Tasks 4–7 108/108, hard limit
+4/4, contact analytic 38/38, and zero deprecated-import findings. The approved
+current-GREEN digests remain:
+
+```text
+collection-order 1c8e6a8e9b09da6b06435ea6c75191c5fb4b3c3fa7e1b97161951e65249d45ad
+sorted           00a6e84c5d2e1f623f2211db8272ca95859e8050417f7c25cbfeef9afd84efc7
+```
+
+The old orientation projection/G0 and C2a attempt-04 remain immutable
+historical evidence. Attempt-04 still records initial observed travel
+`0.024818362668156624 m`, zero completed scenes/readiness samples, and no
+selected pose/hash. It predates this repair and cannot be current evidence.
+T152 remains `[x]`; T151/T070 remain `[ ]`. C2a attempt-05 and pose-conditioned
+C1 attempt-04 have not run. The commit containing this projection receipt does
+not embed its own unknown SHA.

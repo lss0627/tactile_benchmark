@@ -3309,3 +3309,49 @@ HEAD; after T151 `[x]` and a clean T151 projection, exactly one final-current
 C2a attempt-06 is then required before the separately named pose-conditioned C1
 attempt-04. G1 on driver `550.144.03/UNVALIDATED` can reach at most
 `PASS_SMOKE` and must retain `REFERENCE_DRIVER_REVALIDATION_REQUIRED`.
+
+### Unscaled-housing production-fix pre-projection result
+
+The hierarchy commits are now fixed:
+
+```text
+D_hierarchy = 2294a928798a47b08cd485248e502a011ea42d7d
+R_hierarchy = e785369f98aa815c72ae99c67572f4eec76d291b
+F_hierarchy = 15c653be66fbc7e02cc66e88459d48eeb59f1185
+```
+
+Their parent chain is exact, beginning at the historical orientation projection
+`c2412f118b195a767ba3f79345cad1ae57396d45`. RED preserves the existing 39
+mechanism node IDs and fails through the missing hierarchy behavior. GREEN
+changes only the production mechanism module; focused suites passed 39/39,
+108/108, and 21/21, and independent review found no remaining Critical or
+Important finding.
+
+The real Isaac 6 no-`SimulationApp` in-memory diagnostic printed
+`PRESS_BUTTON_UNSCALED_HOUSING_STAGE_PASS`. The unscaled body and scaled child
+collider have the approved API ownership; raw joint anchors are
+`(0,0,0.02500000037252903)` and `(0,0,0)`; their world anchors are
+`(0.55,0,0.470000000372529)` and `(0.55,0,0.47)`, for a maximum per-axis delta
+of `3.725290076417309e-10 m`. Root orient remains `quatd` and mechanism version
+remains `1.1.0`.
+
+The immutable pre-projection result at
+`/tmp/g1-t152-press-button-housing-pre-projection` passed full/current/portable/
+external/future `1091/966/965/1/125`, future `78/29/10/8`, original GREEN
+748/748, T152 113/113, Task 8 40/40, Task 9 32/32, static qualification 80/80,
+Tasks 4–7 108/108, hard limit 4/4, contact analytic 38/38, deprecated scan 0/0,
+CLI help/import boundaries, and clean-checkout behavior. The two approved
+digests remain:
+
+```text
+collection-order 1c8e6a8e9b09da6b06435ea6c75191c5fb4b3c3fa7e1b97161951e65249d45ad
+sorted           00a6e84c5d2e1f623f2211db8272ca95859e8050417f7c25cbfeef9afd84efc7
+```
+
+External attestation remains one node with JUnit 1/0/0/0, zero factory calls,
+and nine checksum-valid files. Attempt-02/03/04 checksum files remain unchanged.
+Attempt-04 is historical and records initial travel `0.024818362668156624 m`;
+it is not current evidence after the production fix. This projection keeps
+T152 `[x]`, T151/T070 `[ ]`, C2a attempt-05 unrun, and pose-conditioned C1
+attempt-04 unrun. Its own SHA is intentionally supplied only by Git after the
+tracked projection commit is created.
