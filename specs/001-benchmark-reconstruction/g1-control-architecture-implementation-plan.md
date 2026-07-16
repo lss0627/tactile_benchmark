@@ -371,3 +371,27 @@ python -m pytest -q \
 ```
 
 For every RED node record the node ID, exact assertion, missing capability, target-failure decision, and confirmation that collection/import/environment succeeded. Existing pre-RED tests must remain green. Commit only those tests as `test(g1): define tracking reset and freshness red contracts`, push to the existing branch, and keep Draft PR #2, T070, G1, and G2-G6 statuses unchanged.
+
+## Attempt-04 evidence-lifecycle repair checkpoint
+
+The final-current C2a attempt-06 at clean projection
+`ceb7e6fca70ba717f569886ed6fbc15e86498ec6` passed its selected-pose input
+boundary. The single authorized pose-conditioned C1 attempt-04 then exited 1
+after real Isaac execution, but its requested immutable directory was not
+created. The retained Kit log is not a substitute for trial, aggregation,
+manifest, or checksum evidence, so no eligible tested cap can be claimed or
+reconstructed.
+
+[G1 C1 Attempt-04 Evidence-Lifecycle Review](g1-c1-attempt-04-evidence-lifecycle-review.md)
+defines the root cause and repair. The pose-conditioned orchestrator must apply
+the same write-before-close rule to factory, runner, and aggregator exceptions:
+retain an exact systemic code/message, preserve returned trials where present,
+write checksummed `BLOCKED` evidence with a null cap, then close once with exit
+1. The repair may not change the matrix, thresholds, motifs, formulas, budgets,
+physics/driver policy, Contact/force truth, or fabricate missing attempt-04
+artifacts.
+
+After RED-to-GREEN, regression, projection, and repository-integrity checks,
+stop without another C1 runtime. C2b, C3, bundle/freshness, staged physical,
+T070, and G1 review remain prohibited until a separately authorized fresh C1
+run produces an eligible tested cap.
