@@ -3191,3 +3191,44 @@ Stop before C2a if the focused RED is malformed, the in-memory USD diagnostic
 finds another schema/type error, source/blob/node/digest counts drift, any
 approved threshold/budget/truth boundary changes, or the new projection/G0 is
 not fresh and complete.
+
+### Orientation-fix pre-projection result
+
+The test-first commits are now fixed:
+
+```text
+P_t152   = 50f16a9c74e94313f3edbac0d4793667cc5992c4
+R_orient = 41c9526c68d5f22540623d92e9e2e8347ebffcaa
+F_orient = 957304c5d0e958a9c98a7fca171ceb65500fc970
+```
+
+Their parent chain is exact: `R_orient^=P_t152` and
+`F_orient^=R_orient`. RED failed only at the missing explicit
+`PrecisionDouble` assertion; GREEN passed the focused node 1/1, the full
+mechanism file 39/39, and the exact Isaac 6 in-memory stage diagnostic with a
+`quatd` orient attribute.
+
+Independent review of `P_t152..F_orient` found zero Critical, Important, or
+Minor issues. The immutable GREEN pre-projection directory is
+`/tmp/g1-t152-orientation-fix-pre-projection`. It records full/current/portable/
+external/future counts `1091/966/965/1/125`, future classification
+`78/29/10/8`, original GREEN 748/748, T152 113/113, Task 8 40/40, Task 9
+32/32, static qualification 80/80, Tasks 4–7 108/108, hard limit 4/4, contact
+analytic 38/38, and zero deprecated-import findings. The approved current-GREEN
+digests remain:
+
+```text
+collection-order 1c8e6a8e9b09da6b06435ea6c75191c5fb4b3c3fa7e1b97161951e65249d45ad
+sorted           00a6e84c5d2e1f623f2211db8272ca95859e8050417f7c25cbfeef9afd84efc7
+```
+
+External attestation remains one node, JUnit 1/0/0/0, factory calls zero, and
+nine checksum-valid files. The attempt-02 checksum remains
+`cc53c4b4bc3cefdc7a2363c6446741e3abfc65e768ac0db71123aa593be528ed` and
+attempt-03 `checksums.sha256` remains
+`8c9eed9e725917609c1eff8ae19714501d97fb34405ad0c4a9e8987fcf7e7843`.
+T152 remains `[x]` while
+T151 and T070 remain `[ ]`; C2a attempt-04 and the distinct pose-conditioned C1
+attempt-04 have not run. The commit containing this section is the new
+orientation-fix projection and intentionally does not embed its own unknown
+SHA.

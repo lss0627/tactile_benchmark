@@ -1,6 +1,6 @@
 # G1 PressButton Geometry Authoring Receipt Design
 
-**Status:** `IMPLEMENTED_WITH_APPROVED_ORIENTATION_PRECISION_CORRECTION_PENDING_GREEN`
+**Status:** `ORIENTATION_PRECISION_FIX_PROJECTED_PENDING_FINAL_VERIFICATION_AND_G0`
 
 **Decision:** `APPROVED_OPTION_A`
 
@@ -224,6 +224,25 @@ root quaternion with `Gf.Quatf`, using float32 orientation, guessing a type from
 the caller, trying `Quatd` and falling back to `Quatf`, or catching/ignoring the
 USD type mismatch is forbidden. `pxr` remains absent during module import and is
 imported only when the real adapter method is called.
+
+### 7.1 Implemented precision-fix receipt
+
+The immutable failed C2a attempt-03 remains bound to old projection
+`50f16a9c74e94313f3edbac0d4793667cc5992c4` with blocker
+`G1_PRESS_BUTTON_STAGE_BUILD_INCOMPLETE`. The test-first repair is split into:
+
+- RED `41c9526c68d5f22540623d92e9e2e8347ebffcaa`, which extends the existing
+  adapter node without changing its ID or parameterization; and
+- GREEN `957304c5d0e958a9c98a7fca171ceb65500fc970`, which changes only the
+  production root orient-op precision.
+
+The exact Isaac 6/Python 3.12 no-`SimulationApp` in-memory diagnostic printed
+`PRESS_BUTTON_IN_MEMORY_STAGE_PASS`. It observed a valid root
+`xformOp:orient` attribute with type `quatd`, non-null value, valid root,
+housing, button, and joint prims, and unchanged mechanism version `1.1.0`.
+The old projection and its G0 remain historical evidence; the projection commit
+containing this receipt receives its SHA from Git and does not predeclare it in
+tracked text.
 
 ## 8. Single geometry authority and joint derivation
 
