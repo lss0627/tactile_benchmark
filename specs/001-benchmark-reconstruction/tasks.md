@@ -214,7 +214,7 @@ evidence/review conditions pass.
 
 - [x] T149 [US2] After T139-T148 are GREEN, verified, committed, pushed, and separately approved for one run, produce and review one immutable C2a preliminary evidence directory at clean E; stop on any result and do not claim controlled arrival, reset repeatability, C2, G1, or T070 (implementation plan Task 11; FR-011, FR-028; SC-003, SC-004; AS-US2-2/4).
 - [x] T150 [US2] Review the unchanged command matrix against passing C2a evidence and obtain separate approval before any exact lower-candidate extension; do not infer a value from C_raw or select a cap in advance (implementation plan Task 12; approved decision `NO_EXTENSION_BEFORE_POSE_CONDITIONED_ATTEMPT_04`; FR-009, FR-011, FR-028; SC-003, SC-004; AS-US2-2/4).
-- [ ] T151 [US2] After T152 is GREEN and fully verified, verify the complete attempt-04 prerequisite review at the clean evidence-producing SHA, including RED/GREEN ownership, C2a pose/hash, six routes, matrix decision, exact limits/formulas/truth, future-RED inventory, absent immutable output path, and explicit one-run approval; this task prepares but does not execute attempt-04 (implementation plan Task 13; FR-011, FR-027, FR-028; SC-003, SC-004; AS-US2-2/4).
+- [x] T151 [US2] After T152 is GREEN and fully verified, verify the complete attempt-04 prerequisite review at the clean evidence-producing SHA, including RED/GREEN ownership, C2a pose/hash, six routes, matrix decision, exact limits/formulas/truth, future-RED inventory, absent immutable output path, and explicit one-run approval; this task prepares but does not execute attempt-04 (implementation plan Task 13; FR-011, FR-027, FR-028; SC-003, SC-004; AS-US2-2/4).
 
 ### Runtime integration closure
 

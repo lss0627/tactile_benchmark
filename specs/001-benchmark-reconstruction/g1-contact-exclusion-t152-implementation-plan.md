@@ -3355,3 +3355,35 @@ it is not current evidence after the production fix. This projection keeps
 T152 `[x]`, T151/T070 `[ ]`, C2a attempt-05 unrun, and pose-conditioned C1
 attempt-04 unrun. Its own SHA is intentionally supplied only by Git after the
 tracked projection commit is created.
+
+### Attempt-05 preliminary review and T151 projection
+
+At production-fix projection
+`fabacdc324f3c7e64ab1184667360d452590b4e5`, C2a attempt-05 ran exactly once
+at `outputs/evidence/G1/c2a-static-current-fabacdc324f3-attempt-05` and exited
+zero. The immutable artifacts are checksum-valid. They retain three candidates,
+one independently hash-verified selected pose `task-ready-z-0p55` /
+`f1884637cc700f2cfd992ce8942a72df44850631346e7eb0d430abd07f7256b3`,
+three fresh scenes, and 192 real zero-readiness samples. Every sample is finite,
+released/reset, collision- and Contact-free, has zero penetration and zero
+post-abort actuation, and keeps force/wrench masks false without using raw
+impulse as force. Initial and retained button travel is
+`4.357218858785927e-05 m`, inside `[0,0.012]`.
+
+The report's `BLOCKED` state is solely the required preliminary-evidence marker
+`C2A_PRELIMINARY_NOT_GATE_EVIDENCE`, not a qualification failure. The complete
+T151 review is versioned in
+[`g1-c2a-attempt-05-t151-prerequisite-review.md`](g1-c2a-attempt-05-t151-prerequisite-review.md).
+It records the current G0, selected joints/frames/limits, pre-Play fail-closed
+anchor alignment, six-route bundle and digests, unchanged matrix/formulas/truth,
+future-RED ownership, runtime warnings, and the user's explicit one-run C1
+authorization. T151 is now `[x]`; T070 remains `[ ]`, G1 remains `BLOCKED`, and
+G2 remains `NOT_STARTED`.
+
+Because this review/status projection changes tracked bytes, attempt-05 is
+preliminary only. At the clean T151 projection, formal G0 must be refreshed and
+exactly one final-current C2a attempt-06 must pass before the separately named
+pose-conditioned C1 attempt-04 may consume it. The attempt-06 and C1 output
+paths must contain that same T151 projection SHA and be proven absent before
+their single authorized executions. No lower candidate, threshold, physics
+policy, command-matrix, force-truth, or driver change is authorized.
