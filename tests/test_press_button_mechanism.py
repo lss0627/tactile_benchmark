@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import builtins
+from dataclasses import fields, replace
 import hashlib
 import importlib.util
 import inspect
+import math
 from pathlib import Path
 import sys
 from typing import Any
@@ -105,7 +107,7 @@ class RecordingPressButtonDeclaredGeometryAuthoringAdapter:
         position_m: tuple[float, float, float],
         orientation_xyzw: tuple[float, float, float, float],
     ) -> None:
-        self.calls.append(("root", position_m, orientation_xyzw))
+        self.calls.append(("root", root_path, position_m, orientation_xyzw))
 
     def author_capped_cylinder(
         self,
@@ -117,7 +119,7 @@ class RecordingPressButtonDeclaredGeometryAuthoringAdapter:
         height_m: float,
     ) -> None:
         self.calls.append(
-            ("button", center_local_m, axis_token, radius_m, height_m)
+            ("button", path, center_local_m, axis_token, radius_m, height_m)
         )
 
     def author_oriented_box(
@@ -127,7 +129,52 @@ class RecordingPressButtonDeclaredGeometryAuthoringAdapter:
         center_local_m: tuple[float, float, float],
         half_extents_m: tuple[float, float, float],
     ) -> None:
-        self.calls.append(("housing", center_local_m, half_extents_m))
+        self.calls.append(("housing", path, center_local_m, half_extents_m))
+
+
+def _authored_stage_report(config) -> dict[str, Any]:
+    contract = config.geometry_contract
+    assert contract is not None
+    collision_path = f"{config.housing_prim_path}/Geometry"
+    return {
+        "housing_body_prim_path": config.housing_prim_path,
+        "housing_body_type": "Xform",
+        "housing_body_translation_m": contract.housing.center_local_m,
+        "housing_body_scale": None,
+        "housing_body_xform_ops": ("xformOp:translate",),
+        "housing_body_reset_xform_stack": False,
+        "housing_body_rigid_body_api": True,
+        "housing_body_rigid_body_enabled": True,
+        "housing_body_collision_api": False,
+        "housing_body_kinematic": True,
+        "housing_collision_prim_path": collision_path,
+        "housing_collision_type": "Cube",
+        "housing_collision_translation_m": (0.0, 0.0, 0.0),
+        "housing_collision_scale_m": tuple(
+            2.0 * value for value in contract.housing.half_extents_m
+        ),
+        "housing_collision_xform_ops": (
+            "xformOp:translate",
+            "xformOp:scale",
+        ),
+        "housing_collision_reset_xform_stack": False,
+        "housing_collision_size": 1.0,
+        "housing_collision_api": True,
+        "housing_collision_rigid_body_api": False,
+        "button_prim_path": config.button_prim_path,
+        "button_type": "Cylinder",
+        "button_collision_api": True,
+        "button_rigid_body_api": True,
+        "button_rigid_body_enabled": True,
+        "button_kinematic": False,
+        "joint_prim_path": config.joint_prim_path,
+        "joint_body0_targets": (config.housing_prim_path,),
+        "joint_body1_targets": (config.button_prim_path,),
+        "joint_local_pos0_m": (0.0, 0.0, 0.025),
+        "joint_local_pos1_m": (0.0, 0.0, 0.0),
+        "body0_anchor_world_m": (0.55, 0.0, 0.47),
+        "body1_anchor_world_m": (0.55, 0.0, 0.47),
+    }
 
 
 def _require_declared_geometry_seam(module):
@@ -151,6 +198,16 @@ def test_mechanism_declares_real_joint_travel_limits_and_collision() -> None:
     assert contract["body0_kinematic"] is True
     assert contract["local_pos0_m"] == [0.0, 0.0, 0.025]
     assert contract["local_pos1_m"] == [0.0, 0.0, 0.0]
+
+    formal = module.PressButtonMechanism(
+        module.load_press_button_mechanism_config(PHYSICAL_CONFIG)
+    ).scene_contract()
+    assert formal.get("housing_body_prim_path") == "/World/PressButton/Housing"
+    assert formal.get("housing_collision_prim_path") == (
+        "/World/PressButton/Housing/Geometry"
+    )
+    assert formal.get("analytic_anchor_alignment_valid") is True
+    assert "anchor_alignment_valid" not in formal
 
 
 @pytest.mark.parametrize(
@@ -396,11 +453,32 @@ def test_declared_geometry_seam_records_root_housing_button_order_and_exact_valu
     )
 
     assert adapter.calls == [
-        ("root", (0.55, 0.0, 0.47), (0.0, 0.0, 0.0, 1.0)),
-        ("housing", (0.0, 0.0, -0.025), (0.045, 0.045, 0.010)),
-        ("button", (0.0, 0.0, 0.0), "Z", 0.035, 0.018),
+        (
+            "root",
+            "/World/PressButton",
+            (0.55, 0.0, 0.47),
+            (0.0, 0.0, 0.0, 1.0),
+        ),
+        (
+            "housing",
+            "/World/PressButton/Housing",
+            (0.0, 0.0, -0.025),
+            (0.045, 0.045, 0.010),
+        ),
+        (
+            "button",
+            "/World/PressButton/Button",
+            (0.0, 0.0, 0.0),
+            "Z",
+            0.035,
+            0.018,
+        ),
     ]
     assert receipt.contract is config.geometry_contract
+    assert getattr(receipt, "housing_body_prim_path", None) == config.housing_prim_path
+    assert getattr(receipt, "housing_collision_prim_path", None) == (
+        f"{config.housing_prim_path}/Geometry"
+    )
 
 
 def test_geometry_authoring_receipt_reuses_loaded_contract_and_matching_digests(
@@ -454,7 +532,9 @@ def test_real_usd_declared_geometry_adapter_keeps_pxr_import_lazy_and_uses_full_
     assert adapter_type is not None, "missing approved lazy USD declared-geometry adapter"
     source = inspect.getsource(adapter_type)
     root_source = inspect.getsource(adapter_type.author_root)
+    housing_source = inspect.getsource(adapter_type.author_oriented_box)
     compact_root_source = "".join(root_source.split())
+    compact_housing_source = "".join(housing_source.split())
 
     assert "CreateAxisAttr(axis_token)" in source
     assert "CreateHeightAttr(height_m)" in source
@@ -476,6 +556,28 @@ def test_real_usd_declared_geometry_adapter_keeps_pxr_import_lazy_and_uses_full_
     assert "try:" not in root_source
     assert "except" not in root_source
     assert "from pxr import Gf, UsdGeom" in root_source
+    assert "UsdGeom.Xform.Define(self._stage,path)" in compact_housing_source
+    assert "UsdGeom.Cube.Define(self._stage," in compact_housing_source
+    assert "Gf.Vec3d(*center_local_m)" in compact_housing_source
+    assert "Gf.Vec3d(0.0,0.0,0.0)" in compact_housing_source
+    assert "Gf.Vec3f(*full_extents_m)" in compact_housing_source
+    assert compact_housing_source.count(".AddScaleOp().Set(") == 1
+    assert compact_housing_source.index("UsdGeom.Xform.Define") < (
+        compact_housing_source.index("UsdGeom.Cube.Define")
+    )
+    collision_path = getattr(
+        module,
+        "press_button_housing_collision_prim_path",
+        None,
+    )
+    assert callable(collision_path), "missing fixed housing collider-path contract"
+    assert collision_path("/World/PressButton/Housing") == (
+        "/World/PressButton/Housing/Geometry"
+    )
+    _assert_exact_failure(
+        lambda: collision_path("/World/PressButton/Housing/Geometry"),
+        "G1_PRESS_BUTTON_STAGE_BUILD_INCOMPLETE",
+    )
 
 
 def test_formal_stage_builder_and_geometry_adapter_contain_no_geometry_authority_literals() -> None:
@@ -494,6 +596,98 @@ def test_formal_stage_builder_and_geometry_adapter_contain_no_geometry_authority
         )
     assert adapter_type is not None, "missing approved lazy USD declared-geometry adapter"
     assert callable(anchor_helper), "missing contract-derived formal joint-anchor helper"
+
+    alignment_helper = getattr(module, "_validate_formal_joint_anchor_alignment", None)
+    assert callable(alignment_helper), (
+        "missing runtime-independent formal joint-anchor alignment helper"
+    )
+    config = module.load_press_button_mechanism_config(PHYSICAL_CONFIG)
+    identity = alignment_helper(config)
+    assert identity["housing_body_prim_path"] == "/World/PressButton/Housing"
+    assert identity["housing_collision_prim_path"] == (
+        "/World/PressButton/Housing/Geometry"
+    )
+    assert identity["housing_body_translation_m"] == (0.0, 0.0, -0.025)
+    assert identity["housing_body_scale"] is None
+    assert identity["housing_collision_translation_m"] == (0.0, 0.0, 0.0)
+    assert identity["housing_collision_scale_m"] == (0.09, 0.09, 0.02)
+    assert identity["body0_anchor_world_m"] == pytest.approx((0.55, 0.0, 0.47))
+    assert identity["body1_anchor_world_m"] == pytest.approx((0.55, 0.0, 0.47))
+    assert identity["anchor_delta_world_m"] == pytest.approx((0.0, 0.0, 0.0))
+    assert identity["anchor_alignment_valid"] is True
+
+    payload = _formal_payload()["mechanism"]
+    payload["base_orientation_xyzw"] = [0.0, 0.0, 2**-0.5, 2**-0.5]
+    payload["geometry"]["housing"]["center_local_m"] = [0.02, -0.03, -0.04]
+    payload["geometry"]["button"]["center_local_m"] = [0.03, 0.01, 0.02]
+    rotated_config = module.PressButtonMechanismConfig.from_mapping(
+        payload,
+        task_config_sha256="a" * 64,
+    )
+    rotated = alignment_helper(rotated_config)
+    assert rotated["anchor_alignment_valid"] is True
+    assert rotated["body0_anchor_world_m"] == pytest.approx(
+        rotated["body1_anchor_world_m"], abs=1.0e-9
+    )
+
+    _assert_exact_failure(
+        lambda: alignment_helper(
+            rotated_config,
+            local_pos0_m=(0.0, 0.0, 0.0),
+            local_pos1_m=(0.0, 0.0, 0.0),
+        ),
+        "G1_PRESS_BUTTON_STAGE_BUILD_INCOMPLETE",
+    )
+    _assert_exact_failure(
+        lambda: alignment_helper(
+            rotated_config,
+            local_pos0_m=(float("nan"), 0.0, 0.0),
+        ),
+        "G1_PRESS_BUTTON_STAGE_BUILD_INCOMPLETE",
+    )
+    _assert_exact_failure(
+        lambda: alignment_helper(
+            replace(rotated_config, housing_prim_path="/World/OtherHousing")
+        ),
+        "G1_PRESS_BUTTON_STAGE_BUILD_INCOMPLETE",
+    )
+    helper_source = inspect.getsource(alignment_helper)
+    assert "inverse" not in helper_source.lower()
+    assert "0.025" not in helper_source
+    assert "read_stage" not in helper_source
+    read_source = inspect.getsource(module.PressButtonMechanism.read_stage)
+    assert "0.025" not in read_source
+    assert "inverse" not in read_source.lower()
+    assert "compens" not in read_source.lower()
+
+    authored_validator = getattr(
+        module,
+        "validate_press_button_authored_joint_anchor_alignment",
+        None,
+    )
+    assert callable(authored_validator), "missing authored-anchor validator"
+    authored = authored_validator(
+        body0_anchor_world_m=(0.55, 0.0, 0.47),
+        body1_anchor_world_m=(0.55, 0.0, 0.47),
+    )
+    assert authored["body0_anchor_world_m"] == (0.55, 0.0, 0.47)
+    assert authored["body1_anchor_world_m"] == (0.55, 0.0, 0.47)
+    assert authored["anchor_delta_world_m"] == (0.0, 0.0, 0.0)
+    assert authored["anchor_alignment_valid"] is True
+    _assert_exact_failure(
+        lambda: authored_validator(
+            body0_anchor_world_m=(0.55, 0.0, 0.469),
+            body1_anchor_world_m=(0.55, 0.0, 0.47),
+        ),
+        "G1_PRESS_BUTTON_STAGE_BUILD_INCOMPLETE",
+    )
+    _assert_exact_failure(
+        lambda: authored_validator(
+            body0_anchor_world_m=(float("nan"), 0.0, 0.47),
+            body1_anchor_world_m=(0.55, 0.0, 0.47),
+        ),
+        "G1_PRESS_BUTTON_STAGE_BUILD_INCOMPLETE",
+    )
 
 
 def test_complete_build_stage_has_no_adapter_injection_and_preserves_physics_semantics() -> None:
@@ -535,6 +729,119 @@ def test_complete_build_stage_has_no_adapter_injection_and_preserves_physics_sem
     assert "UsdPressButtonDeclaredGeometryAuthoringAdapter" in source
     assert source.index("author_declared_geometry") < source.index("CollisionAPI")
     assert "return receipt" not in source
+    compact_source = "".join(source.split())
+    assert "receipt.housing_body_prim_path" in source
+    assert "receipt.housing_collision_prim_path" in source
+    assert (
+        "CreateBody0Rel().SetTargets([Sdf.Path(receipt.housing_body_prim_path)])"
+        in compact_source
+    )
+    assert (
+        "CreateBody1Rel().SetTargets([Sdf.Path(receipt.button_prim_path)])"
+        in compact_source
+    )
+    assert "validate_press_button_authored_joint_anchor_alignment" in source
+    assert '"anchor_alignment_valid"' in source
+    assert "read_stage" not in source
+
+    inspector_type = getattr(
+        module,
+        "UsdPressButtonAuthoredStageInspector",
+        None,
+    )
+    assert inspector_type is not None, "missing real authored-stage inspector"
+    inspector_source = inspect.getsource(inspector_type)
+    for marker in (
+        "GetOrderedXformOps",
+        "GetResetXformStack",
+        "GetSizeAttr",
+        "HasAPI",
+        "GetRigidBodyEnabledAttr",
+        "GetKinematicEnabledAttr",
+        "GetBody0Rel",
+        "GetBody1Rel",
+        "GetTargets",
+        "GetLocalPos0Attr",
+        "GetLocalPos1Attr",
+        "ComputeLocalToWorldTransform",
+    ):
+        assert marker in inspector_source
+    assert "UsdPressButtonAuthoredStageInspector" in source
+    validate_hierarchy = getattr(
+        module,
+        "validate_press_button_authored_stage_hierarchy",
+        None,
+    )
+    assert callable(validate_hierarchy), "missing authored-stage hierarchy validator"
+    assert "validate_press_button_authored_stage_hierarchy" in source
+
+    config = module.load_press_button_mechanism_config(PHYSICAL_CONFIG)
+    report = _authored_stage_report(config)
+    validated = validate_hierarchy(report, config=config)
+    assert validated["housing_body_prim_path"] == config.housing_prim_path
+    assert validated["housing_collision_prim_path"] == (
+        f"{config.housing_prim_path}/Geometry"
+    )
+    assert validated["body0_anchor_world_m"] == (0.55, 0.0, 0.47)
+    assert validated["body1_anchor_world_m"] == (0.55, 0.0, 0.47)
+    assert validated["anchor_alignment_valid"] is True
+
+    below_boundary = dict(
+        report,
+        body0_anchor_world_m=(0.55, 0.0, 0.47 + 0.5e-9),
+    )
+    assert validate_hierarchy(below_boundary, config=config)[
+        "anchor_alignment_valid"
+    ] is True
+    exact_boundary = dict(
+        report,
+        body0_anchor_world_m=(1.0e-9, 0.0, 0.0),
+        body1_anchor_world_m=(0.0, 0.0, 0.0),
+    )
+    assert validate_hierarchy(exact_boundary, config=config)[
+        "anchor_alignment_valid"
+    ] is True
+
+    wrong_reports = (
+        dict(
+            report,
+            body0_anchor_world_m=(math.nextafter(1.0e-9, math.inf), 0.0, 0.0),
+            body1_anchor_world_m=(0.0, 0.0, 0.0),
+        ),
+        dict(report, housing_body_type="Cube"),
+        dict(report, housing_body_translation_m=(0.0, 0.0, 0.0)),
+        dict(report, housing_body_scale=(1.0, 1.0, 1.0)),
+        dict(report, housing_body_xform_ops=("xformOp:scale", "xformOp:translate")),
+        dict(report, housing_body_reset_xform_stack=True),
+        dict(report, housing_body_rigid_body_api=False),
+        dict(report, housing_body_rigid_body_enabled=False),
+        dict(report, housing_body_collision_api=True),
+        dict(report, housing_collision_type="Xform"),
+        dict(report, housing_collision_translation_m=(0.0, 0.0, 0.001)),
+        dict(report, housing_collision_scale_m=(1.0, 1.0, 1.0)),
+        dict(report, housing_collision_xform_ops=("xformOp:scale",)),
+        dict(report, housing_collision_reset_xform_stack=True),
+        dict(report, housing_collision_size=2.0),
+        dict(report, housing_collision_api=False),
+        dict(report, housing_collision_rigid_body_api=True),
+        dict(report, button_type="Xform"),
+        dict(report, button_collision_api=False),
+        dict(report, button_rigid_body_api=False),
+        dict(report, button_rigid_body_enabled=False),
+        dict(report, button_kinematic=True),
+        dict(report, joint_body0_targets=(config.button_prim_path,)),
+        dict(report, joint_body1_targets=(config.housing_prim_path,)),
+        dict(report, joint_local_pos0_m=(9.0, 9.0, 9.0)),
+        dict(report, joint_local_pos1_m=(9.0, 9.0, 9.0)),
+    )
+    for wrong_report in wrong_reports:
+        _assert_exact_failure(
+            lambda wrong_report=wrong_report: validate_hierarchy(
+                wrong_report,
+                config=config,
+            ),
+            "G1_PRESS_BUTTON_STAGE_BUILD_INCOMPLETE",
+        )
 
 
 def test_geometry_authoring_receipt_is_geometry_only_and_never_benchmark_eligible() -> None:
@@ -547,12 +854,101 @@ def test_geometry_authoring_receipt_is_geometry_only_and_never_benchmark_eligibl
         authoring_adapter=RecordingPressButtonDeclaredGeometryAuthoringAdapter()
     )
 
-    assert receipt.schema_version == "g1.press_button.geometry_authoring_receipt.v1"
+    assert receipt.schema_version == "g1.press_button.geometry_authoring_receipt.v2"
+    assert receipt.housing_body_prim_path == config.housing_prim_path
+    assert receipt.housing_collision_prim_path == f"{config.housing_prim_path}/Geometry"
     assert receipt.geometry_only is True
     assert receipt.complete_stage is False
     assert receipt.benchmark_cap_eligible is False
     assert getattr(receipt, "claim_eligible", False) is False
     assert getattr(receipt, "runtime_success", False) is False
+    assert {item.name for item in fields(receipt)} == {
+        "schema_version",
+        "mechanism_version",
+        "contract",
+        "geometry_sha256",
+        "world_from_mechanism_root_sha256",
+        "root_prim_path",
+        "housing_body_prim_path",
+        "housing_collision_prim_path",
+        "button_prim_path",
+        "geometry_only",
+        "complete_stage",
+        "benchmark_cap_eligible",
+    }
+    assert not hasattr(receipt, "housing_prim_path")
+
+    migrate = getattr(
+        module,
+        "migrate_press_button_geometry_authoring_receipt_v1",
+        None,
+    )
+    assert callable(migrate), "missing explicit receipt v1-to-v2 migrator"
+    contract = config.geometry_contract
+    v1 = {
+        "schema_version": "g1.press_button.geometry_authoring_receipt.v1",
+        "mechanism_version": "1.1.0",
+        "contract": contract,
+        "geometry_sha256": contract.geometry_sha256,
+        "world_from_mechanism_root_sha256": (
+            contract.world_from_mechanism_root_sha256
+        ),
+        "root_prim_path": config.root_prim_path,
+        "housing_prim_path": config.housing_prim_path,
+        "button_prim_path": config.button_prim_path,
+        "geometry_only": True,
+        "complete_stage": False,
+        "benchmark_cap_eligible": False,
+    }
+    migrated = migrate(v1, config=config)
+    assert migrated.schema_version == "g1.press_button.geometry_authoring_receipt.v2"
+    assert migrated.contract is contract
+    assert migrated.mechanism_version == config.mechanism_version
+    assert migrated.geometry_sha256 == contract.geometry_sha256
+    assert (
+        migrated.world_from_mechanism_root_sha256
+        == contract.world_from_mechanism_root_sha256
+    )
+    assert migrated.root_prim_path == config.root_prim_path
+    assert migrated.housing_body_prim_path == config.housing_prim_path
+    assert migrated.housing_collision_prim_path == f"{config.housing_prim_path}/Geometry"
+    assert migrated.button_prim_path == config.button_prim_path
+    assert migrated.geometry_only is True
+    assert migrated.complete_stage is False
+    assert migrated.benchmark_cap_eligible is False
+
+    missing = dict(v1)
+    missing.pop("housing_prim_path")
+    extra = dict(v1, unexpected=True)
+    invalid_receipts = (
+        [],
+        missing,
+        extra,
+        dict(v1, schema_version=1),
+        dict(v1, schema_version="unknown"),
+        dict(v1, mechanism_version="1.0.0"),
+        dict(v1, contract=replace(contract)),
+        dict(v1, geometry_sha256="0" * 64),
+        dict(v1, world_from_mechanism_root_sha256="0" * 64),
+        dict(v1, root_prim_path="World/PressButton"),
+        dict(v1, root_prim_path=b"/World/PressButton"),
+        dict(v1, root_prim_path="/World/OtherRoot"),
+        dict(v1, housing_prim_path=f"{config.housing_prim_path}/Geometry"),
+        dict(v1, housing_prim_path="/World/OtherHousing"),
+        dict(v1, button_prim_path=config.housing_prim_path),
+        dict(v1, button_prim_path="/World/OtherButton"),
+        dict(v1, geometry_only=1),
+        dict(v1, geometry_only=False),
+        dict(v1, complete_stage=0),
+        dict(v1, complete_stage=True),
+        dict(v1, benchmark_cap_eligible=0),
+        dict(v1, benchmark_cap_eligible=True),
+    )
+    for invalid in invalid_receipts:
+        _assert_exact_failure(
+            lambda invalid=invalid: migrate(invalid, config=config),
+            "G1_PRESS_BUTTON_GEOMETRY_RECEIPT_MIGRATION_INVALID",
+        )
 
 
 def test_declared_geometry_seam_rejects_legacy_before_adapter_call(
