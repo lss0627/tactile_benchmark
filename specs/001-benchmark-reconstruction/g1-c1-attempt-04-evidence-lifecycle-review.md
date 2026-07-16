@@ -74,3 +74,42 @@ After import-safe RED-to-GREEN, regression, projection, and repository-integrity
 verification, execution stops. C2b, C3, accepted bundle/freshness, staged
 physical episodes, T070, and G1 review remain unrun. The driver remains
 `550.144.03 / UNVALIDATED`; `REFERENCE_DRIVER_REVALIDATION_REQUIRED` remains.
+
+## Implemented repair and projection inputs
+
+The reviewed sequence is:
+
+- root-cause review: `c77194f`;
+- RED contract: `5328fab`;
+- production GREEN: `0f761ac`;
+- test-scope correction: `69caa3b`.
+
+The scope correction restores
+`tests/test_g1_pose_conditioned_tracking_cli.py` byte-for-byte to approved Git
+blob `2839e2ff67864c692f1bdb9ae5dc64e2dea34f91` and moves the behavior contract
+to the existing
+`test_c1_runtime_failure_writes_evidence_before_shutdown` node. No node ID or
+parameterization changed. Historical behavior and execution-start fields remain
+`b9864a8b8eea289fa61eb7e3e41633c35947c5ef` and are not rewritten as current
+source truth.
+
+The pre-projection verification directory is
+`/tmp/g1-c1-lifecycle-69caa3b-pre-projection/g0`. It records:
+
+- total/current/portable/external/future: `1091/966/965/1/125`;
+- intentional-future split remains `78/29/10/8`;
+- collection-order digest:
+  `1c8e6a8e9b09da6b06435ea6c75191c5fb4b3c3fa7e1b97161951e65249d45ad`;
+- sorted digest:
+  `00a6e84c5d2e1f623f2211db8272ca95859e8050417f7c25cbfeef9afd84efc7`;
+- portable synthetic repository clean, marker true, history injection false,
+  source bytes unchanged, isolated wheel build, and zero original-worktree
+  reads;
+- external JUnit `1/0/0/0`, factory calls zero, nine checksum-valid files, and
+  unchanged approved attempt-02 checksum.
+
+The new projection supersedes the old T151 projection only for repository
+freshness after the lifecycle production change. It does not supersede or
+alter the immutable C2a attempt-06 facts or fabricate C1 attempt-04 artifacts.
+T152 and T151 remain complete; T070 remains open. C1 has no eligible tested cap,
+so C2b/C3 and all later runtime stages remain blocked.

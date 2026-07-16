@@ -395,3 +395,13 @@ After RED-to-GREEN, regression, projection, and repository-integrity checks,
 stop without another C1 runtime. C2b, C3, bundle/freshness, staged physical,
 T070, and G1 review remain prohibited until a separately authorized fresh C1
 run produces an eligible tested cap.
+
+The implemented lifecycle sequence is review `c77194f`, RED `5328fab`, GREEN
+`0f761ac`, and portable-source-preserving test migration `69caa3b`. The latter
+restores the D4 current-source blob exactly and retains the new assertions in an
+existing C1 lifecycle node. Pre-projection verification at
+`/tmp/g1-c1-lifecycle-69caa3b-pre-projection/g0` passes the frozen
+`1091/966/965/1/125` partition, both approved digests, all 125 intentional
+future failures, the one external node, and the synthetic clean-checkout
+boundary. This supports a documentation-only projection and fresh G0; it does
+not authorize another C1 runtime.
