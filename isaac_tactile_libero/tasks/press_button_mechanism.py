@@ -19,6 +19,7 @@ from isaac_tactile_libero.tasks.press_button_geometry import (
     CONTACT_EXCLUSION_SCHEMA_INVALID,
     PressButtonGeometryContract,
     PressButtonGeometryContractError,
+    derive_press_button_world_geometry,
     parse_press_button_geometry_contract,
 )
 
@@ -26,7 +27,38 @@ from isaac_tactile_libero.tasks.press_button_geometry import (
 FORMAL_MECHANISM_VERSION = "1.1.0"
 _LEGACY_MECHANISM_VERSION = re.compile(r"1\.0\.\d+")
 PRESS_BUTTON_STAGE_BUILD_INCOMPLETE = "G1_PRESS_BUTTON_STAGE_BUILD_INCOMPLETE"
+PRESS_BUTTON_GEOMETRY_RECEIPT_MIGRATION_INVALID = (
+    "G1_PRESS_BUTTON_GEOMETRY_RECEIPT_MIGRATION_INVALID"
+)
+PRESS_BUTTON_GEOMETRY_RECEIPT_V1 = "g1.press_button.geometry_authoring_receipt.v1"
+PRESS_BUTTON_GEOMETRY_RECEIPT_V2 = "g1.press_button.geometry_authoring_receipt.v2"
+PRESS_BUTTON_HOUSING_BODY_PRIM_PATH = "/World/PressButton/Housing"
+PRESS_BUTTON_HOUSING_COLLISION_CHILD_NAME = "Geometry"
+PRESS_BUTTON_ANCHOR_ALIGNMENT_ATOL_M = 1.0e-9
 _LEGACY_STATE_ONLY_LOCAL_POS0_M = (0.0, 0.0, 1.0 / 40.0)
+
+
+def _stage_build_error(message: str) -> None:
+    raise PressButtonGeometryContractError(
+        PRESS_BUTTON_STAGE_BUILD_INCOMPLETE,
+        message,
+    )
+
+
+def press_button_housing_collision_prim_path(housing_body_prim_path: str) -> str:
+    """Return the sole approved collider child for the formal housing body."""
+
+    if (
+        not isinstance(housing_body_prim_path, str)
+        or housing_body_prim_path != PRESS_BUTTON_HOUSING_BODY_PRIM_PATH
+        or housing_body_prim_path.endswith(
+            f"/{PRESS_BUTTON_HOUSING_COLLISION_CHILD_NAME}"
+        )
+    ):
+        _stage_build_error(
+            "formal PressButton housing body path must be the canonical unscaled parent"
+        )
+    return f"{housing_body_prim_path}/{PRESS_BUTTON_HOUSING_COLLISION_CHILD_NAME}"
 
 
 class PressButtonDeclaredGeometryAuthoringAdapter(Protocol):
@@ -64,14 +96,15 @@ class PressButtonGeometryAuthoringReceipt:
     """No-claim receipt for declared geometry transfer only."""
 
     schema_version: str = field(
-        default="g1.press_button.geometry_authoring_receipt.v1", init=False
+        default=PRESS_BUTTON_GEOMETRY_RECEIPT_V2, init=False
     )
     mechanism_version: str
     contract: PressButtonGeometryContract
     geometry_sha256: str
     world_from_mechanism_root_sha256: str
     root_prim_path: str
-    housing_prim_path: str
+    housing_body_prim_path: str
+    housing_collision_prim_path: str
     button_prim_path: str
     geometry_only: bool = field(default=True, init=False)
     complete_stage: bool = field(default=False, init=False)
@@ -109,12 +142,18 @@ class UsdPressButtonDeclaredGeometryAuthoringAdapter:
     ) -> None:
         from pxr import Gf, UsdGeom  # type: ignore
 
-        housing = UsdGeom.Cube.Define(self._stage, path)
-        housing.CreateSizeAttr(1.0)
-        housing.AddTranslateOp().Set(Gf.Vec3d(*center_local_m))
+        housing_body = UsdGeom.Xform.Define(self._stage, path)
+        housing_body.AddTranslateOp().Set(Gf.Vec3d(*center_local_m))
+        housing_collision_path = press_button_housing_collision_prim_path(path)
+        housing_geometry = UsdGeom.Cube.Define(
+            self._stage,
+            housing_collision_path,
+        )
+        housing_geometry.CreateSizeAttr(1.0)
+        housing_geometry.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.0))
         full_extents_m = tuple(2.0 * half_extent for half_extent in half_extents_m)
-        housing.AddScaleOp().Set(Gf.Vec3f(*full_extents_m))
-        housing.GetDisplayColorAttr().Set([Gf.Vec3f(0.08, 0.08, 0.08)])
+        housing_geometry.AddScaleOp().Set(Gf.Vec3f(*full_extents_m))
+        housing_geometry.GetDisplayColorAttr().Set([Gf.Vec3f(0.08, 0.08, 0.08)])
 
     def author_capped_cylinder(
         self,
@@ -329,6 +368,111 @@ class PressButtonMechanismConfig:
         )
 
 
+_GEOMETRY_RECEIPT_V1_FIELDS = frozenset(
+    {
+        "schema_version",
+        "mechanism_version",
+        "contract",
+        "geometry_sha256",
+        "world_from_mechanism_root_sha256",
+        "root_prim_path",
+        "housing_prim_path",
+        "button_prim_path",
+        "geometry_only",
+        "complete_stage",
+        "benchmark_cap_eligible",
+    }
+)
+
+
+def _receipt_migration_error(message: str) -> None:
+    raise PressButtonGeometryContractError(
+        PRESS_BUTTON_GEOMETRY_RECEIPT_MIGRATION_INVALID,
+        message,
+    )
+
+
+def migrate_press_button_geometry_authoring_receipt_v1(
+    receipt: Mapping[str, Any],
+    *,
+    config: PressButtonMechanismConfig,
+) -> PressButtonGeometryAuthoringReceipt:
+    """Migrate one exact no-claim v1 receipt to the explicit two-path v2 shape."""
+
+    if not isinstance(receipt, Mapping):
+        _receipt_migration_error("historical geometry receipt must be a mapping")
+    if not all(isinstance(key, str) for key in receipt) or set(receipt) != set(
+        _GEOMETRY_RECEIPT_V1_FIELDS
+    ):
+        _receipt_migration_error(
+            "historical geometry receipt fields must match the frozen v1 contract"
+        )
+    contract = config.geometry_contract
+    if (
+        config.mechanism_version != FORMAL_MECHANISM_VERSION
+        or contract is None
+        or config.housing_prim_path != PRESS_BUTTON_HOUSING_BODY_PRIM_PATH
+    ):
+        _receipt_migration_error("receipt migration requires the canonical formal config")
+
+    exact_strings = {
+        "schema_version": PRESS_BUTTON_GEOMETRY_RECEIPT_V1,
+        "mechanism_version": FORMAL_MECHANISM_VERSION,
+        "geometry_sha256": contract.geometry_sha256,
+        "world_from_mechanism_root_sha256": (
+            contract.world_from_mechanism_root_sha256
+        ),
+        "root_prim_path": config.root_prim_path,
+        "housing_prim_path": config.housing_prim_path,
+        "button_prim_path": config.button_prim_path,
+    }
+    for key, expected in exact_strings.items():
+        value = receipt[key]
+        if not isinstance(value, str) or value != expected:
+            _receipt_migration_error(f"historical geometry receipt {key} mismatch")
+    if (
+        not config.root_prim_path.startswith("/")
+        or not config.housing_prim_path.startswith("/")
+        or not config.button_prim_path.startswith("/")
+        or len(
+            {
+                config.root_prim_path,
+                config.housing_prim_path,
+                config.button_prim_path,
+            }
+        )
+        != 3
+    ):
+        _receipt_migration_error("historical geometry receipt prim paths are invalid")
+    if receipt["contract"] is not contract:
+        _receipt_migration_error(
+            "historical geometry receipt must retain the exact configured contract"
+        )
+    if (
+        receipt["geometry_only"] is not True
+        or receipt["complete_stage"] is not False
+        or receipt["benchmark_cap_eligible"] is not False
+    ):
+        _receipt_migration_error(
+            "historical geometry receipt must retain no-claim booleans"
+        )
+
+    return PressButtonGeometryAuthoringReceipt(
+        mechanism_version=config.mechanism_version,
+        contract=contract,
+        geometry_sha256=contract.geometry_sha256,
+        world_from_mechanism_root_sha256=(
+            contract.world_from_mechanism_root_sha256
+        ),
+        root_prim_path=config.root_prim_path,
+        housing_body_prim_path=config.housing_prim_path,
+        housing_collision_prim_path=press_button_housing_collision_prim_path(
+            config.housing_prim_path
+        ),
+        button_prim_path=config.button_prim_path,
+    )
+
+
 @dataclass(frozen=True)
 class PressButtonMechanismState:
     joint_name: str
@@ -361,6 +505,121 @@ def _derive_formal_joint_anchors(
     return housing_side, button_side
 
 
+def _finite_anchor_vector(
+    value: Any,
+    *,
+    field_name: str,
+) -> tuple[float, float, float]:
+    if (
+        isinstance(value, (str, bytes, Mapping))
+        or not isinstance(value, (list, tuple))
+        or len(value) != 3
+    ):
+        _stage_build_error(f"{field_name} must be a finite three-vector")
+    try:
+        result = tuple(float(item) for item in value)
+    except (TypeError, ValueError) as exc:
+        raise PressButtonGeometryContractError(
+            PRESS_BUTTON_STAGE_BUILD_INCOMPLETE,
+            f"{field_name} must be numeric",
+        ) from exc
+    if not np.all(np.isfinite(np.asarray(result, dtype=np.float64))):
+        _stage_build_error(f"{field_name} must be finite")
+    return result  # type: ignore[return-value]
+
+
+def validate_press_button_authored_joint_anchor_alignment(
+    *,
+    body0_anchor_world_m: Any,
+    body1_anchor_world_m: Any,
+) -> dict[str, Any]:
+    """Fail closed unless two authored joint anchors coincide before Play."""
+
+    body0 = _finite_anchor_vector(
+        body0_anchor_world_m,
+        field_name="body0_anchor_world_m",
+    )
+    body1 = _finite_anchor_vector(
+        body1_anchor_world_m,
+        field_name="body1_anchor_world_m",
+    )
+    delta = tuple(left - right for left, right in zip(body0, body1))
+    if any(abs(value) > PRESS_BUTTON_ANCHOR_ALIGNMENT_ATOL_M for value in delta):
+        _stage_build_error(
+            "authored PressButton joint world anchors do not coincide before Play"
+        )
+    return {
+        "body0_anchor_world_m": body0,
+        "body1_anchor_world_m": body1,
+        "anchor_delta_world_m": delta,
+        "anchor_alignment_valid": True,
+    }
+
+
+def _validate_formal_joint_anchor_alignment(
+    config: PressButtonMechanismConfig,
+    *,
+    local_pos0_m: Any = None,
+    local_pos1_m: Any = None,
+) -> dict[str, Any]:
+    """Validate the import-safe analytic body/collider and joint-frame contract."""
+
+    contract = config.geometry_contract
+    if (
+        config.mechanism_version != FORMAL_MECHANISM_VERSION
+        or contract is None
+        or config.housing_prim_path != PRESS_BUTTON_HOUSING_BODY_PRIM_PATH
+        or len(
+            {
+                config.root_prim_path,
+                config.housing_prim_path,
+                config.button_prim_path,
+            }
+        )
+        != 3
+    ):
+        _stage_build_error("formal PressButton hierarchy paths or geometry are invalid")
+    collision_path = press_button_housing_collision_prim_path(
+        config.housing_prim_path
+    )
+    derived_pos0, derived_pos1 = _derive_formal_joint_anchors(contract)
+    local0 = _finite_anchor_vector(
+        derived_pos0 if local_pos0_m is None else local_pos0_m,
+        field_name="local_pos0_m",
+    )
+    local1 = _finite_anchor_vector(
+        derived_pos1 if local_pos1_m is None else local_pos1_m,
+        field_name="local_pos1_m",
+    )
+    world_geometry = derive_press_button_world_geometry(contract)
+    world_from_root = np.asarray(
+        world_geometry.world_from_mechanism_root,
+        dtype=np.float64,
+    )
+    rotation = world_from_root[:3, :3]
+    body0 = np.asarray(world_geometry.housing_center_world_m) + rotation @ np.asarray(
+        local0
+    )
+    body1 = np.asarray(world_geometry.button_center_world_m) + rotation @ np.asarray(
+        local1
+    )
+    alignment = validate_press_button_authored_joint_anchor_alignment(
+        body0_anchor_world_m=tuple(float(value) for value in body0),
+        body1_anchor_world_m=tuple(float(value) for value in body1),
+    )
+    return {
+        "housing_body_prim_path": config.housing_prim_path,
+        "housing_collision_prim_path": collision_path,
+        "housing_body_translation_m": contract.housing.center_local_m,
+        "housing_body_scale": None,
+        "housing_collision_translation_m": (0.0, 0.0, 0.0),
+        "housing_collision_scale_m": tuple(
+            2.0 * value for value in contract.housing.half_extents_m
+        ),
+        **alignment,
+    }
+
+
 def _require_authored_stage_prim(stage: Any, path: str) -> Any:
     try:
         prim = stage.GetPrimAtPath(path)
@@ -376,6 +635,299 @@ def _require_authored_stage_prim(stage: Any, path: str) -> Any:
             f"required authored PressButton prim is missing or invalid: {path}",
         )
     return prim
+
+
+_AUTHORED_STAGE_REPORT_FIELDS = frozenset(
+    {
+        "housing_body_prim_path",
+        "housing_body_type",
+        "housing_body_translation_m",
+        "housing_body_scale",
+        "housing_body_xform_ops",
+        "housing_body_reset_xform_stack",
+        "housing_body_rigid_body_api",
+        "housing_body_rigid_body_enabled",
+        "housing_body_collision_api",
+        "housing_body_kinematic",
+        "housing_collision_prim_path",
+        "housing_collision_type",
+        "housing_collision_translation_m",
+        "housing_collision_scale_m",
+        "housing_collision_xform_ops",
+        "housing_collision_reset_xform_stack",
+        "housing_collision_size",
+        "housing_collision_api",
+        "housing_collision_rigid_body_api",
+        "button_prim_path",
+        "button_type",
+        "button_collision_api",
+        "button_rigid_body_api",
+        "button_rigid_body_enabled",
+        "button_kinematic",
+        "joint_prim_path",
+        "joint_body0_targets",
+        "joint_body1_targets",
+        "joint_local_pos0_m",
+        "joint_local_pos1_m",
+        "body0_anchor_world_m",
+        "body1_anchor_world_m",
+    }
+)
+
+
+def _vector_matches(
+    value: Any,
+    expected: tuple[float, float, float],
+    *,
+    precision: Any,
+) -> bool:
+    try:
+        actual_array = np.asarray(value, dtype=precision)
+        expected_array = np.asarray(expected, dtype=precision)
+    except (TypeError, ValueError):
+        return False
+    return actual_array.shape == (3,) and bool(np.array_equal(actual_array, expected_array))
+
+
+def validate_press_button_authored_stage_hierarchy(
+    report: Mapping[str, Any],
+    *,
+    config: PressButtonMechanismConfig,
+) -> dict[str, Any]:
+    """Validate real authored transforms, APIs, relationships, and anchors."""
+
+    if not isinstance(report, Mapping) or set(report) != set(
+        _AUTHORED_STAGE_REPORT_FIELDS
+    ):
+        _stage_build_error("authored PressButton stage report fields are incomplete")
+    contract = config.geometry_contract
+    if contract is None:
+        _stage_build_error("authored PressButton validation requires formal geometry")
+    analytic = _validate_formal_joint_anchor_alignment(config)
+    expected_scaling = analytic["housing_collision_scale_m"]
+    expected_values = {
+        "housing_body_prim_path": config.housing_prim_path,
+        "housing_body_type": "Xform",
+        "housing_body_scale": None,
+        "housing_body_xform_ops": ("xformOp:translate",),
+        "housing_body_reset_xform_stack": False,
+        "housing_body_rigid_body_api": True,
+        "housing_body_rigid_body_enabled": True,
+        "housing_body_collision_api": False,
+        "housing_body_kinematic": True,
+        "housing_collision_prim_path": analytic["housing_collision_prim_path"],
+        "housing_collision_type": "Cube",
+        "housing_collision_xform_ops": (
+            "xformOp:translate",
+            "xformOp:scale",
+        ),
+        "housing_collision_reset_xform_stack": False,
+        "housing_collision_size": 1.0,
+        "housing_collision_api": True,
+        "housing_collision_rigid_body_api": False,
+        "button_prim_path": config.button_prim_path,
+        "button_type": "Cylinder",
+        "button_collision_api": True,
+        "button_rigid_body_api": True,
+        "button_rigid_body_enabled": True,
+        "button_kinematic": False,
+        "joint_prim_path": config.joint_prim_path,
+        "joint_body0_targets": (config.housing_prim_path,),
+        "joint_body1_targets": (config.button_prim_path,),
+    }
+    for field_name, expected in expected_values.items():
+        value = report[field_name]
+        if isinstance(expected, bool):
+            matches = value is expected
+        else:
+            matches = value == expected
+        if not matches:
+            _stage_build_error(
+                f"authored PressButton stage {field_name} does not match the approved hierarchy"
+            )
+    if not _vector_matches(
+        report["housing_body_translation_m"],
+        contract.housing.center_local_m,
+        precision=np.float64,
+    ):
+        _stage_build_error("authored housing body translation mismatch")
+    if not _vector_matches(
+        report["housing_collision_translation_m"],
+        (0.0, 0.0, 0.0),
+        precision=np.float64,
+    ):
+        _stage_build_error("authored housing collider translation mismatch")
+    if not _vector_matches(
+        report["housing_collision_scale_m"],
+        expected_scaling,
+        precision=np.float32,
+    ):
+        _stage_build_error("authored housing collider scale mismatch")
+    expected_local_pos0, expected_local_pos1 = _derive_formal_joint_anchors(contract)
+    if not _vector_matches(
+        report["joint_local_pos0_m"],
+        expected_local_pos0,
+        precision=np.float32,
+    ):
+        _stage_build_error("authored joint body0 local anchor mismatch")
+    if not _vector_matches(
+        report["joint_local_pos1_m"],
+        expected_local_pos1,
+        precision=np.float32,
+    ):
+        _stage_build_error("authored joint body1 local anchor mismatch")
+    alignment = validate_press_button_authored_joint_anchor_alignment(
+        body0_anchor_world_m=report["body0_anchor_world_m"],
+        body1_anchor_world_m=report["body1_anchor_world_m"],
+    )
+    return {
+        "housing_body_prim_path": config.housing_prim_path,
+        "housing_collision_prim_path": analytic["housing_collision_prim_path"],
+        **alignment,
+    }
+
+
+class UsdPressButtonAuthoredStageInspector:
+    """Read real authored USD state after physical authoring and before Play."""
+
+    def __init__(self, stage: Any) -> None:
+        self._stage = stage
+
+    @staticmethod
+    def _local_transform_contract(prim: Any) -> tuple[Any, Any, tuple[str, ...], bool]:
+        from pxr import UsdGeom  # type: ignore
+
+        translation = None
+        scale = None
+        xformable = UsdGeom.Xformable(prim)
+        ordered_ops = xformable.GetOrderedXformOps()
+        for op in ordered_ops:
+            if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
+                translation = tuple(float(value) for value in op.Get())
+            elif op.GetOpType() == UsdGeom.XformOp.TypeScale:
+                scale = tuple(float(value) for value in op.Get())
+        return (
+            translation,
+            scale,
+            tuple(str(op.GetOpName()) for op in ordered_ops),
+            bool(xformable.GetResetXformStack()),
+        )
+
+    @staticmethod
+    def _kinematic_enabled(prim: Any) -> bool:
+        from pxr import UsdPhysics  # type: ignore
+
+        value = UsdPhysics.RigidBodyAPI(prim).GetKinematicEnabledAttr().Get()
+        return bool(value) if value is not None else False
+
+    @staticmethod
+    def _rigid_body_enabled(prim: Any) -> bool:
+        from pxr import UsdPhysics  # type: ignore
+
+        value = UsdPhysics.RigidBodyAPI(prim).GetRigidBodyEnabledAttr().Get()
+        return bool(value) if value is not None else False
+
+    def inspect(self, *, config: PressButtonMechanismConfig) -> dict[str, Any]:
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # type: ignore
+
+        housing_body = _require_authored_stage_prim(
+            self._stage,
+            config.housing_prim_path,
+        )
+        housing_collision_path = press_button_housing_collision_prim_path(
+            config.housing_prim_path
+        )
+        housing_collision = _require_authored_stage_prim(
+            self._stage,
+            housing_collision_path,
+        )
+        button = _require_authored_stage_prim(
+            self._stage,
+            config.button_prim_path,
+        )
+        joint = UsdPhysics.PrismaticJoint.Get(self._stage, config.joint_prim_path)
+        if not joint or not joint.GetPrim().IsValid():
+            _stage_build_error("authored PressButton prismatic joint is invalid")
+
+        (
+            body_translation,
+            body_scale,
+            body_xform_ops,
+            body_reset_xform_stack,
+        ) = self._local_transform_contract(housing_body)
+        (
+            collision_translation,
+            collision_scale,
+            collision_xform_ops,
+            collision_reset_xform_stack,
+        ) = self._local_transform_contract(housing_collision)
+        collision_size = UsdGeom.Cube(housing_collision).GetSizeAttr().Get()
+        local_pos0 = joint.GetLocalPos0Attr().Get()
+        local_pos1 = joint.GetLocalPos1Attr().Get()
+        if local_pos0 is None or local_pos1 is None:
+            _stage_build_error("authored PressButton joint local anchors are missing")
+        body0_transform = UsdGeom.Xformable(
+            housing_body
+        ).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        body1_transform = UsdGeom.Xformable(button).ComputeLocalToWorldTransform(
+            Usd.TimeCode.Default()
+        )
+        body0_anchor = body0_transform.Transform(
+            Gf.Vec3d(*(float(value) for value in local_pos0))
+        )
+        body1_anchor = body1_transform.Transform(
+            Gf.Vec3d(*(float(value) for value in local_pos1))
+        )
+        return {
+            "housing_body_prim_path": config.housing_prim_path,
+            "housing_body_type": str(housing_body.GetTypeName()),
+            "housing_body_translation_m": body_translation,
+            "housing_body_scale": body_scale,
+            "housing_body_xform_ops": body_xform_ops,
+            "housing_body_reset_xform_stack": body_reset_xform_stack,
+            "housing_body_rigid_body_api": housing_body.HasAPI(
+                UsdPhysics.RigidBodyAPI
+            ),
+            "housing_body_rigid_body_enabled": self._rigid_body_enabled(
+                housing_body
+            ),
+            "housing_body_collision_api": housing_body.HasAPI(
+                UsdPhysics.CollisionAPI
+            ),
+            "housing_body_kinematic": self._kinematic_enabled(housing_body),
+            "housing_collision_prim_path": housing_collision_path,
+            "housing_collision_type": str(housing_collision.GetTypeName()),
+            "housing_collision_translation_m": collision_translation,
+            "housing_collision_scale_m": collision_scale,
+            "housing_collision_xform_ops": collision_xform_ops,
+            "housing_collision_reset_xform_stack": collision_reset_xform_stack,
+            "housing_collision_size": (
+                float(collision_size) if collision_size is not None else None
+            ),
+            "housing_collision_api": housing_collision.HasAPI(
+                UsdPhysics.CollisionAPI
+            ),
+            "housing_collision_rigid_body_api": housing_collision.HasAPI(
+                UsdPhysics.RigidBodyAPI
+            ),
+            "button_prim_path": config.button_prim_path,
+            "button_type": str(button.GetTypeName()),
+            "button_collision_api": button.HasAPI(UsdPhysics.CollisionAPI),
+            "button_rigid_body_api": button.HasAPI(UsdPhysics.RigidBodyAPI),
+            "button_rigid_body_enabled": self._rigid_body_enabled(button),
+            "button_kinematic": self._kinematic_enabled(button),
+            "joint_prim_path": config.joint_prim_path,
+            "joint_body0_targets": tuple(
+                str(path) for path in joint.GetBody0Rel().GetTargets()
+            ),
+            "joint_body1_targets": tuple(
+                str(path) for path in joint.GetBody1Rel().GetTargets()
+            ),
+            "joint_local_pos0_m": tuple(float(value) for value in local_pos0),
+            "joint_local_pos1_m": tuple(float(value) for value in local_pos1),
+            "body0_anchor_world_m": tuple(float(value) for value in body0_anchor),
+            "body1_anchor_world_m": tuple(float(value) for value in body1_anchor),
+        }
 
 
 class PressButtonMechanism:
@@ -428,12 +980,24 @@ class PressButtonMechanism:
             "state_source": "observed_button_joint_travel",
         }
         if geometry_contract is not None:
+            analytic_hierarchy = _validate_formal_joint_anchor_alignment(
+                self.config
+            )
             scene.update(
                 {
                     "geometry_sha256": geometry_contract.geometry_sha256,
                     "world_from_mechanism_root_sha256": (
                         geometry_contract.world_from_mechanism_root_sha256
                     ),
+                    "housing_body_prim_path": analytic_hierarchy[
+                        "housing_body_prim_path"
+                    ],
+                    "housing_collision_prim_path": analytic_hierarchy[
+                        "housing_collision_prim_path"
+                    ],
+                    "analytic_anchor_alignment_valid": analytic_hierarchy[
+                        "anchor_alignment_valid"
+                    ],
                 }
             )
         return scene
@@ -516,7 +1080,10 @@ class PressButtonMechanism:
                 contract.world_from_mechanism_root_sha256
             ),
             root_prim_path=cfg.root_prim_path,
-            housing_prim_path=cfg.housing_prim_path,
+            housing_body_prim_path=cfg.housing_prim_path,
+            housing_collision_prim_path=press_button_housing_collision_prim_path(
+                cfg.housing_prim_path
+            ),
             button_prim_path=cfg.button_prim_path,
         )
 
@@ -533,16 +1100,20 @@ class PressButtonMechanism:
 
         cfg = self.config
         try:
+            _validate_formal_joint_anchor_alignment(cfg)
             geometry_adapter = UsdPressButtonDeclaredGeometryAuthoringAdapter(stage)
             receipt = self.author_declared_geometry(authoring_adapter=geometry_adapter)
             _require_authored_stage_prim(stage, receipt.root_prim_path)
-            housing_prim = _require_authored_stage_prim(
-                stage, receipt.housing_prim_path
+            housing_body_prim = _require_authored_stage_prim(
+                stage, receipt.housing_body_prim_path
+            )
+            housing_collision_prim = _require_authored_stage_prim(
+                stage, receipt.housing_collision_prim_path
             )
             button_prim = _require_authored_stage_prim(stage, receipt.button_prim_path)
 
-            UsdPhysics.CollisionAPI.Apply(housing_prim)
-            housing_rigid = UsdPhysics.RigidBodyAPI.Apply(housing_prim)
+            UsdPhysics.CollisionAPI.Apply(housing_collision_prim)
+            housing_rigid = UsdPhysics.RigidBodyAPI.Apply(housing_body_prim)
             housing_rigid.CreateRigidBodyEnabledAttr(True)
             housing_rigid.CreateKinematicEnabledAttr(True)
 
@@ -553,8 +1124,10 @@ class PressButtonMechanism:
             mass.CreateMassAttr(cfg.button_mass_kg)
 
             joint = UsdPhysics.PrismaticJoint.Define(stage, cfg.joint_prim_path)
-            joint.CreateBody0Rel().SetTargets([Sdf.Path(cfg.housing_prim_path)])
-            joint.CreateBody1Rel().SetTargets([Sdf.Path(cfg.button_prim_path)])
+            joint.CreateBody0Rel().SetTargets(
+                [Sdf.Path(receipt.housing_body_prim_path)]
+            )
+            joint.CreateBody1Rel().SetTargets([Sdf.Path(receipt.button_prim_path)])
             joint.CreateAxisAttr(receipt.contract.button.axis_token)
             # Coincident anchors and matching rotations prevent startup snapping;
             # rotating both frames maps positive local Z travel to negative world Z.
@@ -575,6 +1148,22 @@ class PressButtonMechanism:
             drive.CreateTargetPositionAttr(cfg.drive_target_position_m)
             drive.CreateStiffnessAttr(cfg.return_stiffness_n_per_m)
             drive.CreateDampingAttr(cfg.return_damping_n_s_per_m)
+            authored_report = UsdPressButtonAuthoredStageInspector(stage).inspect(
+                config=cfg
+            )
+            validate_press_button_authored_joint_anchor_alignment(
+                body0_anchor_world_m=authored_report["body0_anchor_world_m"],
+                body1_anchor_world_m=authored_report["body1_anchor_world_m"],
+            )
+            authored_hierarchy = validate_press_button_authored_stage_hierarchy(
+                authored_report,
+                config=cfg,
+            )
+            scene = self.scene_contract()
+            scene.update(authored_hierarchy)
+            scene["anchor_alignment_valid"] = authored_hierarchy[
+                "anchor_alignment_valid"
+            ]
         except PressButtonGeometryContractError:
             raise
         except Exception as exc:
@@ -582,7 +1171,7 @@ class PressButtonMechanism:
                 PRESS_BUTTON_STAGE_BUILD_INCOMPLETE,
                 f"complete PressButton physical stage authoring failed: {exc}",
             ) from exc
-        return self.scene_contract()
+        return scene
 
     def read_stage(self, stage: Any) -> PressButtonMechanismState:
         """Observe physical button travel from the movable button prim, never from TCP pose."""
