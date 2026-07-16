@@ -407,6 +407,62 @@ def prepare_portable_git_context(export_root: Path) -> dict[str, Any]:
     }
 
 
+def prepare_portable_wheel_build_source(
+    export_root: Path,
+    build_root: Path,
+) -> dict[str, Any]:
+    """Copy archive bytes outside the verified checkout before building a wheel."""
+
+    source = Path(export_root)
+    destination = Path(build_root)
+    if source.is_symlink() or not source.is_dir():
+        raise ValueError("portable wheel source must be an existing, non-symlink directory")
+    source = source.resolve()
+    if not (source / ".git").is_dir() or (source / ".git").is_symlink():
+        raise ValueError("portable wheel source must contain archive-local Git metadata")
+    environment = _portable_git_environment(source)
+    marker = _git_result(
+        source,
+        "config",
+        "--bool",
+        "--get",
+        "portable.archive",
+        environment=environment,
+    ).stdout.strip()
+    status = _git_result(
+        source,
+        "status",
+        "--porcelain",
+        environment=environment,
+    ).stdout
+    if marker != "true" or status:
+        raise ValueError("portable wheel source must be the marked clean synthetic checkout")
+
+    destination_parent = destination.parent.resolve()
+    destination = destination_parent / destination.name
+    if destination.exists() or destination.is_symlink():
+        raise ValueError("portable wheel build source already exists")
+    if destination == source or source in destination.parents:
+        raise ValueError("portable wheel build source must be outside the verified checkout")
+
+    source_sha256 = _source_tree_sha256(source)
+    shutil.copytree(
+        source,
+        destination,
+        symlinks=True,
+        ignore=shutil.ignore_patterns(".git"),
+    )
+    if (destination / ".git").exists() or (destination / ".git").is_symlink():
+        raise ValueError("portable wheel build source copied Git metadata")
+    if _source_tree_sha256(destination) != source_sha256:
+        raise ValueError("portable wheel build source differs from archive bytes")
+    return {
+        "portable_wheel_build_source": "isolated_archive_copy",
+        "portable_wheel_build_reads_original_worktree": False,
+        "portable_wheel_build_source_sha256": source_sha256,
+    }
+
+
 def verify_t152_blob_provenance(checkout_root: Path) -> dict[str, Any]:
     """Verify historical blobs only in main and current bytes in both contexts."""
     root = Path(checkout_root)
@@ -540,6 +596,8 @@ def build_plan(
         "portable_git_context": "synthetic_clean_repository",
         "portable_history_objects_injected": False,
         "portable_source_bytes_equal_git_archive": True,
+        "portable_wheel_build_source": "isolated_archive_copy",
+        "portable_wheel_build_reads_original_worktree": False,
         "external_verification": str(external_verification),
         "external_verification_attestation_required": True,
     }
@@ -1041,9 +1099,17 @@ def run_clean_checkout(
                 raise RuntimeError(f"main/portable T152 provenance mismatch: {field}")
 
         _run([python, "scripts/audit_repository.py", "--output", str(temporary_root / "audit.json")], cwd=export_root, log=log)
+        build_root = temporary_root / "wheel-build-source"
+        portable_wheel_build_context = prepare_portable_wheel_build_source(export_root, build_root)
         wheelhouse = temporary_root / "wheelhouse"
         wheelhouse.mkdir()
-        _run([python, "-m", "pip", "wheel", ".", "--no-deps", "--wheel-dir", str(wheelhouse)], cwd=export_root, log=log)
+        _run([python, "-m", "pip", "wheel", ".", "--no-deps", "--wheel-dir", str(wheelhouse)], cwd=build_root, log=log)
+        if _git_result(export_root, "status", "--porcelain").stdout:
+            raise RuntimeError("wheel build changed the portable synthetic checkout")
+        if _source_tree_sha256(export_root) != portable_wheel_build_context[
+            "portable_wheel_build_source_sha256"
+        ]:
+            raise RuntimeError("wheel build changed portable archive source bytes")
         wheels = sorted(wheelhouse.glob("*.whl"))
         if len(wheels) != 1:
             raise RuntimeError(f"expected exactly one wheel, found {wheels}")
@@ -1130,6 +1196,7 @@ def run_clean_checkout(
         )
         test_inventory.update(main_blob_provenance)
         test_inventory.update(portable_git_context)
+        test_inventory.update(portable_wheel_build_context)
         test_inventory["historical_objects_verified_in_main_checkout"] = True
         test_inventory["historical_objects_verified_in_portable_archive"] = False
         installed_wheel = output_dir / wheels[0].name
