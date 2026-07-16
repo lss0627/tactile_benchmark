@@ -96,7 +96,9 @@ class UsdPressButtonDeclaredGeometryAuthoringAdapter:
         root = UsdGeom.Xform.Define(self._stage, root_path)
         root.AddTranslateOp().Set(Gf.Vec3d(*position_m))
         x, y, z, w = orientation_xyzw
-        root.AddOrientOp().Set(Gf.Quatd(w, Gf.Vec3d(x, y, z)))
+        root.AddOrientOp(precision=UsdGeom.XformOp.PrecisionDouble).Set(
+            Gf.Quatd(w, Gf.Vec3d(x, y, z))
+        )
 
     def author_oriented_box(
         self,
