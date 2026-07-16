@@ -2667,7 +2667,7 @@ worktree. No command launches Isaac Sim.
   replacement refs/indirection and checks both approved objects are commits.
   The hermetic focused contracts passed 16/16 and the four archive controls
   passed 4/4.
-- [ ] Verify `W^=D4`, bind `VERIFY_IMPL=$(git rev-parse HEAD)`, require a clean
+- [x] Verify `W^=D4`, bind `VERIFY_IMPL=$(git rev-parse HEAD)`, require a clean
   worktree, run the complete suite into the new immutable directory, and
   compare every post-W node-ID list byte-for-byte with clean `D4`:
 
@@ -2682,12 +2682,29 @@ worktree. No command launches Isaac Sim.
   The earlier `/tmp/g1-t152-pre-projection-d4-w` passed before this pre-push
   review correction and remains immutable but superseded. It is not valid
   evidence for the amended `W`; only the new hermetic directory is authoritative.
-- [ ] After the suite passes, change only T152 to `[x]` in `tasks.md`; leave T151
+
+  Final `W=81f55e159aaf91eadec201ba5733707b07f1c93c` has exact parent
+  `D4=ac84bc39cf70d1e45c95ccf3e9e4fdf0ff77cac8`. The authoritative hermetic
+  run passed full/current/portable/external/future counts `1091/966/965/1/125`,
+  the `78/29/10/8` future classification, all frozen node-ID comparisons, both
+  approved digests, external JUnit `1/0/0/0`, and all nine attestation checksums.
+- [x] After the suite passes, change only T152 to `[x]` in `tasks.md`; leave T151
   and T070 `[ ]` and attempt-04 prohibited.
-- [ ] Record the literal, already-known `E_impl`, `D1`, `D2`, `V1`, `D3`, `D4`,
+- [x] Record the literal, already-known `E_impl`, `D1`, `D2`, `V1`, `D3`, `D4`,
   and `W` SHAs in this plan without attempting to record the not-yet-created
   projection SHA.
-- [ ] Run `git diff --check`, stage only the two Markdown files, verify their
+
+  ```text
+  E_impl = aa47af3946f2f9f934147b4b263affe345a9d450
+  D1 = d561f3be49b3ba059286818e325adc81b5b0b269
+  D2 = 6d234a4bf8d8420fbd58d771e9828af2f9d0efa6
+  V1 = 7ef680b0a5d062c682a2d1715539e7b32f09b538
+  D3 = 66551b9f55729b920adb5fda64f9b52a9852b8f7
+  D4 = ac84bc39cf70d1e45c95ccf3e9e4fdf0ff77cac8
+  W = 81f55e159aaf91eadec201ba5733707b07f1c93c
+  ```
+
+- [x] Run `git diff --check`, stage only the two Markdown files, verify their
   diff, and create the unique projection commit:
 
   ```bash
@@ -2918,7 +2935,7 @@ GREEN/RED partition stated below.
 | 11 verification V1 | `fix(g0): verify portable external evidence` | exact existing-node mapping, D2/V1 list comparison, external manifest, P/V1-bound attestation, dual digest, portable 965, full 1091 classification, G0 schema | `V1^=D2`; retained projection collected 965 and exposed four empty-Git-context failures |
 | 11 design D3 | `docs(g0): define portable synthetic git context` | documentation consistency checks only | `D3^=V1`, synthetic clean Git and main-history/portable-blob modes fixed, no implementation |
 | 11 design D4 | `docs(g0): separate historical and portable source blobs` | JSON and documentation consistency, three independent Git blob proofs, unchanged collection/digests | `D4^=D3`; historical blobs remain `b9864a8...`, portable current source is `2839e2f...`, no implementation/test-node change |
-| 11 correction W | `fix(g0): make portable archive git-aware` | focused existing-node RED/GREEN, D4/W list comparison, helper reuse, synthetic provenance, independent historical/current blob attestation, full verification in `/tmp/g1-t152-pre-projection-d4-w` | `W^=D4`; main 966 GREEN, portable 965 GREEN, external 1 GREEN, future-RED 125 |
+| 11 correction W | `fix(g0): make portable archive git-aware` | focused existing-node RED/GREEN, D4/W list comparison, helper reuse, synthetic provenance, independent historical/current blob attestation, full verification in `/tmp/g1-t152-pre-projection-d4-w-hermetic` | `W^=D4`; main 966 GREEN, portable 965 GREEN, external 1 GREEN, future-RED 125 |
 | 11 projection | `docs(g1): complete T152 geometry integration` | complete suite at `W`, projection commit `P_t152`, identical suite, P_t152-bound attestation, and G0 at `P_t152` | `P_t152^=W`, `FINAL_E2=P_t152`, tracked files record `E_impl`/`D1`/`D2`/`V1`/`D3`/`D4`/`W` only, T152 `[x]`, T151/T070 `[ ]`, attempt-04 prohibited, no tracked change after `P_t152` |
 
 Tasks 2, 3, 7A, and 8A are deliberately RED-only commits. No production change may

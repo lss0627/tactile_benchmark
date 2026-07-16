@@ -218,7 +218,7 @@ evidence/review conditions pass.
 
 ### Runtime integration closure
 
-- [ ] T152 [US2] 将 C2a selected pose/hash、pre-Play fresh-scene authoring、六类 trajectory motifs、shared qualifying kernel、multiclass aggregation 及 immutable evidence 接入真实 `run_g1_tracking_envelope.py` CLI。 This task requires an approved RED-only checkpoint followed by a separately reviewed GREEN implementation and complete verification; the attempt-04 runtime integration gap review does not complete it (FR-009, FR-011, FR-027, FR-028; SC-003, SC-004; AS-US2-2/4).
+- [x] T152 [US2] 将 C2a selected pose/hash、pre-Play fresh-scene authoring、六类 trajectory motifs、shared qualifying kernel、multiclass aggregation 及 immutable evidence 接入真实 `run_g1_tracking_envelope.py` CLI。 This task requires an approved RED-only checkpoint followed by a separately reviewed GREEN implementation and complete verification; the attempt-04 runtime integration gap review does not complete it (FR-009, FR-011, FR-027, FR-028; SC-003, SC-004; AS-US2-2/4).
 
 **T152 contact-exclusion blocker**: [`g1-contact-exclusion-schema-review.md`](g1-contact-exclusion-schema-review.md)
 defines the approved shared analytic solids and `0.005 m` TCP-point clearance. It requires a
