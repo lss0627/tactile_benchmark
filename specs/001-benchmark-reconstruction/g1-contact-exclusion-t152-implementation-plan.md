@@ -2032,7 +2032,8 @@ names conflict.
   implementation and satisfies `V1^=D2`; its failed projection is retained.
 - `D3=66551b9f55729b920adb5fda64f9b52a9852b8f7` is the synthetic-Git
   design checkpoint and satisfies `D3^=V1`.
-- `D4` is this documentation revision and must satisfy `D4^=D3`.
+- `D4=ac84bc39cf70d1e45c95ccf3e9e4fdf0ff77cac8` is the approved
+  historical/current-blob separation revision and satisfies `D4^=D3`.
 - `W` is the later corrective RED-to-GREEN verification-infrastructure commit
   and must satisfy `W^=D4`.
 - Before editing for `W`, capture clean-`D4` full/current node-ID lists. After
@@ -2061,7 +2062,7 @@ E_impl = aa47af3946f2f9f934147b4b263affe345a9d450
 → D2 = 6d234a4bf8d8420fbd58d771e9828af2f9d0efa6
 → V1 = 7ef680b0a5d062c682a2d1715539e7b32f09b538
 → D3 = 66551b9f55729b920adb5fda64f9b52a9852b8f7
-→ D4 = this documentation revision
+→ D4 = ac84bc39cf70d1e45c95ccf3e9e4fdf0ff77cac8
 → W = corrective verification infrastructure
 → P_t152 = final projection/status
 → FINAL_E2 = P_t152
@@ -2617,7 +2618,7 @@ worktree. No command launches Isaac Sim.
 
 **Steps**
 
-- [ ] Commit only the three authorized `D4` files with message
+- [x] Commit only the three authorized `D4` files with message
   `docs(g0): separate historical and portable source blobs`. Verify its parent
   is `D3`, all three independent Git proofs, JSON shape, and unchanged
   collection/digests; then capture the immutable pre-W node-ID snapshot before
@@ -2639,13 +2640,33 @@ worktree. No command launches Isaac Sim.
   capture_t152_nodeids "$D4" "$PRE_W_NODEID_DIR"
   ```
 
-- [ ] Implement `W` with one focused assertion RED in an existing test node,
+- [x] Implement `W` with one focused assertion RED in an existing test node,
   then GREEN, for the exact archive-local synthetic repository and two-mode
   historical/blob attestation contract. Reuse
   `prepare_portable_git_context(export_root)` from both G0 and this verification
   helper. Do not add/delete/rename test functions, change a parameterized
   expansion, copy history, read the original worktree from the archive, or run
   Isaac Sim. Commit with `fix(g0): make portable archive git-aware`.
+
+  The focused RED was exactly two assertion failures and one passing
+  historical/blob control: the missing portable-Git helper and missing report
+  provenance fields failed without collection, import, fixture, or environment
+  error. The focused GREEN passed 3/3; the full clean-checkout and migration
+  files passed 12/12 and 4/4. In a tracked-only synthetic checkout, the four
+  retained V1 failures passed 4/4, including the structured C2a output-exists
+  error and repository ignore-rule controls.
+
+  A pre-push code review then found that inherited Git common-directory,
+  template, config, hook/filter, replacement-ref, and identity environment
+  could weaken the absolute isolation claim. A second focused RED reproduced
+  the external-common-directory write. The corrected helper constructs a
+  minimal Git environment, uses an empty template and disabled hooks, fixes
+  both author and committer identity/date, disables replacement objects,
+  rejects alternates/grafts/packs/unexpected refs, and proves that every object
+  is in the one synthetic HEAD closure. Main historical proof also rejects
+  replacement refs/indirection and checks both approved objects are commits.
+  The hermetic focused contracts passed 16/16 and the four archive controls
+  passed 4/4.
 - [ ] Verify `W^=D4`, bind `VERIFY_IMPL=$(git rev-parse HEAD)`, require a clean
   worktree, run the complete suite into the new immutable directory, and
   compare every post-W node-ID list byte-for-byte with clean `D4`:
@@ -2653,10 +2674,14 @@ worktree. No command launches Isaac Sim.
   ```bash
   VERIFY_IMPL=$(git rev-parse HEAD)
   test "$(git rev-parse "${VERIFY_IMPL}^")" = "$D4"
-  run_t152_verification "$VERIFY_IMPL" pre-projection-d4-w "" \
+  run_t152_verification "$VERIFY_IMPL" pre-projection-d4-w-hermetic "" \
     "$PRE_W_NODEID_DIR"
-  PREPROJECTION_VERIFY_DIR=/tmp/g1-t152-pre-projection-d4-w
+  PREPROJECTION_VERIFY_DIR=/tmp/g1-t152-pre-projection-d4-w-hermetic
   ```
+
+  The earlier `/tmp/g1-t152-pre-projection-d4-w` passed before this pre-push
+  review correction and remains immutable but superseded. It is not valid
+  evidence for the amended `W`; only the new hermetic directory is authoritative.
 - [ ] After the suite passes, change only T152 to `[x]` in `tasks.md`; leave T151
   and T070 `[ ]` and attempt-04 prohibited.
 - [ ] Record the literal, already-known `E_impl`, `D1`, `D2`, `V1`, `D3`, `D4`,
