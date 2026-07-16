@@ -3138,3 +3138,56 @@ if any condition occurs:
   separately approved attempt-04.
 - [x] T150 remains `[x]`; T151, T152, and T070 remain `[ ]` while this plan is
   authored; attempt-04 remains `ATTEMPT_04_PROHIBITED`.
+
+## Post-P_t152 correction: USD root-orientation precision
+
+This section supersedes only the historical pre-runtime state sentence above.
+T152 is now `[x]`; T151 and T070 remain `[ ]`. The immutable C2a attempt-03 at
+`outputs/evidence/G1/c2a-static-current-50f16a9c74e9-attempt-03` is bound to
+`P_t152=50f16a9c74e94313f3edbac0d4793667cc5992c4` and remains a checksum-valid
+failed artifact. It records exit code 1,
+`G1_PRESS_BUTTON_STAGE_BUILD_INCOMPLETE`, zero candidates/scenes/readiness,
+null selected pose/hash, no actuation, and driver `550.144.03/UNVALIDATED`.
+
+The failure is a software type-contract defect, not a geometry, threshold,
+physics-policy, command-matrix, or truth-boundary change. Default
+`UsdGeom.Xform.AddOrientOp()` creates a `quatf` attribute, while the approved
+double-precision root transform writes `Gf.Quatd`. The correction must retain
+the existing xyzw-to-wxyz value and author the op with
+`UsdGeom.XformOp.PrecisionDouble`, producing `xformOp:orient` type `quatd`.
+`Gf.Quatf`, float32 root orientation, caller-specific type guessing,
+try-then-fallback, and swallowed USD mismatch errors remain forbidden.
+
+The authorized delivery topology is:
+
+```text
+P_t152
+-> R_orient  test(g1): require double-precision root orient op
+-> F_orient  fix(g1): match USD root orientation precision
+-> P_orient  docs(g1): project PressButton orientation fix
+-> fresh P-bound Task11 projection and formal G0
+-> exactly one fresh C2a attempt-04
+```
+
+`R_orient` changes only the existing test node and these approved design files;
+it adds no test function, parameter expansion, or node ID. Its focused RED must
+be an assertion failure caused only by missing explicit `PrecisionDouble`.
+`F_orient` changes only
+`isaac_tactile_libero/tasks/press_button_mechanism.py`. Before projection it
+must make the focused node and full mechanism suite GREEN and pass a real Isaac
+6 USD in-memory stage diagnostic proving a valid `quatd` orient attribute and
+valid root, housing, button, and joint prims with mechanism version `1.1.0`.
+
+The new projection records attempt-03, the exact RED and GREEN commits, and the
+runtime diagnostic without embedding its own unknown SHA. T152 stays `[x]`;
+T151/T070 stay `[ ]`; pose-conditioned C1 attempt-04 remains unexecuted. The
+old `P_t152` and its G0 remain immutable historical evidence because production
+source changes at `F_orient`. Only after the complete 1091/966/965/1/125
+projection, both approved node digests, external attestation, immutable
+attempt-02/attempt-03 checksums, and a fresh `PASS_BENCHMARK` G0 bind
+`P_orient` may C2a attempt-04 run once in a previously absent directory.
+
+Stop before C2a if the focused RED is malformed, the in-memory USD diagnostic
+finds another schema/type error, source/blob/node/digest counts drift, any
+approved threshold/budget/truth boundary changes, or the new projection/G0 is
+not fresh and complete.

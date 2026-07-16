@@ -445,18 +445,37 @@ def test_declared_geometry_seam_and_recording_fake_are_import_safe() -> None:
 
 
 def test_real_usd_declared_geometry_adapter_keeps_pxr_import_lazy_and_uses_full_dimensions() -> None:
+    forbidden = ("pxr", "omni", "isaacsim")
+    before = {name for name in sys.modules if name.split(".", 1)[0] in forbidden}
     module = _target()
+    after = {name for name in sys.modules if name.split(".", 1)[0] in forbidden}
+    assert after == before
     adapter_type = getattr(module, "UsdPressButtonDeclaredGeometryAuthoringAdapter", None)
     assert adapter_type is not None, "missing approved lazy USD declared-geometry adapter"
     source = inspect.getsource(adapter_type)
+    root_source = inspect.getsource(adapter_type.author_root)
+    compact_root_source = "".join(root_source.split())
 
     assert "CreateAxisAttr(axis_token)" in source
     assert "CreateHeightAttr(height_m)" in source
     assert "2.0 * half_extent" in source
     assert "orientation_xyzw" in source
     assert "half_extents_m" in source
-    assert "Gf.Quatd(w, Gf.Vec3d(x, y, z))" in source
-    assert "from pxr import" in source
+    assert "Gf.Quatd(w,Gf.Vec3d(x,y,z))" in compact_root_source
+    assert (
+        "root.AddOrientOp(precision=UsdGeom.XformOp.PrecisionDouble).Set("
+        in compact_root_source
+    )
+    assert "root.AddOrientOp().Set(" not in compact_root_source
+    assert "Gf.Quatf" not in root_source
+    assert "float32" not in root_source
+    assert "isinstance(" not in root_source
+    assert "type(" not in root_source
+    assert "hasattr(" not in root_source
+    assert "getattr(" not in root_source
+    assert "try:" not in root_source
+    assert "except" not in root_source
+    assert "from pxr import Gf, UsdGeom" in root_source
 
 
 def test_formal_stage_builder_and_geometry_adapter_contain_no_geometry_authority_literals() -> None:

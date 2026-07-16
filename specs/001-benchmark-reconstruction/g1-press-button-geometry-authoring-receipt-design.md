@@ -1,6 +1,6 @@
 # G1 PressButton Geometry Authoring Receipt Design
 
-**Status:** `APPROVED_DESIGN_PENDING_RED_CORRECTION_AND_GREEN_IMPLEMENTATION`
+**Status:** `IMPLEMENTED_WITH_APPROVED_ORIENTATION_PRECISION_CORRECTION_PENDING_GREEN`
 
 **Decision:** `APPROVED_OPTION_A`
 
@@ -194,7 +194,8 @@ construction and lazily imports `pxr`. Its authoring rules are:
 
 - root translation is the parsed `position_m`;
 - root orientation converts configured xyzw to USD quaternion ordering as
-  `Gf.Quatd(w, Gf.Vec3d(x, y, z))`;
+  `Gf.Quatd(w, Gf.Vec3d(x, y, z))` and authors the orient op explicitly with
+  `UsdGeom.XformOp.PrecisionDouble`;
 - housing local translation is `center_local_m`;
 - Cube full dimensions are `2 * half_extents_m`;
 - button local translation is `center_local_m`;
@@ -205,6 +206,24 @@ construction and lazily imports `pxr`. Its authoring rules are:
 
 The adapter authors declared geometry only. It neither applies physics APIs nor
 returns a complete-stage or benchmark claim.
+
+The explicit op precision is part of the root-transform contract. In USD
+0.25.5, default `AddOrientOp()` creates a `quatf` attribute, which cannot accept
+the approved `Gf.Quatd` value. The only approved pairing is therefore:
+
+```python
+root.AddOrientOp(
+    precision=UsdGeom.XformOp.PrecisionDouble
+).Set(
+    Gf.Quatd(w, Gf.Vec3d(x, y, z))
+)
+```
+
+The resulting `xformOp:orient` attribute must have type `quatd`. Replacing the
+root quaternion with `Gf.Quatf`, using float32 orientation, guessing a type from
+the caller, trying `Quatd` and falling back to `Quatf`, or catching/ignoring the
+USD type mismatch is forbidden. `pxr` remains absent during module import and is
+imported only when the real adapter method is called.
 
 ## 8. Single geometry authority and joint derivation
 
