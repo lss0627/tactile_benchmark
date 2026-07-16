@@ -245,3 +245,37 @@ is the T151 projection boundary:
 
 T151 is a prerequisite review, not G1 or T070 completion. T070 stays `[ ]`, G1
 stays `BLOCKED`, and G2 stays `NOT_STARTED` at this projection.
+
+## 8. Final T151 projection after clean-checkout cache-miss repair
+
+The first tracked T151 review commit is
+`917b2e6f39fc09f3594ac17134a705c7cce6ec58`. Its first formal G0 invocation
+was an operator environment error: an inherited `PYTHONPATH=.` made the
+isolated pip process treat the archive root as an already installed package.
+That invocation failed before collection and left its incomplete G0 directory
+untouched. Removing that ambient variable exposed a separate reproducible
+cache-miss defect: `pip wheel` wrote an untracked `build/` directory into the
+synthetic checkout, whose portable-history node correctly rejected the dirty
+status after 964 other portable nodes passed.
+
+This is repository verification machinery, not Isaac runtime, C2a, physics,
+or threshold behavior. It was repaired with one existing-node RED-to-GREEN
+sequence:
+
+```text
+R_clean_checkout = ef1e588aecaad5dbf505891e7e8b5459b810b353
+F_clean_checkout = 2d96b2a599057c2c36fab0c4516bec964aee73e1
+```
+
+The RED requires an isolated archive-byte-identical wheel-build source. GREEN
+copies the synthetic archive source, excluding `.git`, to a sibling temporary
+build root; pip may create build products only there. Before collection, the
+verified synthetic checkout must still have empty status and its exact source
+tree digest. No original-worktree read or history/object injection is added.
+Clean-checkout/migration tests pass 16/16 and T152 passes 113/113 after GREEN.
+
+The commit containing this section is the superseding final T151 projection.
+It keeps T151 `[x]`, T070 `[ ]`, G1 `BLOCKED`, G2 `NOT_STARTED`, and both
+attempt-06 and pose-conditioned C1 attempt-04 unexecuted. Its SHA must be taken
+from Git after commit; fresh external attestation, formal G0, and the one
+final-current attempt-06 bind that SHA.

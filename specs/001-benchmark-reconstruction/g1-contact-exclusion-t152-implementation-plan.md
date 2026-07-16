@@ -3387,3 +3387,28 @@ pose-conditioned C1 attempt-04 may consume it. The attempt-06 and C1 output
 paths must contain that same T151 projection SHA and be proven absent before
 their single authorized executions. No lower candidate, threshold, physics
 policy, command-matrix, force-truth, or driver change is authorized.
+
+### T151 clean-checkout cache-miss closure
+
+The initial tracked T151 review commit is
+`917b2e6f39fc09f3594ac17134a705c7cce6ec58`. A first G0 invocation inherited
+an incorrect operator `PYTHONPATH=.` and failed before collection. A clean-env
+invocation then reproduced a real cache-miss defect: `pip wheel` generated an
+untracked `build/` directory inside the synthetic checkout, so the portable
+history/current-source node correctly failed its clean-status assertion after
+964 other portable nodes passed.
+
+The existing clean-checkout node was extended and failed only because the
+isolated build-source capability was absent. RED is
+`ef1e588aecaad5dbf505891e7e8b5459b810b353`; GREEN is
+`2d96b2a599057c2c36fab0c4516bec964aee73e1`. GREEN builds
+the wheel from a sibling temporary copy of the exact archive source, excludes
+`.git`, and verifies the original synthetic checkout's status and source-tree
+digest again before collection. It neither reads the original worktree nor
+injects history. Clean-checkout/migration pass 16/16 and T152 passes 113/113.
+
+The subsequent documentation commit is the superseding final T151 projection.
+Its SHA is supplied only by Git after commit. Formal G0, final-current C2a
+attempt-06, and pose-conditioned C1 attempt-04 must use that one clean SHA;
+attempt-06 and C1 remain unexecuted here. T151 stays `[x]`, T070 stays `[ ]`,
+G1 stays `BLOCKED`, and G2 stays `NOT_STARTED`.
