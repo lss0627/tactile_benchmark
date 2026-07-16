@@ -1356,33 +1356,40 @@ def orchestrate_g1_pose_conditioned_tracking(
         )
     )
     factory: Any | None = None
+    run_result: Mapping[str, Any] = {"trials": ()}
     shutdown_exit_code = 1
     try:
-        factory = factory_builder()
-        run_result = dict(
-            plan_runner(
-                plan=built_plan,
-                selected_candidate=selected,
-                selected_pose_sha256=expected_pose_sha256,
-                scene_factory=factory,
-            )
-        )
-        if run_result.get("systemic_failure") is True:
-            aggregation = _validated_systemic_failure(
-                run_result.get("systemic_failure_code"),
-                run_result.get("systemic_failure_message"),
-            )
-        else:
-            aggregation = dict(
-                multiclass_aggregator(
-                    run_result.get("trials", ()),
-                    observed_hard_limit_m=OBSERVED_HARD_LIMIT_M,
-                    tested_commands_m=NONZERO_TRACKING_COMMANDS_M,
-                    required_class_ids=G1_TRAJECTORY_CLASS_IDS,
+        try:
+            factory = factory_builder()
+            run_result = dict(
+                plan_runner(
+                    plan=built_plan,
+                    selected_candidate=selected,
+                    selected_pose_sha256=expected_pose_sha256,
+                    scene_factory=factory,
                 )
             )
+            if run_result.get("systemic_failure") is True:
+                aggregation = _validated_systemic_failure(
+                    run_result.get("systemic_failure_code"),
+                    run_result.get("systemic_failure_message"),
+                )
+            else:
+                try:
+                    aggregation = dict(
+                        multiclass_aggregator(
+                            run_result.get("trials", ()),
+                            observed_hard_limit_m=OBSERVED_HARD_LIMIT_M,
+                            tested_commands_m=NONZERO_TRACKING_COMMANDS_M,
+                            required_class_ids=G1_TRAJECTORY_CLASS_IDS,
+                        )
+                    )
+                except Exception as error:
+                    aggregation = dict(build_g1_tracking_failure_aggregation(error))
+        except Exception as error:
+            aggregation = dict(build_g1_tracking_failure_aggregation(error))
         shutdown_exit_code = int(bool(aggregation.get("systemic_failure")))
-        asset_path = getattr(factory, "fr3_asset", None)
+        asset_path = getattr(factory, "fr3_asset", None) if factory is not None else None
         try:
             report = evidence_writer(
                 output=Path(output),
