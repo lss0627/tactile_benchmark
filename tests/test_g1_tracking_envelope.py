@@ -1092,7 +1092,9 @@ def test_c1_invalid_collision_report_blocks_measurement_evidence() -> None:
     assert scenes[0].measurement_calls == 6
 
 
-def test_c1_runtime_failure_writes_evidence_before_shutdown(tmp_path: Path) -> None:
+def test_c1_runtime_failure_writes_evidence_before_shutdown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     runner, orchestrate = _tracking_lifecycle()
     events: list[str] = []
     factory = _FakeLifecycleFactory(events)
@@ -1127,6 +1129,89 @@ def test_c1_runtime_failure_writes_evidence_before_shutdown(tmp_path: Path) -> N
     ]
     assert outcome["exit_code"] == 1
     assert factory.close_count == 1
+
+    pose_orchestrate = getattr(runner, "orchestrate_g1_pose_conditioned_tracking")
+    selected = {"candidate_id": "selected-test-pose"}
+    selected_sha256 = "a" * 64
+    monkeypatch.setattr(
+        runner,
+        "_require_selected_candidate",
+        lambda candidate, **_kwargs: dict(candidate),
+    )
+    monkeypatch.setattr(runner, "_validate_legacy_pose_routes", lambda *_args, **_kwargs: None)
+    pose_common = {
+        "repository_commit": "b" * 40,
+        "command": [sys.executable, str(RUNNER_PATH)],
+        "selection_report": {
+            "selected_pose_id": selected["candidate_id"],
+            "selected_pose_sha256": selected_sha256,
+        },
+        "candidate_records": (selected,),
+        "expected_pose_id": selected["candidate_id"],
+        "expected_pose_sha256": selected_sha256,
+        "routes": (),
+        "seed": 20260712,
+        "plan": {"trials": []},
+    }
+
+    def fail_pose_runtime(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise runner.G1ValidationError(
+            "G1_C1_MEASUREMENT_RUNTIME_ERROR",
+            "pose-conditioned measurement failed",
+        )
+
+    pose_runtime_factory = _FakeLifecycleFactory([])
+    pose_runtime_written: dict[str, Any] = {}
+    pose_runtime_outcome = pose_orchestrate(
+        **pose_common,
+        output=tmp_path / "pose-runtime-failure",
+        factory_builder=lambda: pose_runtime_factory,
+        plan_runner=fail_pose_runtime,
+        multiclass_aggregator=lambda *_args, **_kwargs: pytest.fail(
+            "aggregation must not run after a runner exception"
+        ),
+        evidence_writer=lambda **kwargs: pose_runtime_written.update(kwargs),
+    )
+
+    assert pose_runtime_written["trials"] == ()
+    assert pose_runtime_written["aggregation"] == {
+        "systemic_failure": True,
+        "systemic_failure_code": "G1_C1_MEASUREMENT_RUNTIME_ERROR",
+        "systemic_failure_message": "pose-conditioned measurement failed",
+    }
+    assert pose_runtime_written["aggregation"].get("selected_command_cap_m") is None
+    assert pose_runtime_outcome["exit_code"] == 1
+    assert pose_runtime_factory.close_exit_codes == [1]
+
+    retained = {"trials": [{"trial_id": "retained-before-aggregation-error"}]}
+
+    def fail_pose_aggregation(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise runner.G1ValidationError(
+            "G1_C1_AGGREGATION_RUNTIME_ERROR",
+            "pose-conditioned aggregation failed",
+        )
+
+    pose_aggregation_factory = _FakeLifecycleFactory([])
+    pose_aggregation_written: dict[str, Any] = {}
+    pose_aggregation_outcome = pose_orchestrate(
+        **pose_common,
+        output=tmp_path / "pose-aggregation-failure",
+        factory_builder=lambda: pose_aggregation_factory,
+        plan_runner=lambda *_args, **_kwargs: retained,
+        multiclass_aggregator=fail_pose_aggregation,
+        evidence_writer=lambda **kwargs: pose_aggregation_written.update(kwargs),
+    )
+
+    assert pose_aggregation_written["trials"] == retained["trials"]
+    assert pose_aggregation_written["run_result"] == retained
+    assert pose_aggregation_written["aggregation"] == {
+        "systemic_failure": True,
+        "systemic_failure_code": "G1_C1_AGGREGATION_RUNTIME_ERROR",
+        "systemic_failure_message": "pose-conditioned aggregation failed",
+    }
+    assert pose_aggregation_written["aggregation"].get("selected_command_cap_m") is None
+    assert pose_aggregation_outcome["exit_code"] == 1
+    assert pose_aggregation_factory.close_exit_codes == [1]
 
 
 def test_c1_factory_failure_without_asset_writes_complete_immutable_evidence(
