@@ -3114,7 +3114,10 @@ if any condition occurs:
 - A Task 2 schema-specific assertion is changed without a manifest mapping, or
   another approved RED assertion is modified/deleted to manufacture GREEN.
 
-## Plan-author self-review
+## Historical pre-projection plan-author self-review
+
+This checklist records the original pre-P_t152 planning state. It is retained
+for auditability; later correction sections supersede its attempt ledger.
 
 - [x] All 12 approved architecture sections map to tasks and verification.
 - [x] All 31 approved RED contracts have explicit RED and GREEN ownership.
@@ -3140,6 +3143,11 @@ if any condition occurs:
   authored; attempt-04 remains `ATTEMPT_04_PROHIBITED`.
 
 ## Post-P_t152 correction: USD root-orientation precision
+
+This section is the historical execution plan from before the orientation-fix
+projection. The later unscaled-housing section is authoritative for current
+attempt state: C2a attempt-04 is consumed and immutable, while pose-conditioned
+C1 attempt-04 remains unexecuted.
 
 This section supersedes only the historical pre-runtime state sentence above.
 T152 is now `[x]`; T151 and T070 remain `[ ]`. The immutable C2a attempt-03 at
@@ -3227,8 +3235,77 @@ nine checksum-valid files. The attempt-02 checksum remains
 `cc53c4b4bc3cefdc7a2363c6446741e3abfc65e768ac0db71123aa593be528ed` and
 attempt-03 `checksums.sha256` remains
 `8c9eed9e725917609c1eff8ae19714501d97fb34405ad0c4a9e8987fcf7e7843`.
-T152 remains `[x]` while
-T151 and T070 remain `[ ]`; C2a attempt-04 and the distinct pose-conditioned C1
-attempt-04 have not run. The commit containing this section is the new
-orientation-fix projection and intentionally does not embed its own unknown
+T152 remains `[x]` while T151 and T070 remain `[ ]`. After this projection was
+created, C2a attempt-04 ran exactly once and became immutable failed evidence;
+the distinct pose-conditioned C1 attempt-04 has not run. The commit containing
+this historical projection receipt intentionally did not embed its own unknown
 SHA.
+
+## Post-orientation correction: unscaled rigid housing hierarchy
+
+The orientation projection completed at
+`c2412f118b195a767ba3f79345cad1ae57396d45`. Its immutable C2a attempt-04 at
+`outputs/evidence/G1/c2a-static-current-c2412f118b19-attempt-04` failed before
+scene/readiness qualification because the housing was authored as one scaled
+Cube that also carried the kinematic rigid body. Real USD transform diagnosis
+measured body0/body1 world-anchor Z values `0.445499999996...` and `0.47`, a
+`-0.0245000000037 m` mismatch that pulled the button toward the housing center
+on Play and produced approximately 24.8 mm of false initial travel.
+
+The approved architecture is defined by
+[`g1-press-button-unscaled-rigid-housing-review.md`](g1-press-button-unscaled-rigid-housing-review.md):
+
+```text
+/World/PressButton/Housing             unscaled Xform, kinematic rigid body
+/World/PressButton/Housing/Geometry    scaled Cube, CollisionAPI, no rigid body
+/World/PressButton/Button              existing dynamic cylinder rigid body
+```
+
+The joint retains body0/body1, axis, rotations, limits, and drive semantics.
+Its housing-side anchor remains contract-derived
+`button_center_local - housing_center_local`, now evaluated in the unscaled
+body frame. `build_stage()` must verify the actual authored body0/body1 world
+anchors agree within `1e-9 m` per axis before returning. `read_stage()` remains
+an uncompensated observation of button world movement.
+
+The geometry-only receipt changes from frozen v1's single conflated housing path
+to explicit body and collision paths, so its schema is bumped to
+`g1.press_button.geometry_authoring_receipt.v2`. Existing receipt nodes must
+exercise a fail-closed v1 migration without adding or changing node IDs or
+parameterization. Migration remains geometry-only and cannot prove a historical
+stage was complete.
+
+The authorized test-first topology is:
+
+```text
+c2412f118b195a767ba3f79345cad1ae57396d45
+-> D_hierarchy  docs(g1): review unscaled PressButton housing body
+-> R_hierarchy  test(g1): require unscaled PressButton rigid housing
+-> F_hierarchy  fix(g1): separate PressButton rigid body and collider scale
+-> real Isaac 6 no-SimulationApp in-memory stage acceptance
+-> full regression and production-fix projection
+-> projection-bound Task 11, external attestation, formal G0, review, checksums
+-> exactly one fresh C2a attempt-05
+```
+
+RED extends only existing nodes in `tests/test_press_button_mechanism.py`; it
+must fail through the missing hierarchy/anchor behavior, not collection,
+fixture, import, or environment errors. GREEN modifies only
+`isaac_tactile_libero/tasks/press_button_mechanism.py`. It may add focused
+path/anchor helpers but may not duplicate geometry authority.
+
+The analytic solid definitions, contact-exclusion and root-transform digests,
+root pose, mechanism/task versions, exact `0.0005 m` hard limit, exact `0.005 m`
+clearance, travel/joint/pressed/release/reset values, budgets, command matrix,
+physics/driver policy, collision/Contact checks, and force/wrench/raw-impulse
+truth remain unchanged. Literal/inverse-scale anchor compensation, a
+`read_stage()` correction, tolerance expansion, skipped/delayed readiness, or
+disabled physics is forbidden.
+
+Only after the new projection and a fresh `PASS_BENCHMARK` G0 may C2a
+attempt-05 run once in a previously absent directory. Failure stops without a
+rerun. A passing attempt-05 is preliminary if the tracked T151 review changes
+HEAD; after T151 `[x]` and a clean T151 projection, exactly one final-current
+C2a attempt-06 is then required before the separately named pose-conditioned C1
+attempt-04. G1 on driver `550.144.03/UNVALIDATED` can reach at most
+`PASS_SMOKE` and must retain `REFERENCE_DRIVER_REVALIDATION_REQUIRED`.

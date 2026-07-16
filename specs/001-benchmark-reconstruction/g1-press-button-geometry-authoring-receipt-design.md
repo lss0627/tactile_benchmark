@@ -1,6 +1,6 @@
 # G1 PressButton Geometry Authoring Receipt Design
 
-**Status:** `ORIENTATION_PRECISION_FIX_PROJECTED_PENDING_FINAL_VERIFICATION_AND_G0`
+**Status:** `UNSCALED_RIGID_HOUSING_REVISION_APPROVED_PENDING_RED_GREEN`
 
 **Decision:** `APPROVED_OPTION_A`
 
@@ -12,6 +12,11 @@ It approves an import-safe geometry-only seam and retains the real
 `PressButtonMechanism.build_stage()` as the sole complete USD/PhysX stage
 operation. It does not implement Task 7, complete T152, authorize runtime
 execution, or create evidence.
+
+The hierarchy correction approved in
+[`g1-press-button-unscaled-rigid-housing-review.md`](g1-press-button-unscaled-rigid-housing-review.md)
+supersedes the historical single-prim housing authoring below wherever they
+conflict. The geometry-only/complete-stage separation remains unchanged.
 
 ## 1. Decision and separation of responsibilities
 
@@ -78,7 +83,8 @@ class PressButtonGeometryAuthoringReceipt:
     geometry_sha256: str
     world_from_mechanism_root_sha256: str
     root_prim_path: str
-    housing_prim_path: str
+    housing_body_prim_path: str
+    housing_collision_prim_path: str
     button_prim_path: str
     geometry_only: bool
     complete_stage: bool
@@ -88,11 +94,13 @@ class PressButtonGeometryAuthoringReceipt:
 The receipt contract is exact:
 
 ```text
-schema_version = g1.press_button.geometry_authoring_receipt.v1
+schema_version = g1.press_button.geometry_authoring_receipt.v2
 mechanism_version = 1.1.0
 receipt.contract is config.geometry_contract
 geometry_sha256 = contract.geometry_sha256
 world_from_mechanism_root_sha256 = contract.world_from_mechanism_root_sha256
+housing_body_prim_path = config.housing_prim_path
+housing_collision_prim_path = config.housing_prim_path + /Geometry
 geometry_only = true
 complete_stage = false
 benchmark_cap_eligible = false
@@ -103,6 +111,20 @@ provenance uses the two stable SHA-256 values and never `id(contract)`. The
 receipt is neither runtime evidence nor proof of a complete stage. It cannot be
 promoted to stage success, C1 success, a selected command cap, gate status, or
 benchmark eligibility.
+
+Version `v1` is retained as a historical geometry-only contract. Adding the
+collider path is incompatible with its exact frozen field set, so `v2` is an
+explicit schema bump. Narrow v1-to-v2 migration maps the old absolute
+`housing_prim_path` to `housing_body_prim_path` and derives only its direct
+`Geometry` child. The migrator accepts a mapping plus the current formal config;
+requires exactly `schema_version`, `mechanism_version`, `contract`,
+`geometry_sha256`, `world_from_mechanism_root_sha256`, `root_prim_path`,
+`housing_prim_path`, `button_prim_path`, `geometry_only`, `complete_stage`, and
+`benchmark_cap_eligible`; requires schema v1, mechanism 1.1.0, the identical
+config contract, matching contract digests and config paths, and no-claim
+booleans `true/false/false`; and rejects every missing, extra, wrong-typed,
+mismatched, malformed, or claim-bearing input. It returns the exact v2 receipt
+and never retroactively proves a corrected historical stage.
 
 ## 4. Geometry-only seam
 
@@ -175,14 +197,17 @@ Its required sequence is:
 3. Construct `UsdPressButtonDeclaredGeometryAuthoringAdapter(stage)`.
 4. Call `author_declared_geometry()` with that real adapter.
 5. Verify the authored root, housing, and button prims exist and are valid.
-6. Apply housing collision, rigid body, rigid-body enabled, and kinematic
-   enabled attributes.
+6. Verify the unscaled housing Xform and its scaled `Geometry` Cube child;
+   apply collision to the child and rigid-body enabled/kinematic attributes to
+   the parent.
 7. Apply button collision, rigid body, rigid-body enabled, and configured mass.
 8. Define the prismatic joint, Body0/Body1 relationships, local anchors, local
    rotations, lower/upper limits, linear drive type, drive target, stiffness,
    and damping.
-9. Return the complete scene contract only after every required operation
-   succeeds.
+9. Compute both authored USD world anchors and require per-axis agreement within
+   `1e-9 m` before Play.
+10. Return the complete scene contract only after every required operation
+    succeeds, with both housing paths and `anchor_alignment_valid=true`.
 
 The geometry receipt is an internal intermediate value. It is not an early
 return and cannot satisfy the complete build result.
@@ -196,8 +221,10 @@ construction and lazily imports `pxr`. Its authoring rules are:
 - root orientation converts configured xyzw to USD quaternion ordering as
   `Gf.Quatd(w, Gf.Vec3d(x, y, z))` and authors the orient op explicitly with
   `UsdGeom.XformOp.PrecisionDouble`;
-- housing local translation is `center_local_m`;
-- Cube full dimensions are `2 * half_extents_m`;
+- housing body is an unscaled `UsdGeom.Xform` whose local translation is
+  `center_local_m`;
+- housing collider is a `UsdGeom.Cube` at the body's direct `Geometry` child,
+  with zero local translation and full dimensions `2 * half_extents_m`;
 - button local translation is `center_local_m`;
 - Cylinder axis receives the parsed `axis_token` unchanged;
 - Cylinder radius is the parsed `radius_m`;
@@ -269,6 +296,9 @@ joint_local_pos1_m = (0.0, 0.0, 0.0)
 ```
 
 For the approved contract this derivation yields the unchanged physical anchor.
+It is interpreted in the unscaled housing body frame; scale exists only on the
+collider child and therefore cannot distort the joint frame. The authored
+body0/body1 world points must coincide before `build_stage()` returns.
 The joint axis token is the same parsed button axis token; existing matching
 local rotations retain the configured travel direction, whose collinearity was
 already validated by the geometry parser. Display colors may remain independent
@@ -293,7 +323,12 @@ Every real runtime action still requires Contact, collision, penetration, and
 post-action safety truth. `force_vector_valid=false`, `wrench_valid=false`, and
 `raw_impulse_used_as_force=false` remain mandatory.
 
-## 10. Delivery sequence and fixed state
+## 10. Historical pre-T152 delivery sequence (superseded)
+
+This section records the state when the original receipt seam was approved. It
+is not the current attempt ledger. Section 11 supersedes it: C2a attempt-04 has
+run exactly once and is immutable; the separately named pose-conditioned C1
+attempt-04 remains unexecuted.
 
 The next authorized implementation sequence is:
 
@@ -310,3 +345,29 @@ GREEN and repository-wide verification pass. Task 8 has not started. T150
 remains `[x]`; T151, T152, and T070 remain `[ ]`; attempt-04 remains
 `ATTEMPT_04_PROHIBITED`. Fresh C2a remains separately approval-gated after the
 final T152 implementation commit E2.
+
+## 11. Post-attempt-04 USD hierarchy correction
+
+The orientation projection and fresh G0 completed at
+`c2412f118b195a767ba3f79345cad1ae57396d45`. Its immutable C2a attempt-04
+exposed a second software authoring defect: the scaled housing Cube was also the
+kinematic rigid body, so its non-uniform scale transformed `localPos0` and made
+the joint's world anchors differ by approximately `0.0245 m`. The observed
+initial travel was therefore outside `[0, 0.012]` before qualification.
+
+The approved correction is
+`UNSCALED_KINEMATIC_BODY_WITH_SCALED_COLLIDER_CHILD`: keep the configured
+housing path as an unscaled Xform/kinematic body; author a fixed `Geometry` Cube
+child with zero translation, the existing full extents, and CollisionAPI; keep
+the button as the dynamic body; and verify actual authored world-anchor
+coincidence before Play. Root transform, declared analytic geometry/digests,
+joint values, task truth, force/wrench truth, thresholds, limits, budgets,
+command matrix, physics policy, mechanism version, and task version do not
+change.
+
+Because the v1 receipt froze a single conflated housing path, the two-path
+receipt is explicitly `g1.press_button.geometry_authoring_receipt.v2` with a
+tested, fail-closed historical v1 migration boundary. A fake receipt remains
+`geometry_only=true`, `complete_stage=false`, and
+`benchmark_cap_eligible=false`; only real `build_stage()` may return the
+complete scene contract.
