@@ -114,8 +114,12 @@ def _full_partition_fixture() -> tuple[list[str], list[str], list[str]]:
 def test_clean_checkout_plan_has_required_isolated_steps(tmp_path: Path) -> None:
     module = _module()
     prepare = module.get("prepare_portable_git_context")
+    prepare_build = module.get("prepare_portable_wheel_build_source")
     verify_blobs = module.get("verify_t152_blob_provenance")
     assert callable(prepare), "clean-checkout missing portable Git context capability"
+    assert callable(
+        prepare_build
+    ), "clean-checkout missing isolated portable wheel-build source capability"
     assert callable(verify_blobs), "clean-checkout missing T152 blob provenance capability"
     attestation = _write_external_attestation(tmp_path)
     assert "external_verification" in inspect.signature(
@@ -257,6 +261,23 @@ def test_clean_checkout_plan_has_required_isolated_steps(tmp_path: Path) -> None
         "portable-verification@example.invalid",
     ]
     assert git("status", "--porcelain").stdout == ""
+    export_digest_before_build = module["_source_tree_sha256"](export_root)
+    build_root = tmp_path / "portable-wheel-build-source"
+    build_context = prepare_build(export_root, build_root)
+    assert build_context == {
+        "portable_wheel_build_source": "isolated_archive_copy",
+        "portable_wheel_build_reads_original_worktree": False,
+        "portable_wheel_build_source_sha256": export_digest_before_build,
+    }
+    assert build_root.is_dir()
+    assert not (build_root / ".git").exists()
+    assert module["_source_tree_sha256"](build_root) == export_digest_before_build
+    (build_root / "build").mkdir()
+    (build_root / "build/generated-by-wheel.txt").write_text(
+        "generated outside verified checkout\n", encoding="utf-8"
+    )
+    assert git("status", "--porcelain").stdout == ""
+    assert module["_source_tree_sha256"](export_root) == export_digest_before_build
     assert git("config", "--get", "core.hooksPath").stdout.strip() == "/dev/null"
     assert git("config", "--bool", "--get", "core.useReplaceRefs").stdout.strip() == "false"
     assert Path(git("rev-parse", "--absolute-git-dir").stdout.strip()) == export_root / ".git"
@@ -326,6 +347,10 @@ def test_clean_checkout_plan_has_required_isolated_steps(tmp_path: Path) -> None
     assert function_source.index("prepare_portable_git_context(export_root)") < function_source.index(
         '"--collect-only"'
     )
+    assert function_source.index(
+        "prepare_portable_wheel_build_source(export_root, build_root)"
+    ) < function_source.index('"pip", "wheel"')
+    assert 'cwd=build_root' in function_source
     assert '_run(["git", "init"], cwd=export_root' not in function_source
 
     invalid_root = tmp_path / "preexisting-git"
