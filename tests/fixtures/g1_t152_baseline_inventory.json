@@ -16,6 +16,7 @@
     "execution_start_test_blob_git": "b9864a8b8eea289fa61eb7e3e41633c35947c5ef",
     "isaac_sim_started": false,
     "live_origin_head": "46c771e0b83ab81479f0a87629e0d2709f56aac0",
+    "portable_current_source_blob_git": "2839e2ff67864c692f1bdb9ae5dc64e2dea34f91",
     "pr": {
       "base": "main",
       "draft": true,

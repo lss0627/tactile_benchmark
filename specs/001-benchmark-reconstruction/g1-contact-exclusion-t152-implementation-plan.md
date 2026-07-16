@@ -1861,9 +1861,9 @@ fail-closed modes. In the main checkout it continues to resolve real
 fails if required history is missing. Only when
 `git config --bool --get portable.archive` is true may it instead require the
 fixture's approved behavior/execution commit strings, require the two fixture
-blob IDs to be equal, and require the current archive Git blob ID for
-`tests/test_g1_pose_conditioned_tracking_cli.py` to equal both. There is no
-catch-all missing-history pass.
+blob IDs to be equal. D4 below supersedes the former requirement that the
+current archive source equal those historical blobs. There is no catch-all
+missing-history pass.
 
 `W` is RED-to-GREEN and may modify only
 `scripts/check_clean_checkout.py`, allowed bodies/helpers/assertions of
@@ -1896,7 +1896,7 @@ the original 748 GREEN inventory, current GREEN 966, future RED 125 with the
 deprecated-API scan, CLI help/import boundaries, and full collection. Every
 frozen node-ID file and both digests must remain unchanged.
 
-The active topology and parent invariants are:
+The D3 topology and parent invariants, superseded by D4 below, were:
 
 ```text
 E_impl -> D1 -> D2 -> V1 -> D3 -> W -> P_t152
@@ -1906,18 +1906,105 @@ W^ = D3
 P_t152^ = W
 ```
 
-`W` uses the new immutable directory `/tmp/g1-t152-pre-projection-w`. Any
+Under D3, `W` would have used `/tmp/g1-t152-pre-projection-w`. Any
 failure in focused RED/GREEN, full verification, counts, digests, source
 isolation, synthetic-Git provenance, blob attestation, or topology stops the
 workflow without `P_t152` or G0. This D3 section supersedes older `V`/`P`
 wording below wherever it conflicts.
 
+### D4 historical/current blob separation checkpoint
+
+`D4` is a documentation-and-fixture-only child of
+`D3=66551b9f55729b920adb5fda64f9b52a9852b8f7`. It adds exactly one baseline
+inventory metadata field:
+
+```json
+"portable_current_source_blob_git": "2839e2ff67864c692f1bdb9ae5dc64e2dea34f91"
+```
+
+It leaves the two historical fields unchanged:
+
+```json
+"behavior_source_test_blob_git": "b9864a8b8eea289fa61eb7e3e41633c35947c5ef"
+"execution_start_test_blob_git": "b9864a8b8eea289fa61eb7e3e41633c35947c5ef"
+```
+
+The historical blobs prove what was approved at the two historical commits;
+the portable-current blob proves what the current archive actually executes.
+Both proof classes are mandatory and independent.
+
+In the real main checkout, the existing inventory node must run these exact
+proofs without fallback:
+
+```bash
+git rev-parse \
+  d5fdac8dc109adfd23946bdff5352a26d7081302:tests/test_g1_pose_conditioned_tracking_cli.py
+git rev-parse \
+  46c771e0b83ab81479f0a87629e0d2709f56aac0:tests/test_g1_pose_conditioned_tracking_cli.py
+git hash-object tests/test_g1_pose_conditioned_tracking_cli.py
+```
+
+The first two results must equal their respective historical fixture fields
+and `b9864a8b8eea289fa61eb7e3e41633c35947c5ef`. The third result must be
+recomputed and equal `portable_current_source_blob_git` and
+`2839e2ff67864c692f1bdb9ae5dc64e2dea34f91`. Missing history, a wrong commit
+or path, or any blob mismatch fails closed. A non-portable checkout never
+falls back to portable semantics.
+
+In the synthetic archive, `git config --bool --get portable.archive` must
+return exactly `true`; HEAD must resolve; and `git status --porcelain` must be
+empty. The inventory node recomputes `git hash-object` for the same current
+source and compares it to the independent portable-current field. It also
+requires both approved historical commit strings and historical blob fields
+to be present unchanged, while explicitly recording that the historical
+objects were not injected and were not reverified in the archive. It must not
+call or fabricate a successful historical `commit:path` lookup.
+
+The current blob must never be written into a historical field, and a
+historical blob must never be written into the portable-current field. The
+current blob is recomputed rather than derived from another fixture field.
+The archive never receives history, bundles, alternates, replacement refs,
+attempt-02 material, outputs, or evidence and never reads the original
+worktree.
+
+`W` must add these report/manifest values:
+
+```yaml
+portable_archive_reads_original_worktree: false
+portable_git_context: synthetic_clean_repository
+portable_history_objects_injected: false
+portable_source_bytes_equal_git_archive: true
+portable_current_source_blob_git: 2839e2ff67864c692f1bdb9ae5dc64e2dea34f91
+historical_behavior_blob_git: b9864a8b8eea289fa61eb7e3e41633c35947c5ef
+historical_execution_start_blob_git: b9864a8b8eea289fa61eb7e3e41633c35947c5ef
+historical_objects_verified_in_main_checkout: true
+historical_objects_verified_in_portable_archive: false
+```
+
+The active topology is:
+
+```text
+E_impl -> D1 -> D2 -> V1 -> D3 -> D4 -> W -> P_t152
+D4^ = D3
+W^ = D4
+P_t152^ = W
+```
+
+The W pre-projection directory is the new immutable
+`/tmp/g1-t152-pre-projection-d4-w`. The failed
+`/tmp/g1-t152-pre-projection` remains untouched. D4 changes no Python test,
+node ID, parameterization, task state, production code, runtime config,
+evidence, threshold, or command matrix. This section supersedes D3 and older
+Task 11 wording wherever blob semantics, topology, parentage, or directory
+names conflict.
+
 **Files**
 
 - Design authority:
   `specs/001-benchmark-reconstruction/g1-task11-portable-verification-closure-design.md`.
-- Documentation revision `D3` modifies only that design authority and this
-  Task 11 plan. It does not implement verification.
+- Documentation revision `D4` modifies only that design authority, this Task
+  11 plan, and `tests/fixtures/g1_t152_baseline_inventory.json`. It does not
+  implement verification or modify Python tests.
 - Corrective verification-infrastructure commit `W` may modify
   `scripts/check_clean_checkout.py`, only bodies, non-parametrizing
   fixtures/helpers, and assertions of existing nodes in
@@ -1943,15 +2030,17 @@ wording below wherever it conflicts.
   checkpoint and satisfies `D2^=D1`.
 - `V1=7ef680b0a5d062c682a2d1715539e7b32f09b538` is the first verification
   implementation and satisfies `V1^=D2`; its failed projection is retained.
-- `D3` is this documentation revision and must satisfy `D3^=V1`.
+- `D3=66551b9f55729b920adb5fda64f9b52a9852b8f7` is the synthetic-Git
+  design checkpoint and satisfies `D3^=V1`.
+- `D4` is this documentation revision and must satisfy `D4^=D3`.
 - `W` is the later corrective RED-to-GREEN verification-infrastructure commit
-  and must satisfy `W^=D3`.
-- Before editing for `W`, capture clean-`D3` full/current node-ID lists. After
+  and must satisfy `W^=D4`.
+- Before editing for `W`, capture clean-`D4` full/current node-ID lists. After
   `W`, compare all four lists byte-for-byte and stop on any drift.
 - Run the complete pre-projection verification suite only at clean `W`, using
-  `/tmp/g1-t152-pre-projection-w`.
+  `/tmp/g1-t152-pre-projection-d4-w`.
 - After it passes, edit only `tasks.md` and this plan, record the literal
-  already-known `E_impl`, `D1`, `D2`, `V1`, `D3`, and `W`, and create the
+  already-known `E_impl`, `D1`, `D2`, `V1`, `D3`, `D4`, and `W`, and create the
   unique projection/status commit `P_t152` with message
   `docs(g1): complete T152 geometry integration`.
 - Do not write `P_t152`'s SHA into either tracked file. Define
@@ -1971,7 +2060,8 @@ E_impl = aa47af3946f2f9f934147b4b263affe345a9d450
 → D1 = d561f3be49b3ba059286818e325adc81b5b0b269
 → D2 = 6d234a4bf8d8420fbd58d771e9828af2f9d0efa6
 → V1 = 7ef680b0a5d062c682a2d1715539e7b32f09b538
-→ D3 = this documentation revision
+→ D3 = 66551b9f55729b920adb5fda64f9b52a9852b8f7
+→ D4 = this documentation revision
 → W = corrective verification infrastructure
 → P_t152 = final projection/status
 → FINAL_E2 = P_t152
@@ -2527,22 +2617,26 @@ worktree. No command launches Isaac Sim.
 
 **Steps**
 
-- [ ] Commit only this `D3` documentation revision with message
-  `docs(g0): define portable synthetic git context`. Verify its parent is
-  `V1`, then capture the immutable pre-W node-ID snapshot before any `W` edit:
+- [ ] Commit only the three authorized `D4` files with message
+  `docs(g0): separate historical and portable source blobs`. Verify its parent
+  is `D3`, all three independent Git proofs, JSON shape, and unchanged
+  collection/digests; then capture the immutable pre-W node-ID snapshot before
+  any `W` edit:
 
   ```bash
   E_IMPL=aa47af3946f2f9f934147b4b263affe345a9d450
   D1=d561f3be49b3ba059286818e325adc81b5b0b269
   D2=6d234a4bf8d8420fbd58d771e9828af2f9d0efa6
   V1=7ef680b0a5d062c682a2d1715539e7b32f09b538
-  D3=$(git rev-parse HEAD)
+  D3=66551b9f55729b920adb5fda64f9b52a9852b8f7
+  D4=$(git rev-parse HEAD)
+  test "$(git rev-parse "${D4}^")" = "$D3"
   test "$(git rev-parse "${D3}^")" = "$V1"
   test "$(git rev-parse "${V1}^")" = "$D2"
   test "$(git rev-parse "${D2}^")" = "$D1"
   test "$(git rev-parse "${D1}^")" = "$E_IMPL"
-  PRE_W_NODEID_DIR=/tmp/g1-t152-pre-w-nodeids
-  capture_t152_nodeids "$D3" "$PRE_W_NODEID_DIR"
+  PRE_W_NODEID_DIR=/tmp/g1-t152-pre-d4-w-nodeids
+  capture_t152_nodeids "$D4" "$PRE_W_NODEID_DIR"
   ```
 
 - [ ] Implement `W` with one focused assertion RED in an existing test node,
@@ -2552,21 +2646,21 @@ worktree. No command launches Isaac Sim.
   helper. Do not add/delete/rename test functions, change a parameterized
   expansion, copy history, read the original worktree from the archive, or run
   Isaac Sim. Commit with `fix(g0): make portable archive git-aware`.
-- [ ] Verify `W^=D3`, bind `VERIFY_IMPL=$(git rev-parse HEAD)`, require a clean
+- [ ] Verify `W^=D4`, bind `VERIFY_IMPL=$(git rev-parse HEAD)`, require a clean
   worktree, run the complete suite into the new immutable directory, and
-  compare every post-W node-ID list byte-for-byte with clean `D3`:
+  compare every post-W node-ID list byte-for-byte with clean `D4`:
 
   ```bash
   VERIFY_IMPL=$(git rev-parse HEAD)
-  test "$(git rev-parse "${VERIFY_IMPL}^")" = "$D3"
-  run_t152_verification "$VERIFY_IMPL" pre-projection-w "" \
+  test "$(git rev-parse "${VERIFY_IMPL}^")" = "$D4"
+  run_t152_verification "$VERIFY_IMPL" pre-projection-d4-w "" \
     "$PRE_W_NODEID_DIR"
-  PREPROJECTION_VERIFY_DIR=/tmp/g1-t152-pre-projection-w
+  PREPROJECTION_VERIFY_DIR=/tmp/g1-t152-pre-projection-d4-w
   ```
 - [ ] After the suite passes, change only T152 to `[x]` in `tasks.md`; leave T151
   and T070 `[ ]` and attempt-04 prohibited.
-- [ ] Record the literal, already-known `E_impl`, `D1`, `D2`, `V1`, `D3`, and
-  `W` SHAs in this plan without attempting to record the not-yet-created
+- [ ] Record the literal, already-known `E_impl`, `D1`, `D2`, `V1`, `D3`, `D4`,
+  and `W` SHAs in this plan without attempting to record the not-yet-created
   projection SHA.
 - [ ] Run `git diff --check`, stage only the two Markdown files, verify their
   diff, and create the unique projection commit:
@@ -2623,6 +2717,11 @@ expected = {
     "portable_git_context": "synthetic_clean_repository",
     "portable_history_objects_injected": False,
     "portable_source_bytes_equal_git_archive": True,
+    "portable_current_source_blob_git": "2839e2ff67864c692f1bdb9ae5dc64e2dea34f91",
+    "historical_behavior_blob_git": "b9864a8b8eea289fa61eb7e3e41633c35947c5ef",
+    "historical_execution_start_blob_git": "b9864a8b8eea289fa61eb7e3e41633c35947c5ef",
+    "historical_objects_verified_in_main_checkout": True,
+    "historical_objects_verified_in_portable_archive": False,
     "external_verification_attestation_consumed": True,
     "external_verification_commit": sys.argv[4],
     "external_verification_junit": {
@@ -2676,8 +2775,8 @@ copy/modification, archive selection other than 965, portable archive tests
 reading the original worktree, a partition other than `965+1+125=1091`,
 malformed/checksum-invalid/wrong-commit/wrong-node/wrong-JUnit/wrong-blocker/
 empty-message/nonzero-factory/unapproved-attempt external attestation,
-`D1^!=E_impl`, `D2^!=D1`, `V1^!=D2`, `D3^!=V1`, `W^!=D3`,
-`P_t152^!=W`, tracked change after `P_t152`, G0
+`D1^!=E_impl`, `D2^!=D1`, `V1^!=D2`, `D3^!=V1`, `D4^!=D3`,
+`W^!=D4`, `P_t152^!=W`, tracked change after `P_t152`, G0
 checksum failure, an old G0 invocation without `--external-verification`, or
 pressure to run Task 12 or advance T151/T070/attempt-04.
 
@@ -2687,7 +2786,7 @@ pressure to run Task 12 or advance T151/T070/attempt-04.
 
 This is the sole projection/status commit `P_t152` and final `E2`. Its parent
 is `W`; tracked files record only the already-existing `E_impl`, `D1`, `D2`,
-`V1`, `D3`, and `W` SHAs and never record `P_t152`'s SHA. Task 11 depends on
+`V1`, `D3`, `D4`, and `W` SHAs and never record `P_t152`'s SHA. Task 11 depends on
 Tasks 1–10 plus all approved design checkpoints and verification
 infrastructure. Isaac Sim,
 fresh C2a, Task 12 execution, attempt-04, and PressButton episodes are not
@@ -2761,7 +2860,8 @@ the driver/physics policy differs, or an approval does not bind exactly one run.
 **Commit and dependency**
 
 No commit. Task 12 depends on final `E2=P_t152` from the
-`E_impl -> D1 -> D2 -> V1 -> D3 -> W -> P_t152` Task 11 chain and a new user authorization.
+`E_impl -> D1 -> D2 -> V1 -> D3 -> D4 -> W -> P_t152` Task 11 chain and the
+standing user authorization.
 Isaac Sim is explicitly forbidden during plan implementation and T152 GREEN;
 it is permitted only by that later one-run authorization.
 
@@ -2792,8 +2892,9 @@ GREEN/RED partition stated below.
 | 11 design D2 | `docs(g1): close portable verification attestation gaps` | documentation consistency checks only | `D2^=D1`, fixed 12-node V1 inventory, P_t152-bound external attestation and G0 consumption fixed, no implementation |
 | 11 verification V1 | `fix(g0): verify portable external evidence` | exact existing-node mapping, D2/V1 list comparison, external manifest, P/V1-bound attestation, dual digest, portable 965, full 1091 classification, G0 schema | `V1^=D2`; retained projection collected 965 and exposed four empty-Git-context failures |
 | 11 design D3 | `docs(g0): define portable synthetic git context` | documentation consistency checks only | `D3^=V1`, synthetic clean Git and main-history/portable-blob modes fixed, no implementation |
-| 11 correction W | `fix(g0): make portable archive git-aware` | focused existing-node RED/GREEN, D3/W list comparison, helper reuse, synthetic provenance, exact blob attestation, full verification in `/tmp/g1-t152-pre-projection-w` | `W^=D3`; main 966 GREEN, portable 965 GREEN, external 1 GREEN, future-RED 125 |
-| 11 projection | `docs(g1): complete T152 geometry integration` | complete suite at `W`, projection commit `P_t152`, identical suite, P_t152-bound attestation, and G0 at `P_t152` | `P_t152^=W`, `FINAL_E2=P_t152`, tracked files record `E_impl`/`D1`/`D2`/`V1`/`D3`/`W` only, T152 `[x]`, T151/T070 `[ ]`, attempt-04 prohibited, no tracked change after `P_t152` |
+| 11 design D4 | `docs(g0): separate historical and portable source blobs` | JSON and documentation consistency, three independent Git blob proofs, unchanged collection/digests | `D4^=D3`; historical blobs remain `b9864a8...`, portable current source is `2839e2f...`, no implementation/test-node change |
+| 11 correction W | `fix(g0): make portable archive git-aware` | focused existing-node RED/GREEN, D4/W list comparison, helper reuse, synthetic provenance, independent historical/current blob attestation, full verification in `/tmp/g1-t152-pre-projection-d4-w` | `W^=D4`; main 966 GREEN, portable 965 GREEN, external 1 GREEN, future-RED 125 |
+| 11 projection | `docs(g1): complete T152 geometry integration` | complete suite at `W`, projection commit `P_t152`, identical suite, P_t152-bound attestation, and G0 at `P_t152` | `P_t152^=W`, `FINAL_E2=P_t152`, tracked files record `E_impl`/`D1`/`D2`/`V1`/`D3`/`D4`/`W` only, T152 `[x]`, T151/T070 `[ ]`, attempt-04 prohibited, no tracked change after `P_t152` |
 
 Tasks 2, 3, 7A, and 8A are deliberately RED-only commits. No production change may
 be included with them. Tasks 4–10 may not modify approved RED assertions except
@@ -2986,7 +3087,8 @@ if any condition occurs:
   the separately gated command.
 - [x] Freshness ordering is schema/config migration → T152 GREEN at `E_impl` →
   portable-closure design `D1` → documentation revision `D2` → verification
-  implementation `V1` → corrective design `D3` → clean-`D3` pre-W node
+  implementation `V1` → synthetic-Git design `D3` → blob-separation design
+  `D4` → clean-`D4` pre-W node
   snapshot → corrective verification infrastructure `W` → clean-`W`
   pre-projection verification → projection/final `E2` commit `P_t152` → final
   verification, P_t152-bound external attestation, and G0 evidence at `P_t152` →
