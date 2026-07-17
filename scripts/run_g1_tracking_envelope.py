@@ -663,10 +663,60 @@ def build_g1_pose_conditioned_runtime_preplay(
     }
 
 
-def _validate_pose_conditioned_sample(
-    sample: Mapping[str, Any], *, phase: str
-) -> None:
+def _requested_vector_components(
+    value: Any, *, phase: str, source: str
+) -> tuple[float, float, float]:
     prefix = "readiness" if phase == "readiness" else "measurement"
+    if (
+        not isinstance(value, Sequence)
+        or isinstance(value, (str, bytes, Mapping))
+        or len(value) != 3
+    ):
+        raise G1ValidationError(
+            "G1_C1_REQUESTED_VECTOR_INVALID",
+            f"{prefix} {source} requested_vector_m must contain exactly three components",
+        )
+    if any(type(component) is not float for component in value):
+        raise G1ValidationError(
+            "G1_C1_REQUESTED_VECTOR_INVALID",
+            f"{prefix} {source} requested_vector_m must contain float64 components",
+        )
+    components = tuple(value)
+    if not all(math.isfinite(component) for component in components):
+        raise G1ValidationError(
+            "G1_C1_REQUESTED_VECTOR_INVALID",
+            f"{prefix} {source} requested_vector_m must contain finite numeric components",
+        )
+    return components[0], components[1], components[2]
+
+
+def _validate_pose_conditioned_sample(
+    sample: Mapping[str, Any],
+    *,
+    phase: str,
+    requested_vector_m: Sequence[float],
+) -> tuple[float, float, float]:
+    prefix = "readiness" if phase == "readiness" else "measurement"
+    expected_requested_vector = _requested_vector_components(
+        requested_vector_m,
+        phase=phase,
+        source="caller",
+    )
+    if "requested_vector_m" not in sample:
+        raise G1ValidationError(
+            "G1_C1_REQUESTED_VECTOR_INVALID",
+            f"{prefix} sample is missing requested_vector_m",
+        )
+    sample_requested_vector = _requested_vector_components(
+        sample["requested_vector_m"],
+        phase=phase,
+        source="sample provenance",
+    )
+    if sample_requested_vector != expected_requested_vector:
+        raise G1ValidationError(
+            "G1_C1_REQUESTED_VECTOR_INVALID",
+            f"{prefix} sample requested_vector_m does not exactly match the caller request",
+        )
     checks = (
         (
             int(sample.get("post_abort_actuation_count", 0)) != 0,
@@ -715,6 +765,7 @@ def _validate_pose_conditioned_sample(
     for failed, code, message in checks:
         if failed:
             raise G1ValidationError(code, message)
+    return sample_requested_vector
 
 
 def _sample_with_trial_provenance(
@@ -840,17 +891,27 @@ def execute_g1_pose_conditioned_tracking_trial(
 
     readiness_samples: list[dict[str, Any]] = []
     for action_index in range(READINESS_ACTIONS):
+        requested_vector = [0.0, 0.0, 0.0]
+        expected_requested_vector = _requested_vector_components(
+            requested_vector,
+            phase="readiness",
+            source="caller",
+        )
         raw = scene.step(
             phase="readiness",
             action_index=action_index,
-            requested_vector_m=[0.0, 0.0, 0.0],
+            requested_vector_m=requested_vector,
             physics_substeps=PHYSICS_SUBSTEPS_PER_ACTION,
             motif_item=None,
         )
         sample = _sample_with_trial_provenance(
             raw, spec=spec, phase="readiness", motif_item=None
         )
-        _validate_pose_conditioned_sample(sample, phase="readiness")
+        _validate_pose_conditioned_sample(
+            sample,
+            phase="readiness",
+            requested_vector_m=expected_requested_vector,
+        )
         readiness_samples.append(sample)
 
     motif = spec.get("motif")
@@ -868,6 +929,7 @@ def execute_g1_pose_conditioned_tracking_trial(
         )
 
     measurement_samples: list[dict[str, Any]] = []
+    validated_measurement_vectors: list[tuple[float, float, float]] = []
     failure_code: str | None = None
     failure_message: str | None = None
     cap_eligible_count = 0
@@ -887,6 +949,11 @@ def execute_g1_pose_conditioned_tracking_trial(
             if materialization is not None
             else motif_item["requested_vector_m"]
         )
+        expected_requested_vector = _requested_vector_components(
+            requested_vector,
+            phase="measurement",
+            source="caller",
+        )
         raw = scene.step(
             phase="measurement",
             action_index=action_index,
@@ -897,8 +964,14 @@ def execute_g1_pose_conditioned_tracking_trial(
         sample = _sample_with_trial_provenance(
             raw, spec=spec, phase="measurement", motif_item=motif_item
         )
-        _validate_pose_conditioned_sample(sample, phase="measurement")
-        nonzero = any(float(value) != 0.0 for value in requested_vector)
+        validated_requested_vector = _validate_pose_conditioned_sample(
+            sample,
+            phase="measurement",
+            requested_vector_m=expected_requested_vector,
+        )
+        measurement_samples.append(sample)
+        validated_measurement_vectors.append(validated_requested_vector)
+        nonzero = any(value != 0.0 for value in validated_requested_vector)
         if nonzero and (
             sample.get("controller_mode") != "lula_fd_translation"
             or sample.get("controller_provider") != "lula"
@@ -910,18 +983,18 @@ def execute_g1_pose_conditioned_tracking_trial(
             failure_message = (
                 "compatibility/Jacobian controller output cannot enter benchmark-cap evidence"
             )
-            measurement_samples.append(sample)
             break
         if nonzero:
             cap_eligible_count += 1
-        measurement_samples.append(sample)
 
     complete = failure_code is None and len(measurement_samples) == ACTIONS_PER_TRIAL
     window_values: list[list[float]] = [[] for _ in range(WINDOW_COUNT)]
     retained_gains: list[float] = []
     zero_displacements: list[float] = []
     command_m = float(spec["command_m"])
-    for sample in measurement_samples:
+    for sample, validated_requested_vector in zip(
+        measurement_samples, validated_measurement_vectors
+    ):
         displacement = float(sample.get("observed_displacement_m", 0.0))
         window = int(sample.get("window_index", sample["action_index"] // WINDOW_SIZE))
         if command_m == 0.0:
@@ -931,7 +1004,7 @@ def execute_g1_pose_conditioned_tracking_trial(
             gain = sample.get("observed_requested_gain")
             if gain is None:
                 requested_norm = math.sqrt(
-                    sum(float(value) ** 2 for value in sample["requested_vector_m"])
+                    sum(value**2 for value in validated_requested_vector)
                 )
                 gain = displacement / requested_norm if requested_norm > 0.0 else 0.0
             retained_gains.append(float(gain))
@@ -2342,6 +2415,7 @@ class _PoseConditionedIsaacTrackingScene:
             "instance_identity": self.provenance["instance_identity"],
             "phase": phase,
             "action_index": int(action_index),
+            "requested_vector_m": requested.tolist(),
             "window_index": int(action_index) // WINDOW_SIZE
             if phase == "measurement"
             else None,
