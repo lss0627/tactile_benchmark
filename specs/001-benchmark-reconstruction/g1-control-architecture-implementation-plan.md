@@ -405,3 +405,32 @@ existing C1 lifecycle node. Pre-projection verification at
 future failures, the one external node, and the synthetic clean-checkout
 boundary. This supports a documentation-only projection and fresh G0; it does
 not authorize another C1 runtime.
+
+## Attempt-05 requested-vector contract repair projection
+
+The immutable attempt-05 failure exposed a software field-contract defect, not
+a control, safety, threshold, matrix, physics, driver, Contact, force-truth, or
+budget failure. The approved review is
+[G1 C1 Attempt-05 Requested-Vector Root-Cause Review](g1-c1-attempt-05-requested-vector-root-cause-review.md).
+
+RED `1f7ae29fb142bb6cb19c4a3215ecf1529418d236` preserves the existing node
+inventory and fails only because the real C1 scene sample omits the request.
+GREEN `9f90136207811f682cbec77d10a0cbc33e70812c` returns that exact materialized
+request, validates finite three-component caller/sample equality without a
+tolerance, and carries the validated value into gain aggregation. Missing or
+invalid provenance now yields `G1_C1_REQUESTED_VECTOR_INVALID` before evidence
+write and the unique shutdown; no native `KeyError` can become the blocker.
+
+The pre-projection closure preserves full/current/portable/external/future
+partition semantics `1091/966/965/1/125`, both approved current-GREEN digests,
+the exact `0.0005 m` hard limit, false force/wrench/raw-impulse-as-force truth,
+CPU physics, MBP, and disabled GPU dynamics/native GPU Contact. Original GREEN
+is `748/748`, future RED is `125/125` with `78/29/10/8` ownership, and the
+attempt-05 checksum file remains unchanged.
+
+The next commit is a documentation-only clean projection whose SHA is not
+prewritten here. It requires projection-bound Task 11, external attestation,
+formal G0 review, and checksum closure. T151/T152 stay checked, T070 stays
+unchecked, G1 stays `BLOCKED`, and G2 stays `NOT_STARTED`. C1 attempt-06, C2b,
+C3, episodes, and every Isaac runtime remain outside this projection and need
+separate authorization.

@@ -186,6 +186,62 @@ should preserve the current node inventory and use test-first scope:
    authorization, a new clean SHA-bound output path, and no reuse or overwrite
    of attempt-05.
 
+## Authorized implementation and pre-projection result
+
+The separately authorized repair starts from this review at
+`aaa614ad2aee4d90cdeef66bf50679bc782d7a70`. RED commit
+`1f7ae29fb142bb6cb19c4a3215ecf1529418d236` extends only the existing
+`test_c1_runtime_failure_writes_evidence_before_shutdown` node plus an
+import-safe helper. The complete tracking-envelope file reports exactly one
+expected assertion failure and 87 passing controls: the real scene sample has
+no top-level `requested_vector_m`. No test function, node ID, or parameterized
+expansion is added, removed, or renamed.
+
+GREEN commit `9f90136207811f682cbec77d10a0cbc33e70812c` changes only
+`scripts/run_g1_tracking_envelope.py`. The real scene now returns the same
+materialized three-component request used by safety and control. The
+provenance wrapper remains a shallow copy and neither derives nor rewrites the
+field. The validator rejects a missing field, a shape other than three,
+non-finite values, or any exact caller/sample mismatch with the stable
+non-empty blocker `G1_C1_REQUESTED_VECTOR_INVALID`. The reducer consumes the
+validated tuple returned by that validator, so the gain fallback has no raw
+missing-key path.
+
+The existing lifecycle node proves that invalid requested-vector provenance is
+written as structured blocked evidence before the one shutdown, with a null
+selected cap and zero post-abort actuation. It also exercises exact zero and
+non-zero requests, wrapper identity preservation, rejected malformed inputs,
+and a valid missing-gain fallback without `KeyError`.
+
+Pre-projection verification is retained under
+`/tmp/g1-c1-requested-vector-pre-projection` and its tracked-only synthetic
+checkout under `/tmp/g1-c1-requested-vector-portable-pre-projection`. Results
+are:
+
+- tracking plus FR3 safety: `109/109`;
+- original GREEN: `748/748`;
+- intentional future RED: `125/125`, classified `78/29/10/8`;
+- exact hard limit: `4/4`;
+- Contact analytic geometry: `38/38`;
+- full/current/portable: `1091/966/965`;
+- clean-checkout plus migration: `16/16`;
+- deprecated API scan: 412 files, zero errors and zero warnings.
+
+Current-GREEN collection-order and sorted digests remain respectively
+`1c8e6a8e9b09da6b06435ea6c75191c5fb4b3c3fa7e1b97161951e65249d45ad`
+and `00a6e84c5d2e1f623f2211db8272ca95859e8050417f7c25cbfeef9afd84efc7`.
+The portable repository has marker true, one synthetic commit, empty status,
+zero original-worktree reads, no injected history, and equal pre/post source
+digest `3987ba4d3bd7217432ca52e778762119303079c362f67afb8a9c41c42a8d49d8`.
+
+Attempt-05 remains immutable: all six listed artifact checksums pass and its
+checksum-file SHA-256 remains
+`b6a860cf515acdec5592f0949d4a4225b6fbfe907bd861ffa352c9b9a7958e64`.
+No Isaac process, C1 attempt-06, C2b, C3, T070 runtime, or episode was run in
+this repair. This documentation update is the clean projection; its own SHA is
+intentionally supplied only by Git after commit. Projection-bound Task 11 and
+formal G0 must be refreshed before the branch is published.
+
 ## Gate boundary
 
 T151 and T152 remain checked based on their existing prerequisite/static
