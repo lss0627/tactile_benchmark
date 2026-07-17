@@ -212,7 +212,26 @@ def compute_damped_least_squares_delta(
     action_name: str = "unnamed",
     commanded_7d_action: Sequence[float] | None = None,
 ) -> DifferentialIKResult:
-    cfg = config or DifferentialIKConfig()
+    cfg = DifferentialIKConfig() if config is None else config
+    supplied_action: np.ndarray | None = None
+    if commanded_7d_action is not None:
+        try:
+            supplied_action = np.asarray(
+                commanded_7d_action,
+                dtype=np.float64,
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "commanded_7d_action must be float64-compatible"
+            ) from error
+        if supplied_action.shape != (7,):
+            raise ValueError(
+                "commanded_7d_action must have exact shape (7,)"
+            )
+        if not np.all(np.isfinite(supplied_action)):
+            raise ValueError(
+                "commanded_7d_action must contain only finite values"
+            )
     j = np.asarray(jacobian, dtype=float)
     dx = np.asarray(cartesian_delta, dtype=float).reshape(-1)
     if dx.size < 3:
@@ -250,9 +269,12 @@ def compute_damped_least_squares_delta(
         warnings.append("raw_dq exceeded max_abs_dq and was clipped")
     max_abs = float(np.max(np.abs(clipped))) if clipped.size else 0.0
     safety_pass = bool(not errors and not nan_detected and max_abs <= cfg.max_abs_dq + 1e-12)
-    action = tuple(float(x) for x in (commanded_7d_action or (*dx.tolist(), 0.0, 0.0, 0.0, 0.0))[:7])
-    if len(action) != 7:
-        action = tuple([*action, *([0.0] * (7 - len(action)))][:7])
+    action_source = (
+        np.asarray((*dx.tolist(), 0.0, 0.0, 0.0, 0.0), dtype=np.float64)
+        if supplied_action is None
+        else supplied_action
+    )
+    action = tuple(float(value) for value in action_source)
     return DifferentialIKResult(
         action_name=action_name,
         commanded_7d_action=action,
@@ -448,7 +470,11 @@ class FR3DifferentialIKRuntime:
             joint_positions=tuple(float(value) for value in observed_q),
             joint_velocities=tuple(float(value) for value in observed_qd),
         )
-        cfg = config or DifferentialIKConfig(max_abs_dq=0.02)
+        cfg = (
+            DifferentialIKConfig(max_abs_dq=0.02)
+            if config is None
+            else config
+        )
         result, _solver_q, jacobian = self.compute_action_delta(
             action_name=action_name,
             action=action,
