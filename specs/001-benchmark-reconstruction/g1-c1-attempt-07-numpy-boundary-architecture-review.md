@@ -754,3 +754,57 @@ The smallest line repair is explicit `is None`; the complete approved
 architecture is explicit optional semantics plus a real-type composition test.
 This removes the software defect without changing the physical experiment,
 safety envelope, or benchmark truth boundary.
+
+## 15. Implementation and projection status
+
+The approved RED→GREEN implementation is complete at the clean pre-projection
+HEAD. Its reviewed commit chain is:
+
+| Role | Commit | Scope |
+|---|---|---|
+| RED | `1da5101fba84a5c5b264f5c6a51e8f7aab9ee97c` | Existing frozen DLS, real-runtime composition, shared-invoke, send/latch, and lifecycle nodes only. |
+| GREEN 1 | `f6231fa23e9bf4530999983e249358a17ba1b14c` | Explicit optional config/action selection, exact float64 shape/finiteness validation, and removal of pad/truncate behavior. |
+| GREEN 2 | `841a9d8888ee40739ceafe7936dccf36aae37d89` | Boundary-owned shared-kernel attestation, successful-record provenance/JSON validation, and direct retention of the authoritative action name. |
+
+The original RED was exactly four failures with 206 controls. After GREEN, the
+four original RED nodes and the lifecycle control pass `5/5`, the complete
+three-file focused suite passes `210/210`, and the affected focused suite
+passes `231/231`.
+
+The complete pre-projection qualification preserves:
+
+```text
+original/current/portable/external/future = 748/966/965/1/125
+future classifications = 78/29/10/8
+full collection = 1091
+T152 = 113/113
+exact hard limit = 4/4
+Contact analytic = 38/38
+```
+
+The approved current-GREEN digests remain:
+
+```text
+collection-order:
+1c8e6a8e9b09da6b06435ea6c75191c5fb4b3c3fa7e1b97161951e65249d45ad
+
+sorted:
+00a6e84c5d2e1f623f2211db8272ca95859e8050417f7c25cbfeef9afd84efc7
+```
+
+Attempt-05, attempt-06, and attempt-07 remain immutable and checksum-valid.
+Attempt-08 remains absent and prohibited. The projection commit containing
+this status update must be identified from Git after commit creation; no
+unknown projection SHA is written into this document.
+
+Formal G0 must now be regenerated at that projection HEAD. A fresh
+`PASS_BENCHMARK` there proves repository integrity only. It does not prove C1,
+select a tested command cap, authorize attempt-08, or change:
+
+```text
+T151=[x]
+T152=[x]
+T070=[ ]
+G1=BLOCKED
+G2=NOT_STARTED
+```
