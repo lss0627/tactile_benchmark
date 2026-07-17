@@ -269,6 +269,9 @@ def _trial_spec(class_id: str, command_m: float, scene_index: int = 0) -> dict[s
     candidate = _selected_candidate()
     route = next(item for item in _route_fixture() if item["class_id"] == class_id)
     return {
+        "trial_id": (
+            f"g1-c1-1701-{class_id}-{command_m:.8f}-{scene_index}"
+        ),
         "class_id": class_id,
         "class_version": "v1",
         "command_m": command_m,
@@ -974,6 +977,7 @@ class _FakePoseConditionedScene:
         lula = self.controller_mode == "lula"
         sample = {
             **self.identity,
+            "trial_id": self.spec["trial_id"],
             "phase": phase,
             "action_index": action_index,
             "window_index": action_index // 64 if is_measurement else None,
@@ -983,6 +987,7 @@ class _FakePoseConditionedScene:
             "joint_positions_rad": list(self.spec["starting_joint_values"]),
             "joint_velocities_rad_s": [0.0] * len(self.spec["starting_joint_values"]),
             "tcp_position_world_m": [0.55, 0.0, 0.55],
+            "observed_displacement_m": 0.0,
             "contact": False,
             "raw_contact_count": 0,
             "collision": False,
@@ -1064,18 +1069,24 @@ def _execute_trial(
 def test_t152_three_fresh_scenes_share_approved_pose_but_all_identities_differ(
     runner: Any,
 ) -> None:
-    run = _capability(runner, "run_g1_pose_conditioned_tracking_plan")
+    execute = _capability(runner, "execute_g1_pose_conditioned_tracking_trial")
     specs = [_trial_spec(G1_TRAJECTORY_CLASS_IDS[0], 0.00025, index) for index in range(3)]
     factory = _FakeSceneFactory()
 
-    result = run(
-        plan={"trials": specs},
-        selected_candidate=_selected_candidate(),
-        selected_pose_sha256=EXPECTED_POSE_SHA256,
-        scene_factory=factory,
-    )
+    trials = []
+    for spec in specs:
+        scene = factory(spec)
+        trials.append(
+            execute(
+                spec=spec,
+                scene=scene,
+                selected_candidate=_selected_candidate(),
+                selected_pose_sha256=EXPECTED_POSE_SHA256,
+            )
+        )
+        scene.close(exit_code=0)
 
-    assert len(result["trials"]) == 3
+    assert len(trials) == 3
     assert len(factory.scenes) == 3
     assert all(
         scene.author_calls[0]["joint_names"] == list(JOINT_NAMES)
@@ -1359,6 +1370,7 @@ def test_t152_trial_plan_sample_report_manifest_cross_record_all_provenance(
             {
                 "scene_id": trial["scene_id"],
                 "fresh_scene_token": trial["fresh_scene_token"],
+                "trial_id": trial["trial_id"],
                 "class_id": trial["class_id"],
                 "class_version": trial["class_version"],
                 "command_m": trial["command_m"],

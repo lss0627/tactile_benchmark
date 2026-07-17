@@ -20,7 +20,7 @@ INVENTORY_RELATIVE = Path("tests/fixtures/g1_t152_baseline_inventory.json")
 BEHAVIOR_COMMIT = "d5fdac8dc109adfd23946bdff5352a26d7081302"
 EXECUTION_COMMIT = "46c771e0b83ab81479f0a87629e0d2709f56aac0"
 HISTORICAL_BLOB = "b9864a8b8eea289fa61eb7e3e41633c35947c5ef"
-PORTABLE_CURRENT_BLOB = "2839e2ff67864c692f1bdb9ae5dc64e2dea34f91"
+PORTABLE_CURRENT_BLOB = "1dcf6af963793b28daad3e157fd87753f2fce55a"
 
 EXPECTED_RETIRED = {
     "tests/test_g1_pose_conditioned_tracking_cli.py::test_t152_route_builder_derives_all_six_records_from_pose_geometry_and_current_inputs",
