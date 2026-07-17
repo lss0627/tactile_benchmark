@@ -351,3 +351,61 @@ That repair requires its own RED, GREEN, regression, clean projection, fresh
 G0, evidence review, and explicit authorization before any later C1 runtime.
 Attempt-06 must never be rerun or overwritten. Until a new run produces an
 eligible tested cap, C2b remains blocked.
+
+## Approved repair and pre-projection closure
+
+The separately approved RED-to-GREEN round completed without starting Isaac
+Sim or creating attempt-07. The auditable implementation chain is:
+
+- RED `f84fd49be987b882a762fd6224819fb5256e0d2e`
+  (`test(g1): require canonical C1 trial and stop-tail provenance`);
+- deterministic authoritative trial identity
+  `42615003aaff7b76e09c1777243a109dc01198e3`;
+- canonical rejected-candidate stop-tail
+  `6c89c057808f6fc23cc38cb4d93e4dcf6b7513e7`;
+- retained authoritative failure summary
+  `b61d79d94c90183bce7de34ce412ccd3359e4f90`;
+- T152 fixture propagation and portable-current source refresh
+  `4327d469db87a1394c69c396834d689bc9f3dfd0`.
+
+The RED commit failed only with the five expected behavioral assertions. The
+GREEN implementation gives all 90 authoritative trials deterministic,
+non-empty, unique strict-string IDs; validates the whole plan before factory
+or actuation; preserves the exact ID through pose binding, real scene, shared
+kernel action provenance, samples, trials, report, and manifest; emits the
+canonical `[later scenes, later classes, higher commands]` stop-tail without
+sorting or set comparison; and takes action, window, requested, observed, and
+detail fields directly from the retained failure sample.
+
+The existing T152 fake-scene fixtures were brought under the same required
+identity and observation contract rather than adding a production fallback.
+No node was added, removed, renamed, or re-parameterized. Because that reviewed
+test source changed, its portable-current Git blob was recomputed from source
+bytes as `1dcf6af963793b28daad3e157fd87753f2fce55a`. The historical behavior and
+execution-start blobs remain independently verified as
+`b9864a8b8eea289fa61eb7e3e41633c35947c5ef`; they were not overwritten or
+injected into the portable archive.
+
+Pre-projection verification at `4327d469db87a1394c69c396834d689bc9f3dfd0`
+recorded:
+
+- focused tracking/safety `109/109`, T152 `113/113`, exact hard limit `4/4`,
+  and Contact analytic `38/38`;
+- original GREEN `748/748`, main current GREEN `966/966`, portable GREEN
+  `965/965`, external historical attestation `1/1`, and intentional future RED
+  `125/125` with exact `78/29/10/8` classification;
+- full collection `1091`, collection-order digest
+  `1c8e6a8e9b09da6b06435ea6c75191c5fb4b3c3fa7e1b97161951e65249d45ad`,
+  and sorted digest
+  `00a6e84c5d2e1f623f2211db8272ca95859e8050417f7c25cbfeef9afd84efc7`;
+- synthetic clean portable repository, source bytes unchanged before/after,
+  no injected historical objects, and zero original-worktree reads;
+- deprecated import scan `0` errors and `0` warnings;
+- unchanged attempt-05 checksum-file SHA-256
+  `b6a860cf515acdec5592f0949d4a4225b6fbfe907bd861ffa352c9b9a7958e64`;
+- unchanged attempt-06 checksum-file SHA-256
+  `a0e593f1650accf7790579127f4e9097bbf35f62137c958903c5861b2b388998`.
+
+This closure repairs the software provenance defects only. It does not create
+an eligible tested cap. T151 and T152 remain complete, T070 remains open, G1
+remains `BLOCKED`, G2 remains `NOT_STARTED`, and C2b remains unauthorized.
