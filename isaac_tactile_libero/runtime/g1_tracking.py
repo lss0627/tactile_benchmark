@@ -1406,14 +1406,33 @@ def aggregate_g1_multiclass_tracking_envelope(
             if retained_rejection is not None:
                 failed_class = str(retained_rejection.get("class_id", ""))
                 failed_index = required.index(failed_class) if failed_class in required else -1
+                failed_scene = retained_rejection.get("scene_index")
+                expected_remaining_scenes = (
+                    list(range(failed_scene + 1, 3))
+                    if type(failed_scene) is int and 0 <= failed_scene < 3
+                    else None
+                )
+                skipped_classes = retained_rejection.get(
+                    "skipped_remaining_classes"
+                )
+                skipped_scenes = retained_rejection.get(
+                    "skipped_remaining_scenes"
+                )
+                skipped_commands = retained_rejection.get(
+                    "skipped_higher_commands"
+                )
                 proven_stop_tail = (
-                    isinstance(retained_rejection.get("skipped_remaining_classes"), list)
-                    and retained_rejection.get("skipped_remaining_classes")
-                    == list(required[failed_index + 1 :])
-                    and isinstance(retained_rejection.get("skipped_remaining_scenes"), list)
-                    and bool(retained_rejection.get("skipped_remaining_scenes"))
-                    and retained_rejection.get("skipped_higher_commands")
-                    == [value for value in tested if value > command]
+                    failed_index >= 0
+                    and expected_remaining_scenes is not None
+                    and isinstance(skipped_classes, list)
+                    and skipped_classes == list(required[failed_index + 1 :])
+                    and all(type(value) is str for value in skipped_classes)
+                    and isinstance(skipped_scenes, list)
+                    and skipped_scenes == expected_remaining_scenes
+                    and all(type(value) is int for value in skipped_scenes)
+                    and isinstance(skipped_commands, list)
+                    and skipped_commands == [value for value in tested if value > command]
+                    and all(type(value) is float for value in skipped_commands)
                 )
             if any(row.get("candidate_eligible") is True for row in command_rows):
                 systemic = _multiclass_systemic(
@@ -1493,6 +1512,19 @@ def run_g1_multiclass_tracking_plan(
     skipped_scenes: list[int] = []
     trials = list(plan.get("trials", ()))
     validate_g1_multiclass_plan_trial_identities(plan)
+    class_ids = tuple(str(value) for value in plan.get("class_ids", ()))
+    commands = tuple(float(value) for value in plan.get("commands_m", ()))
+    scenes_per_class_command = plan.get("scenes_per_class_command")
+    if (
+        class_ids != G1_TRAJECTORY_CLASS_IDS
+        or commands != G1_TRACKING_COMMANDS_M
+        or type(scenes_per_class_command) is not int
+        or scenes_per_class_command != 3
+    ):
+        raise G1ValidationError(
+            "G1_C1_CLASS_PROVENANCE_MISMATCH",
+            "multiclass plan topology differs from the canonical stop-tail contract",
+        )
     for index, spec in enumerate(trials):
         command = float(spec["command_m"])
         if stopped_command is not None and command >= stopped_command:
@@ -1501,16 +1533,21 @@ def run_g1_multiclass_tracking_plan(
         retained.append({**dict(spec), **result})
         if result.get("failure_code"):
             stopped_command = command
-            remaining_same_command = [
-                future
-                for future in trials[index + 1 :]
-                if float(future["command_m"]) == command
-            ]
-            skipped_classes = list(
-                dict.fromkeys(str(future["class_id"]) for future in remaining_same_command)
-            )
+            failed_class = str(spec.get("class_id", ""))
+            failed_scene = spec.get("scene_index")
+            if (
+                failed_class not in class_ids
+                or type(failed_scene) is not int
+                or not 0 <= failed_scene < scenes_per_class_command
+            ):
+                raise G1ValidationError(
+                    "G1_C1_CLASS_PROVENANCE_MISMATCH",
+                    "failed trial is not bound to a canonical class/scene cell",
+                )
+            failed_class_index = class_ids.index(failed_class)
+            skipped_classes = list(class_ids[failed_class_index + 1 :])
             skipped_scenes = list(
-                dict.fromkeys(int(future["scene_index"]) for future in remaining_same_command)
+                range(failed_scene + 1, scenes_per_class_command)
             )
             break
     skipped_higher = (
@@ -1519,6 +1556,15 @@ def run_g1_multiclass_tracking_plan(
         else []
     )
     zero_systemic = stopped_command == 0.0
+    if stopped_command is not None and retained:
+        retained[-1].update(
+            {
+                "retained_rejection": True,
+                "skipped_remaining_classes": list(skipped_classes),
+                "skipped_remaining_scenes": list(skipped_scenes),
+                "skipped_higher_commands": list(skipped_higher),
+            }
+        )
     return {
         "trials": retained,
         "stopped_after_command_m": stopped_command,
