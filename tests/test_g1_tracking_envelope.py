@@ -944,7 +944,13 @@ def _lifecycle_kwargs(tmp_path: Path, **changes: Any) -> dict[str, Any]:
     return payload
 
 
-def _real_pose_scene_sample(runner, requested_vector_m: list[float]) -> dict[str, Any]:
+def _real_pose_scene_sample(
+    runner,
+    requested_vector_m: list[float],
+    *,
+    trial_spec: dict[str, Any] | None = None,
+    phase: str = "readiness",
+) -> dict[str, Any]:
     """Exercise the real scene step method through import-safe runtime seams."""
 
     joint_state = SimpleNamespace(
@@ -953,18 +959,23 @@ def _real_pose_scene_sample(runner, requested_vector_m: list[float]) -> dict[str
         joint_velocities=[0.0] * len(EXPECTED_TEST_DOFS),
     )
     stage = object()
+    articulation = object()
     runtime = SimpleNamespace(
         read_current_ee_transform=lambda: SimpleNamespace(position=[0.3, 0.0, 0.8]),
         read_joint_state=lambda: joint_state,
         send_joint_position_targets=lambda _target: True,
         update=lambda _substeps: None,
+        articulation_root_path="/World/FR3",
         ik_runtime=SimpleNamespace(
-            ee_controller=SimpleNamespace(controller=SimpleNamespace(stage=stage))
+            ee_controller=SimpleNamespace(
+                controller=SimpleNamespace(stage=stage, articulation=articulation)
+            )
         ),
     )
     target_latch = SimpleNamespace(
         resolve_zero_target=lambda **_kwargs: np.zeros(len(EXPECTED_TEST_DOFS)),
         abort=lambda _reason: None,
+        accept_target=lambda _target, **_kwargs: None,
         provenance={"source": "get_dof_position_targets"},
     )
     scene = object.__new__(runner._PoseConditionedIsaacTrackingScene)
@@ -983,14 +994,22 @@ def _real_pose_scene_sample(runner, requested_vector_m: list[float]) -> dict[str
         }
     )
     scene.safety = SimpleNamespace(
-        check=lambda _sample: SimpleNamespace(allow_actuation=True, violations=[])
+        check=lambda _sample: SimpleNamespace(allow_actuation=True, violations=[]),
+        limits=object(),
     )
     scene.target_latch = target_latch
     scene.mechanism = SimpleNamespace(
         read_stage=lambda _stage: SimpleNamespace(travel_m=0.0)
     )
     scene.initial_tcp_position_m = (0.3, 0.0, 0.8)
-    scene.spec = {"trial_id": "requested-vector-real-scene"}
+    scene.spec = dict(
+        trial_spec
+        or {
+            "trial_id": "requested-vector-real-scene",
+            "scene_id": "requested-vector-real-scene",
+            "fresh_scene_token": "requested-vector-real-scene",
+        }
+    )
     scene.provenance = {
         "stage_identity": 1,
         "articulation_identity": 2,
@@ -1002,7 +1021,7 @@ def _real_pose_scene_sample(runner, requested_vector_m: list[float]) -> dict[str
         requested_vector_m=requested_vector_m,
         action_index=0,
         physics_substeps=3,
-        phase="readiness",
+        phase=phase,
         motif_item=None,
     )
 
@@ -1171,9 +1190,14 @@ def test_c1_runtime_failure_writes_evidence_before_shutdown(
     )
 
     raw_requested_vector = list(nonzero_request)
+    wrapper_trial_id = "requested-vector-wrapper-trial"
     wrapped_sample = runner._sample_with_trial_provenance(
-        {"requested_vector_m": raw_requested_vector},
+        {
+            "requested_vector_m": raw_requested_vector,
+            "trial_id": wrapper_trial_id,
+        },
         spec={
+            "trial_id": wrapper_trial_id,
             "fresh_scene_token": "requested-vector-wrapper",
             "scene_id": "requested-vector-wrapper",
             "starting_joint_names": list(EXPECTED_TEST_DOFS),
@@ -1183,10 +1207,30 @@ def test_c1_runtime_failure_writes_evidence_before_shutdown(
         motif_item=None,
     )
     assert wrapped_sample["requested_vector_m"] is raw_requested_vector
+    assert wrapped_sample["trial_id"] == wrapper_trial_id
+    with pytest.raises(runner.G1ValidationError) as modified_identity:
+        runner._sample_with_trial_provenance(
+            {
+                "requested_vector_m": raw_requested_vector,
+                "trial_id": "wrapper-modified-the-trial-id",
+            },
+            spec={
+                "trial_id": wrapper_trial_id,
+                "fresh_scene_token": "requested-vector-wrapper",
+                "scene_id": "requested-vector-wrapper",
+                "starting_joint_names": list(EXPECTED_TEST_DOFS),
+                "motif": {"motif_digest": "requested-vector-wrapper"},
+            },
+            phase="measurement",
+            motif_item=None,
+        )
+    assert modified_identity.value.code == "G1_C1_TRIAL_IDENTITY_INVALID"
 
     validator = runner._validate_pose_conditioned_sample
     assert "requested_vector_m" in inspect.signature(validator).parameters
+    assert "trial_id" in inspect.signature(validator).parameters
     valid_sample = {
+        "trial_id": wrapper_trial_id,
         "requested_vector_m": list(nonzero_request),
         "post_abort_actuation_count": 0,
         "force_vector_valid": False,
@@ -1201,6 +1245,7 @@ def test_c1_runtime_failure_writes_evidence_before_shutdown(
         valid_sample,
         phase="measurement",
         requested_vector_m=nonzero_request,
+        trial_id=wrapper_trial_id,
     )
     assert validated == tuple(nonzero_request)
     invalid_samples = (
@@ -1220,6 +1265,7 @@ def test_c1_runtime_failure_writes_evidence_before_shutdown(
                 invalid_sample,
                 phase="measurement",
                 requested_vector_m=nonzero_request,
+                trial_id=wrapper_trial_id,
             )
         assert caught.value.code == "G1_C1_REQUESTED_VECTOR_INVALID"
         assert str(caught.value).strip()
@@ -1228,9 +1274,19 @@ def test_c1_runtime_failure_writes_evidence_before_shutdown(
             valid_sample,
             phase="measurement",
             requested_vector_m=[0.0, 0.0],
+            trial_id=wrapper_trial_id,
         )
     assert invalid_caller.value.code == "G1_C1_REQUESTED_VECTOR_INVALID"
     assert str(invalid_caller.value).strip()
+    with pytest.raises(runner.G1ValidationError) as invalid_trial_identity:
+        validator(
+            valid_sample,
+            phase="measurement",
+            requested_vector_m=nonzero_request,
+            trial_id="different-authoritative-trial",
+        )
+    assert invalid_trial_identity.value.code == "G1_C1_TRIAL_IDENTITY_INVALID"
+    assert str(invalid_trial_identity.value).strip()
 
     selected = {
         "candidate_id": "selected-test-pose",
@@ -1255,6 +1311,7 @@ def test_c1_runtime_failure_writes_evidence_before_shutdown(
             self.omit_measurement_vector = omit_measurement_vector
             self.mutate_measurement_request = mutate_measurement_request
             self.compatible_controller = compatible_controller
+            self.trial_id = "requested-vector-trial"
             self.requests: list[list[float]] = []
             self.pre_play_pose_authoring = {
                 "verified": True,
@@ -1282,6 +1339,7 @@ def test_c1_runtime_failure_writes_evidence_before_shutdown(
                 sum(float(value) ** 2 for value in request_snapshot)
             )
             sample = {
+                "trial_id": self.trial_id,
                 "scene_token": "requested-vector-trial",
                 "stage_identity": 1,
                 "articulation_identity": 2,
@@ -1308,6 +1366,16 @@ def test_c1_runtime_failure_writes_evidence_before_shutdown(
                 "controller_provider": "lula" if self.compatible_controller else "zero_hold",
                 "qualification_eligible": self.compatible_controller,
                 "qualifying_kernel": {"shared_kernel": True},
+                "safety_events": (
+                    []
+                    if self.compatible_controller
+                    else [
+                        {
+                            "code": "CONTROLLER_FAILURE",
+                            "message": "synthetic qualifying-kernel failure",
+                        }
+                    ]
+                ),
             }
             if phase == "measurement" and self.omit_measurement_vector:
                 sample.pop("requested_vector_m")
@@ -1320,6 +1388,7 @@ def test_c1_runtime_failure_writes_evidence_before_shutdown(
         "starting_joint_values": selected["articulation_joint_values"],
         "fresh_scene_token": "requested-vector-trial",
         "scene_id": "requested-vector-trial",
+        "trial_id": "requested-vector-trial",
         "command_m": 0.00029,
         "motif": {
             "motif_digest": "requested-vector-trial",
@@ -1368,6 +1437,17 @@ def test_c1_runtime_failure_writes_evidence_before_shutdown(
             "G1_C1_COMPATIBILITY_CONTROLLER_FORBIDDEN"
         )
         assert mutation_bypass["complete"] is False
+        assert mutation_bypass.get("failure_action_index") == 0
+        assert mutation_bypass.get("failure_window_index") == 0
+        assert mutation_bypass.get("requested_m") == math.sqrt(
+            sum(value**2 for value in nonzero_request)
+        )
+        assert mutation_bypass.get("observed_m") == (
+            math.sqrt(sum(value**2 for value in nonzero_request)) * 0.5
+        )
+        assert mutation_bypass.get("failure_detail") == (
+            "CONTROLLER_FAILURE: synthetic qualifying-kernel failure"
+        )
 
     events: list[str] = []
     factory = _FakeLifecycleFactory(events)
@@ -1426,6 +1506,7 @@ def test_c1_runtime_failure_writes_evidence_before_shutdown(
         pose_runtime_events.append("validate_requested_vector")
         runner._validate_pose_conditioned_sample(
             {
+                "trial_id": wrapper_trial_id,
                 "post_abort_actuation_count": 0,
                 "force_vector_valid": False,
                 "wrench_valid": False,
@@ -1437,6 +1518,7 @@ def test_c1_runtime_failure_writes_evidence_before_shutdown(
             },
             phase="measurement",
             requested_vector_m=nonzero_request,
+            trial_id=wrapper_trial_id,
         )
 
     pose_runtime_factory = _FakeLifecycleFactory(pose_runtime_events)
@@ -1508,6 +1590,152 @@ def test_c1_runtime_failure_writes_evidence_before_shutdown(
     assert pose_aggregation_written["aggregation"].get("selected_command_cap_m") is None
     assert pose_aggregation_outcome["exit_code"] == 1
     assert pose_aggregation_factory.close_exit_codes == [1]
+
+    malformed_identity_plan = runtime_api.build_g1_multiclass_tracking_plan(
+        seed=20260712
+    )
+    malformed_identity_plan["trials"][0].pop("trial_id", None)
+    identity_events: list[str] = []
+    identity_factory = _FakeLifecycleFactory(identity_events)
+    identity_actuation_calls: list[dict[str, Any]] = []
+    identity_written: dict[str, Any] = {}
+
+    def run_malformed_identity(*, plan, **_kwargs):
+        return runner.run_g1_multiclass_tracking_plan(
+            plan,
+            trial_runner=lambda spec: identity_actuation_calls.append(spec)
+            or {"failure_code": "must-not-actuate"},
+        )
+
+    def write_identity_blocker(**kwargs: Any) -> dict[str, Any]:
+        identity_events.extend(["write_evidence", "checksums_complete"])
+        identity_written.update(kwargs)
+        blocker = kwargs["aggregation"]
+        return {
+            "status": "BLOCKED",
+            "systemic_failure": blocker["systemic_failure"],
+            "systemic_failure_code": blocker["systemic_failure_code"],
+            "systemic_failure_message": blocker["systemic_failure_message"],
+            "selected_command_cap_m": None,
+            "post_abort_actuation_count": 0,
+            "report": dict(blocker),
+            "manifest": {
+                "status": "BLOCKED",
+                "systemic_failure_code": blocker["systemic_failure_code"],
+                "blockers": [blocker["systemic_failure_code"]],
+            },
+        }
+
+    identity_outcome = pose_orchestrate(
+        **{**pose_common, "plan": malformed_identity_plan},
+        output=tmp_path / "pose-malformed-identity",
+        factory_builder=lambda: identity_factory,
+        plan_runner=run_malformed_identity,
+        evidence_writer=write_identity_blocker,
+    )
+
+    identity_blocker = identity_written["aggregation"]
+    assert identity_actuation_calls == []
+    assert identity_blocker["systemic_failure"] is True
+    assert identity_blocker["systemic_failure_code"] == (
+        "G1_C1_TRIAL_IDENTITY_INVALID"
+    )
+    assert identity_blocker["systemic_failure_message"].strip()
+    assert identity_outcome["report"]["selected_command_cap_m"] is None
+    assert identity_outcome["report"]["post_abort_actuation_count"] == 0
+    assert identity_outcome["report"]["report"] == identity_blocker
+    assert identity_outcome["report"]["manifest"]["blockers"] == [
+        "G1_C1_TRIAL_IDENTITY_INVALID"
+    ]
+    assert identity_events == [
+        "write_evidence",
+        "checksums_complete",
+        "shutdown",
+    ]
+    assert identity_factory.close_exit_codes == [1]
+
+    malformed_tail_rows = _multiclass_summary_fixture()
+    malformed_tail_rows.append(
+        {
+            "class_id": TRAJECTORY_CLASS_IDS[0],
+            "scene_id": "malformed-tail-scene-0",
+            "scene_index": 0,
+            "command_m": 0.00035,
+            "complete": False,
+            "retained_gains": [0.0],
+            "window_maxima": [0.0],
+            "failure_code": "G1_C1_CANDIDATE_SAFETY",
+            "failure_action_index": 0,
+            "failure_window_index": 0,
+            "requested_m": 0.00035,
+            "observed_m": 0.0,
+            "failure_detail": "retained malformed-tail sample",
+            "retained_rejection": True,
+            "skipped_remaining_classes": [],
+            "skipped_remaining_scenes": [1, 2],
+            "skipped_higher_commands": [0.00040, 0.00045],
+            "governor_activated": False,
+        }
+    )
+    tail_events: list[str] = []
+    tail_factory = _FakeLifecycleFactory(tail_events)
+    tail_written: dict[str, Any] = {}
+
+    def write_tail_blocker(**kwargs: Any) -> dict[str, Any]:
+        tail_events.extend(["write_evidence", "checksums_complete"])
+        tail_written.update(kwargs)
+        return {
+            "status": "BLOCKED",
+            "systemic_failure_code": kwargs["aggregation"][
+                "systemic_failure_code"
+            ],
+            "systemic_failure_message": kwargs["aggregation"][
+                "systemic_failure_message"
+            ],
+            "selected_command_cap_m": None,
+            "post_abort_actuation_count": 0,
+        }
+
+    tail_outcome = pose_orchestrate(
+        **pose_common,
+        output=tmp_path / "pose-malformed-tail",
+        factory_builder=lambda: tail_factory,
+        plan_runner=lambda **_kwargs: {"trials": malformed_tail_rows},
+        multiclass_aggregator=runner.aggregate_g1_multiclass_tracking_envelope,
+        evidence_writer=write_tail_blocker,
+    )
+
+    assert tail_written["aggregation"]["systemic_failure"] is True
+    assert tail_written["aggregation"]["systemic_failure_code"] == (
+        "G1_C1_CLASS_PROVENANCE_MISMATCH"
+    )
+    assert tail_written["aggregation"]["systemic_failure_message"].strip()
+    assert tail_outcome["report"]["selected_command_cap_m"] is None
+    assert tail_outcome["report"]["post_abort_actuation_count"] == 0
+    assert tail_events == ["write_evidence", "checksums_complete", "shutdown"]
+    assert tail_factory.close_exit_codes == [1]
+
+    writer_events: list[str] = []
+    writer_factory = _FakeLifecycleFactory(writer_events)
+
+    def fail_pose_writer(**_kwargs: Any) -> dict[str, Any]:
+        writer_events.append("writer_error")
+        raise OSError("pose evidence storage unavailable")
+
+    with pytest.raises(runner.G1ValidationError) as writer_failure:
+        pose_orchestrate(
+            **pose_common,
+            output=tmp_path / "pose-writer-failure",
+            factory_builder=lambda: writer_factory,
+            plan_runner=lambda **_kwargs: {"trials": []},
+            multiclass_aggregator=lambda *_args, **_kwargs: {
+                "systemic_failure": False
+            },
+            evidence_writer=fail_pose_writer,
+        )
+    assert writer_failure.value.code == "G1_C1_EVIDENCE_WRITE_FAILED"
+    assert writer_events == ["writer_error", "shutdown"]
+    assert writer_factory.close_exit_codes == [1]
 
 
 def test_c1_factory_failure_without_asset_writes_complete_immutable_evidence(
@@ -2107,6 +2335,8 @@ def test_each_class_requires_64_readiness_256_measurement_three_scenes_and_no_wi
     build = _capability("build_g1_multiclass_tracking_plan")
 
     plan = build(seed=20260712)
+    rebuilt = build(seed=20260712)
+    trial_ids = [trial.get("trial_id") for trial in plan["trials"]]
 
     assert plan["class_ids"] == list(TRAJECTORY_CLASS_IDS)
     assert plan["readiness_actions"] == 64
@@ -2115,6 +2345,10 @@ def test_each_class_requires_64_readiness_256_measurement_three_scenes_and_no_wi
     assert plan["scenes_per_class_command"] == 3
     assert plan["measurement_reset_actions"] == []
     assert plan["measurement_settle_actions"] == []
+    assert len(plan["trials"]) == 90
+    assert all(type(trial_id) is str and trial_id for trial_id in trial_ids)
+    assert len(set(trial_ids)) == 90
+    assert [trial["trial_id"] for trial in rebuilt["trials"]] == trial_ids
 
 
 def _multiclass_summary_fixture() -> list[dict[str, Any]]:
@@ -2246,11 +2480,17 @@ def test_rejected_candidate_stop_tail_does_not_invalidate_complete_lower_candida
         {
             "class_id": TRAJECTORY_CLASS_IDS[0],
             "scene_id": "rejected-high-0",
+            "scene_index": 0,
             "command_m": 0.00035,
             "complete": False,
             "retained_gains": [1.1],
             "window_maxima": [1.1],
             "failure_code": "G1_C1_CANDIDATE_SAFETY",
+            "failure_action_index": 0,
+            "failure_window_index": 0,
+            "requested_m": 0.00035,
+            "observed_m": 0.00051,
+            "failure_detail": "retained sample exceeded the exact hard limit",
             "retained_rejection": True,
             "skipped_remaining_classes": list(TRAJECTORY_CLASS_IDS[1:]),
             "skipped_remaining_scenes": [1, 2],
@@ -2270,6 +2510,62 @@ def test_rejected_candidate_stop_tail_does_not_invalidate_complete_lower_candida
     assert result["candidate_decisions"]["0.00025000"]["eligible"] is True
     assert result["candidate_decisions"]["0.00035000"]["eligible"] is False
     assert result["selected_command_cap_m"] == 0.00025
+    message = result["candidate_decisions"]["0.00035000"]["message"]
+    assert "action=0; window=0" in message
+    assert "requested_m=0.00035; observed_m=0.00051" in message
+    assert "detail=retained sample exceeded the exact hard limit" in message
+
+    tail_mutations = {
+        "missing-classes": ("skipped_remaining_classes", None),
+        "extra-class": (
+            "skipped_remaining_classes",
+            [TRAJECTORY_CLASS_IDS[0], *TRAJECTORY_CLASS_IDS[1:]],
+        ),
+        "duplicate-class": (
+            "skipped_remaining_classes",
+            [TRAJECTORY_CLASS_IDS[1], TRAJECTORY_CLASS_IDS[1], *TRAJECTORY_CLASS_IDS[2:]],
+        ),
+        "reordered-classes": (
+            "skipped_remaining_classes",
+            list(reversed(TRAJECTORY_CLASS_IDS[1:])),
+        ),
+        "missing-scenes": ("skipped_remaining_scenes", None),
+        "extra-scene": ("skipped_remaining_scenes", [1, 2, 3]),
+        "duplicate-scene": ("skipped_remaining_scenes", [1, 2, 2]),
+        "reordered-scenes": ("skipped_remaining_scenes", [2, 1]),
+        "failed-scene-repeated": ("skipped_remaining_scenes", [0, 1, 2]),
+        "missing-higher": ("skipped_higher_commands", None),
+        "extra-higher": (
+            "skipped_higher_commands",
+            [0.00035, 0.00040, 0.00045],
+        ),
+        "duplicate-higher": (
+            "skipped_higher_commands",
+            [0.00040, 0.00040, 0.00045],
+        ),
+        "reordered-higher": (
+            "skipped_higher_commands",
+            [0.00045, 0.00040],
+        ),
+    }
+    for mutation, (field, value) in tail_mutations.items():
+        malformed = json.loads(json.dumps(rows))
+        rejection = malformed[-1]
+        if value is None:
+            rejection.pop(field)
+        else:
+            rejection[field] = value
+        blocked = aggregate(
+            malformed,
+            observed_hard_limit_m=0.0005,
+            tested_commands_m=TESTED_COMMANDS_M,
+            required_class_ids=TRAJECTORY_CLASS_IDS,
+        )
+        assert blocked["systemic_failure"] is True, mutation
+        assert blocked["systemic_failure_code"] == (
+            "G1_C1_CLASS_PROVENANCE_MISMATCH"
+        ), mutation
+        assert blocked["selected_command_cap_m"] is None, mutation
 
 
 def test_missing_scene_without_retained_rejection_is_systemic() -> None:
@@ -2323,19 +2619,82 @@ def test_unexplained_multiclass_incompleteness_is_systemic(mutation: str) -> Non
 def test_higher_commands_are_skipped_after_first_retained_candidate_failure() -> None:
     plan = _capability("build_g1_multiclass_tracking_plan")(seed=20260712)
     execute = _capability("run_g1_multiclass_tracking_plan")
-    calls: list[float] = []
+    calls: list[tuple[float, str, int]] = []
+
+    def retained_result(spec: dict[str, Any]) -> dict[str, Any]:
+        calls.append((spec["command_m"], spec["class_id"], spec["scene_index"]))
+        if spec["command_m"] == 0.0:
+            return {
+                "complete": True,
+                "zero_displacements_m": [0.0] * 256,
+                "window_maxima": [0.0, 0.0, 0.0, 0.0],
+                "retained_gains": [],
+                "governor_activated": False,
+                "failure_code": None,
+            }
+        assert spec["command_m"] == 0.00025
+        assert spec["class_id"] == TRAJECTORY_CLASS_IDS[0]
+        assert spec["scene_index"] == 0
+        return {
+            "complete": False,
+            "retained_gains": [0.0],
+            "window_maxima": [0.0],
+            "governor_activated": False,
+            "failure_code": "G1_C1_CANDIDATE_SAFETY",
+            "failure_action_index": 0,
+            "failure_window_index": 0,
+            "requested_m": 0.00025,
+            "observed_m": 0.0,
+            "failure_detail": "retained first-candidate sample",
+        }
 
     result = execute(
         plan,
-        trial_runner=lambda spec: calls.append(spec["command_m"]) or {
-            "failure_code": "G1_C1_CANDIDATE_SAFETY"
-            if spec["command_m"] == 0.00035
-            else None
-        },
+        trial_runner=retained_result,
     )
 
-    assert 0.00040 not in calls and 0.00045 not in calls
-    assert result["skipped_higher_commands"] == [0.00040, 0.00045]
+    assert result["skipped_remaining_scenes"] == [1, 2]
+    assert result["skipped_remaining_classes"] == list(TRAJECTORY_CLASS_IDS[1:])
+    assert result["skipped_higher_commands"] == [0.00035, 0.00040, 0.00045]
+    assert all(command <= 0.00025 for command, _class_id, _scene in calls)
+    retained_rejection = result["trials"][-1]
+    assert retained_rejection["retained_rejection"] is True
+    assert retained_rejection["skipped_remaining_scenes"] == [1, 2]
+    assert retained_rejection["skipped_remaining_classes"] == list(
+        TRAJECTORY_CLASS_IDS[1:]
+    )
+    accepted = runtime_api.aggregate_g1_multiclass_tracking_envelope(
+        result["trials"],
+        observed_hard_limit_m=0.0005,
+        tested_commands_m=TESTED_COMMANDS_M,
+        required_class_ids=TRAJECTORY_CLASS_IDS,
+    )
+    assert accepted["systemic_failure_code"] != "G1_C1_CLASS_PROVENANCE_MISMATCH"
+
+    for bad_identity in (None, "", 7):
+        malformed = json.loads(json.dumps(plan))
+        if bad_identity is None:
+            malformed["trials"][0].pop("trial_id", None)
+        else:
+            malformed["trials"][0]["trial_id"] = bad_identity
+        pre_actuation_calls: list[dict[str, Any]] = []
+        with pytest.raises(runtime_api.G1ValidationError) as caught:
+            execute(
+                malformed,
+                trial_runner=lambda spec: pre_actuation_calls.append(spec) or {},
+            )
+        assert caught.value.code == "G1_C1_TRIAL_IDENTITY_INVALID"
+        assert pre_actuation_calls == []
+    duplicate = json.loads(json.dumps(plan))
+    duplicate["trials"][1]["trial_id"] = duplicate["trials"][0]["trial_id"]
+    duplicate_calls: list[dict[str, Any]] = []
+    with pytest.raises(runtime_api.G1ValidationError) as duplicate_error:
+        execute(
+            duplicate,
+            trial_runner=lambda spec: duplicate_calls.append(spec) or {},
+        )
+    assert duplicate_error.value.code == "G1_C1_TRIAL_IDENTITY_INVALID"
+    assert duplicate_calls == []
 
 
 class _SharedQualifyingKernelSpy:
@@ -2356,7 +2715,9 @@ class _SharedQualifyingKernelSpy:
         return dict(self.result)
 
 
-def test_c1_nonzero_path_invokes_shared_qualifying_kernel_with_observed_state() -> None:
+def test_c1_nonzero_path_invokes_shared_qualifying_kernel_with_observed_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     runner = _tracking_runner()
     invoke = getattr(runner, "_invoke_g1_qualifying_kernel", None)
     assert callable(invoke), (
@@ -2378,6 +2739,142 @@ def test_c1_nonzero_path_invokes_shared_qualifying_kernel_with_observed_state() 
     assert result["controller_qualification"] == "lula_fd_translation"
     assert result["benchmark_cap_eligible"] is True
     assert result["requested_action_7d"] == kernel_input["requested_action_7d"]
+
+    selected = {
+        "candidate_id": "composition-task-ready-pose",
+        "articulation_joint_names": list(EXPECTED_TEST_DOFS),
+        "articulation_joint_values": [0.0] * len(EXPECTED_TEST_DOFS),
+        "solver_joint_names": list(EXPECTED_TEST_DOFS[:7]),
+        "ee_frame": "fr3_hand_tcp",
+        "base_frame": "fr3_link0",
+        "solver_frame": "fr3_hand_tcp",
+        "solver_identity": "lula",
+        "asset_sha256": "a" * 64,
+        "task_config_sha256": "b" * 64,
+        "robot_config_sha256": "c" * 64,
+        "task_card_sha256": "d" * 64,
+        "geometry_sha256": "e" * 64,
+    }
+    selected_sha256 = "f" * 64
+    routes = [
+        {
+            "class_id": class_id,
+            "route_sha256": f"{index + 1:064x}",
+        }
+        for index, class_id in enumerate(TRAJECTORY_CLASS_IDS)
+    ]
+    with monkeypatch.context() as context:
+        context.setattr(
+            runner,
+            "_require_selected_candidate",
+            lambda candidate, **_kwargs: dict(candidate),
+        )
+        context.setattr(
+            runner,
+            "_validate_legacy_pose_routes",
+            lambda supplied, **_kwargs: tuple(dict(item) for item in supplied),
+        )
+        context.setattr(
+            runner,
+            "_legacy_pose_motif",
+            lambda route, *, command_m: {
+                "motif_type": "composition-test",
+                "actions": 256,
+                "schedule": [],
+                "motif_digest": route["route_sha256"],
+            },
+        )
+        generated_plan = runtime_api.build_g1_multiclass_tracking_plan(seed=20260712)
+        pose_plan = runner.build_g1_pose_conditioned_tracking_plan(
+            seed=20260712,
+            selected_candidate=selected,
+            selected_pose_sha256=selected_sha256,
+            routes=routes,
+        )
+        generated_ids = [trial.get("trial_id") for trial in generated_plan["trials"]]
+        pose_ids = [trial.get("trial_id") for trial in pose_plan["trials"]]
+        assert all(type(trial_id) is str and trial_id for trial_id in generated_ids)
+        assert pose_ids == generated_ids
+        spec = next(
+            trial
+            for trial in pose_plan["trials"]
+            if trial["command_m"] == 0.00025
+        )
+        trial_id = spec["trial_id"]
+        requested_vector = [0.0, 0.0, -0.00025]
+        kernel_calls: list[dict[str, Any]] = []
+
+        def invoke_spy(*, runtime: Any, kernel_input: dict[str, Any]):
+            kernel_calls.append(dict(kernel_input))
+            return {
+                "shared_kernel": True,
+                "send_allowed": True,
+                "requested_action_7d": list(kernel_input["requested_action_7d"]),
+                "requested_vector_m": list(
+                    kernel_input["requested_action_7d"][:3]
+                ),
+                "governed_target": [0.001] * len(EXPECTED_TEST_DOFS),
+                "controller_qualification": "lula_fd_translation",
+                "benchmark_cap_eligible": True,
+                "governor_state": "ALLOW_UNMODIFIED",
+                "trial_id": kernel_input.get("trial_id"),
+            }
+
+        def send_spy(*, kernel_result, send_target, accept_target):
+            target = list(kernel_result["governed_target"])
+            assert send_target(target) is True
+            accept_target(target)
+            return {
+                **dict(kernel_result),
+                "send_result": True,
+                "runtime_state": "SENT",
+                "executed_joint_target": target,
+            }
+
+        context.setattr(runner, "_invoke_g1_qualifying_kernel", invoke_spy)
+        context.setattr(runner, "_execute_g1_qualifying_kernel_send", send_spy)
+        sample = _real_pose_scene_sample(
+            runner,
+            requested_vector,
+            trial_spec=spec,
+            phase="measurement",
+        )
+
+        assert len(kernel_calls) == 1
+        assert kernel_calls[0].get("trial_id") == trial_id
+        assert kernel_calls[0]["action_name"] == f"c1_{trial_id}_0"
+        assert kernel_calls[0]["requested_action_7d"][:3] == requested_vector
+        assert sample.get("trial_id") == trial_id
+        assert sample["requested_vector_m"] == requested_vector
+        assert sample["controller_mode"] == "lula_fd_translation"
+        assert sample["controller_provider"] == "lula"
+        assert sample["qualification_eligible"] is True
+        assert sample["qualifying_kernel"]["trial_id"] == trial_id
+
+        context.setattr(
+            runner,
+            "_invoke_g1_qualifying_kernel",
+            lambda **_kwargs: (_ for _ in ()).throw(
+                runner.G1ValidationError(
+                    "G1_C1_KERNEL_SYNTHETIC_FAILURE",
+                    "synthetic shared-kernel failure",
+                )
+            ),
+        )
+        failed_sample = _real_pose_scene_sample(
+            runner,
+            requested_vector,
+            trial_spec=spec,
+            phase="measurement",
+        )
+        assert failed_sample["post_abort_actuation_count"] == 0
+        assert failed_sample["qualification_eligible"] is False
+        assert failed_sample["safety_events"] == [
+            {
+                "code": "G1_C1_KERNEL_SYNTHETIC_FAILURE",
+                "message": "synthetic shared-kernel failure",
+            }
+        ]
 
 
 def test_c1_shared_kernel_latch_updates_only_after_successful_send() -> None:
