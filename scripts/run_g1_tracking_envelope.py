@@ -77,6 +77,8 @@ from isaac_tactile_libero.runtime.g1_tracking import (  # noqa: E402
     g1_press_button_task_route_geometry,
     g1_trajectory_class_definitions,
     run_g1_multiclass_tracking_plan,
+    validate_g1_multiclass_plan_trial_identities,
+    validate_g1_trial_identity,
 )
 from isaac_tactile_libero.sensors.isaacsim6_contact import IsaacSim6ContactSensor  # noqa: E402
 from isaac_tactile_libero.tasks.press_button_mechanism import (  # noqa: E402
@@ -513,6 +515,7 @@ def build_g1_pose_conditioned_tracking_plan(
             )
 
     base = build_g1_multiclass_tracking_plan(seed=int(seed))
+    base_trial_ids = validate_g1_multiclass_plan_trial_identities(base)
     class_bundle = (
         {
             str(item["class_id"]): dict(item)
@@ -584,7 +587,7 @@ def build_g1_pose_conditioned_tracking_plan(
                 "motif": motif,
             }
         )
-    return {
+    result = {
         **base,
         "schema_version": "g1.pose_conditioned.multiclass_plan.v1",
         "diagnostic": "pose_conditioned_no_contact_tracking_envelope",
@@ -596,6 +599,12 @@ def build_g1_pose_conditioned_tracking_plan(
         ),
         "trials": trials,
     }
+    if validate_g1_multiclass_plan_trial_identities(result) != base_trial_ids:
+        raise G1ValidationError(
+            "G1_C1_TRIAL_IDENTITY_INVALID",
+            "pose-conditioned binding changed authoritative plan trial identity",
+        )
+    return result
 
 
 def build_g1_pose_conditioned_runtime_preplay(
@@ -695,8 +704,18 @@ def _validate_pose_conditioned_sample(
     *,
     phase: str,
     requested_vector_m: Sequence[float],
+    trial_id: str,
 ) -> tuple[float, float, float]:
     prefix = "readiness" if phase == "readiness" else "measurement"
+    expected_trial_id = validate_g1_trial_identity(
+        trial_id,
+        label=f"{prefix} caller",
+    )
+    validate_g1_trial_identity(
+        sample.get("trial_id"),
+        expected_trial_id=expected_trial_id,
+        label=f"{prefix} sample provenance",
+    )
     expected_requested_vector = _requested_vector_components(
         requested_vector_m,
         phase=phase,
@@ -775,6 +794,15 @@ def _sample_with_trial_provenance(
     phase: str,
     motif_item: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
+    trial_id = validate_g1_trial_identity(
+        spec.get("trial_id"),
+        label=f"{phase} authoritative plan",
+    )
+    validate_g1_trial_identity(
+        sample.get("trial_id"),
+        expected_trial_id=trial_id,
+        label=f"{phase} real scene sample",
+    )
     result = dict(sample)
     for field in (
         "starting_pose_id",
@@ -822,6 +850,10 @@ def execute_g1_pose_conditioned_tracking_trial(
 ) -> dict[str, Any]:
     """Execute one pre-authored 64-readiness + 256-motif trial."""
 
+    trial_id = validate_g1_trial_identity(
+        spec.get("trial_id"),
+        label="pose-conditioned trial",
+    )
     candidate = _require_selected_candidate(
         selected_candidate, selected_pose_sha256=selected_pose_sha256
     )
@@ -911,6 +943,7 @@ def execute_g1_pose_conditioned_tracking_trial(
             sample,
             phase="readiness",
             requested_vector_m=expected_requested_vector,
+            trial_id=trial_id,
         )
         readiness_samples.append(sample)
 
@@ -968,6 +1001,7 @@ def execute_g1_pose_conditioned_tracking_trial(
             sample,
             phase="measurement",
             requested_vector_m=expected_requested_vector,
+            trial_id=trial_id,
         )
         measurement_samples.append(sample)
         validated_measurement_vectors.append(validated_requested_vector)
@@ -1024,6 +1058,9 @@ def execute_g1_pose_conditioned_tracking_trial(
     }
     return {
         **identity,
+        "scene_id": str(spec["scene_id"]),
+        "trial_id": trial_id,
+        "fresh_scene_token": str(spec["fresh_scene_token"]),
         "pre_play_pose_authoring": dict(authoring),
         "readiness_samples": readiness_samples,
         "measurement_samples": measurement_samples,
@@ -1078,6 +1115,7 @@ def run_g1_pose_conditioned_tracking_plan(
 ) -> dict[str, Any]:
     """Run the existing multiclass stop-tail engine over fresh injected scenes."""
 
+    validate_g1_multiclass_plan_trial_identities(plan)
     factory = scene_factory if scene_factory is not None else factory_builder()
 
     def trial_runner(spec: Mapping[str, Any]) -> dict[str, Any]:
@@ -1142,6 +1180,7 @@ def _trial_sample_record(
         "class_id",
         "class_version",
         "command_m",
+        "trial_id",
         "fresh_scene_token",
         "ee_frame",
         "base_frame",
@@ -1239,6 +1278,7 @@ def write_g1_pose_conditioned_tracking_evidence(
         {
             "scene_id": trial["scene_id"],
             "fresh_scene_token": trial["fresh_scene_token"],
+            "trial_id": trial["trial_id"],
             "class_id": trial["class_id"],
             "class_version": trial["class_version"],
             "command_m": trial["command_m"],
@@ -2047,6 +2087,10 @@ class _PoseConditionedIsaacTrackingScene:
     def __init__(self, owner: "_IsaacSceneFactory", spec: Mapping[str, Any]) -> None:
         self.owner = owner
         self.spec = dict(spec)
+        validate_g1_trial_identity(
+            self.spec.get("trial_id"),
+            label="real pose-conditioned scene",
+        )
         self.runtime: FR3DifferentialIKRuntime | None = None
         self.contact_sensor: IsaacSim6ContactSensor | None = None
         self.collision_monitor: PhysXCollisionMonitor | None = None
@@ -2308,6 +2352,11 @@ class _PoseConditionedIsaacTrackingScene:
                             "articulation_joint_names": list(joint_before.joint_names),
                             "safety_limits": self.safety.limits,
                             "already_aborted": self._aborted,
+                            "scene_id": self.spec["scene_id"],
+                            "fresh_scene_token": self.spec["fresh_scene_token"],
+                            "trial_id": self.spec["trial_id"],
+                            "seed": self.spec["seed"],
+                            "action_index": int(action_index),
                             "action_name": f"c1_{self.spec['trial_id']}_{action_index}",
                             "config": DifferentialIKConfig(max_abs_dq=0.02),
                             "class_id": self.spec.get("class_id"),
@@ -2409,6 +2458,7 @@ class _PoseConditionedIsaacTrackingScene:
         )
         return {
             "scene_token": self._scene_token,
+            "trial_id": self.spec["trial_id"],
             "stage_identity": self.provenance["stage_identity"],
             "articulation_identity": self.provenance["articulation_identity"],
             "latch_identity": self.provenance["target_latch_identity"],

@@ -1098,6 +1098,61 @@ def validate_g1_trajectory_routes(
     return {"valid": True, "class_ids": list(class_ids)}
 
 
+def validate_g1_trial_identity(
+    trial_id: Any,
+    *,
+    expected_trial_id: Any | None = None,
+    label: str = "trial",
+) -> str:
+    """Require one exact, non-empty string identity without coercion."""
+
+    if type(trial_id) is not str or not trial_id.strip():
+        raise G1ValidationError(
+            "G1_C1_TRIAL_IDENTITY_INVALID",
+            f"{label} trial_id must be a non-empty string",
+        )
+    if expected_trial_id is not None:
+        if (
+            type(expected_trial_id) is not str
+            or not expected_trial_id.strip()
+            or trial_id != expected_trial_id
+        ):
+            raise G1ValidationError(
+                "G1_C1_TRIAL_IDENTITY_INVALID",
+                f"{label} trial_id does not exactly match authoritative plan identity",
+            )
+    return trial_id
+
+
+def validate_g1_multiclass_plan_trial_identities(
+    plan: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """Validate all plan identities before a factory or trial runner is called."""
+
+    trials = plan.get("trials")
+    if (
+        not isinstance(trials, Sequence)
+        or isinstance(trials, (str, bytes, Mapping))
+    ):
+        raise G1ValidationError(
+            "G1_C1_TRIAL_IDENTITY_INVALID",
+            "multiclass plan trials must be an ordered sequence",
+        )
+    trial_ids = tuple(
+        validate_g1_trial_identity(
+            spec.get("trial_id") if isinstance(spec, Mapping) else None,
+            label=f"multiclass plan trial {index}",
+        )
+        for index, spec in enumerate(trials)
+    )
+    if len(trial_ids) != len(set(trial_ids)):
+        raise G1ValidationError(
+            "G1_C1_TRIAL_IDENTITY_INVALID",
+            "multiclass plan trial_id values must be unique",
+        )
+    return trial_ids
+
+
 def build_g1_multiclass_tracking_plan(*, seed: int) -> dict[str, Any]:
     """Build the fixed 6-class x 5-command x 3-scene acquisition plan."""
 
@@ -1108,6 +1163,9 @@ def build_g1_multiclass_tracking_plan(*, seed: int) -> dict[str, Any]:
             "command_m": command,
             "scene_index": scene_index,
             "scene_id": f"{class_id}-{command:.8f}-{scene_index}",
+            "trial_id": (
+                f"g1-c1-{int(seed)}-{class_id}-{command:.8f}-{scene_index}"
+            ),
             "fresh_scene_token": f"g1-{seed}-{class_id}-{command:.8f}-{scene_index}",
             "seed": int(seed),
             "readiness_actions": 64,
@@ -1434,6 +1492,7 @@ def run_g1_multiclass_tracking_plan(
     skipped_classes: list[str] = []
     skipped_scenes: list[int] = []
     trials = list(plan.get("trials", ()))
+    validate_g1_multiclass_plan_trial_identities(plan)
     for index, spec in enumerate(trials):
         command = float(spec["command_m"])
         if stopped_command is not None and command >= stopped_command:
@@ -1501,5 +1560,7 @@ __all__ = [
     "validate_g1_command_cap",
     "validate_g1_tracking_trials",
     "validate_formal_g1_tracking_trials",
+    "validate_g1_multiclass_plan_trial_identities",
+    "validate_g1_trial_identity",
     "validate_g1_trajectory_routes",
 ]
