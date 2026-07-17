@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import textwrap
+from types import SimpleNamespace
 from typing import Any, Callable
 
 import numpy as np
@@ -943,6 +944,69 @@ def _lifecycle_kwargs(tmp_path: Path, **changes: Any) -> dict[str, Any]:
     return payload
 
 
+def _real_pose_scene_sample(runner, requested_vector_m: list[float]) -> dict[str, Any]:
+    """Exercise the real scene step method through import-safe runtime seams."""
+
+    joint_state = SimpleNamespace(
+        joint_names=list(EXPECTED_TEST_DOFS),
+        joint_positions=[0.0] * len(EXPECTED_TEST_DOFS),
+        joint_velocities=[0.0] * len(EXPECTED_TEST_DOFS),
+    )
+    stage = object()
+    runtime = SimpleNamespace(
+        read_current_ee_transform=lambda: SimpleNamespace(position=[0.3, 0.0, 0.8]),
+        read_joint_state=lambda: joint_state,
+        send_joint_position_targets=lambda _target: True,
+        update=lambda _substeps: None,
+        ik_runtime=SimpleNamespace(
+            ee_controller=SimpleNamespace(controller=SimpleNamespace(stage=stage))
+        ),
+    )
+    target_latch = SimpleNamespace(
+        resolve_zero_target=lambda **_kwargs: np.zeros(len(EXPECTED_TEST_DOFS)),
+        abort=lambda _reason: None,
+        provenance={"source": "get_dof_position_targets"},
+    )
+    scene = object.__new__(runner._PoseConditionedIsaacTrackingScene)
+    scene._aborted = False
+    scene._scene_token = "requested-vector-real-scene"
+    scene.runtime = runtime
+    scene.contact_sensor = SimpleNamespace(
+        read=lambda _index: SimpleNamespace(in_contact=False, raw_contacts=[])
+    )
+    scene.collision_monitor = SimpleNamespace(
+        read=lambda: {
+            "valid": True,
+            "unsafe_collision": False,
+            "max_penetration_m": 0.0,
+            "error": None,
+        }
+    )
+    scene.safety = SimpleNamespace(
+        check=lambda _sample: SimpleNamespace(allow_actuation=True, violations=[])
+    )
+    scene.target_latch = target_latch
+    scene.mechanism = SimpleNamespace(
+        read_stage=lambda _stage: SimpleNamespace(travel_m=0.0)
+    )
+    scene.initial_tcp_position_m = (0.3, 0.0, 0.8)
+    scene.spec = {"trial_id": "requested-vector-real-scene"}
+    scene.provenance = {
+        "stage_identity": 1,
+        "articulation_identity": 2,
+        "target_latch_identity": 3,
+        "instance_identity": 4,
+    }
+    return runner._PoseConditionedIsaacTrackingScene.step(
+        scene,
+        requested_vector_m=requested_vector_m,
+        action_index=0,
+        physics_substeps=3,
+        phase="readiness",
+        motif_item=None,
+    )
+
+
 def test_c1_orchestration_preserves_readiness_systemic_failure_without_reaggregation(
     tmp_path: Path,
 ) -> None:
@@ -1096,6 +1160,215 @@ def test_c1_runtime_failure_writes_evidence_before_shutdown(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runner, orchestrate = _tracking_lifecycle()
+    zero_request = [0.0, 0.0, 0.0]
+    nonzero_request = [0.00012, -0.00016, 0.00021]
+    zero_sample = _real_pose_scene_sample(runner, zero_request)
+    nonzero_sample = _real_pose_scene_sample(runner, nonzero_request)
+    assert zero_sample.get("requested_vector_m") == zero_request
+    assert nonzero_sample.get("requested_vector_m") == nonzero_request
+    assert math.sqrt(sum(value**2 for value in nonzero_sample["requested_vector_m"])) == math.sqrt(
+        sum(value**2 for value in nonzero_request)
+    )
+
+    raw_requested_vector = list(nonzero_request)
+    wrapped_sample = runner._sample_with_trial_provenance(
+        {"requested_vector_m": raw_requested_vector},
+        spec={
+            "fresh_scene_token": "requested-vector-wrapper",
+            "scene_id": "requested-vector-wrapper",
+            "starting_joint_names": list(EXPECTED_TEST_DOFS),
+            "motif": {"motif_digest": "requested-vector-wrapper"},
+        },
+        phase="measurement",
+        motif_item=None,
+    )
+    assert wrapped_sample["requested_vector_m"] is raw_requested_vector
+
+    validator = runner._validate_pose_conditioned_sample
+    assert "requested_vector_m" in inspect.signature(validator).parameters
+    valid_sample = {
+        "requested_vector_m": list(nonzero_request),
+        "post_abort_actuation_count": 0,
+        "force_vector_valid": False,
+        "wrench_valid": False,
+        "raw_impulse_used_as_force": False,
+        "contact": False,
+        "raw_contact_count": 0,
+        "collision": False,
+        "finite": True,
+    }
+    validated = validator(
+        valid_sample,
+        phase="measurement",
+        requested_vector_m=nonzero_request,
+    )
+    assert validated == tuple(nonzero_request)
+    invalid_samples = (
+        {key: value for key, value in valid_sample.items() if key != "requested_vector_m"},
+        {**valid_sample, "requested_vector_m": [0.0, 0.0]},
+        {**valid_sample, "requested_vector_m": [0.0, math.nan, 0.0]},
+        {**valid_sample, "requested_vector_m": [0.0, 0.0, math.inf]},
+        {
+            **valid_sample,
+            "requested_vector_m": ["0.00012", "-0.00016", "0.00021"],
+        },
+        {**valid_sample, "requested_vector_m": [0.0, 0.0, 0.0]},
+    )
+    for invalid_sample in invalid_samples:
+        with pytest.raises(runner.G1ValidationError) as caught:
+            validator(
+                invalid_sample,
+                phase="measurement",
+                requested_vector_m=nonzero_request,
+            )
+        assert caught.value.code == "G1_C1_REQUESTED_VECTOR_INVALID"
+        assert str(caught.value).strip()
+    with pytest.raises(runner.G1ValidationError) as invalid_caller:
+        validator(
+            valid_sample,
+            phase="measurement",
+            requested_vector_m=[0.0, 0.0],
+        )
+    assert invalid_caller.value.code == "G1_C1_REQUESTED_VECTOR_INVALID"
+    assert str(invalid_caller.value).strip()
+
+    selected = {
+        "candidate_id": "selected-test-pose",
+        "articulation_joint_names": ["fr3_joint1"],
+        "articulation_joint_values": [0.0],
+    }
+    selected_sha256 = "a" * 64
+    monkeypatch.setattr(
+        runner,
+        "_require_selected_candidate",
+        lambda candidate, **_kwargs: dict(candidate),
+    )
+
+    class RequestedVectorScene:
+        def __init__(
+            self,
+            *,
+            omit_measurement_vector: bool = False,
+            mutate_measurement_request: bool = False,
+            compatible_controller: bool = True,
+        ) -> None:
+            self.omit_measurement_vector = omit_measurement_vector
+            self.mutate_measurement_request = mutate_measurement_request
+            self.compatible_controller = compatible_controller
+            self.requests: list[list[float]] = []
+            self.pre_play_pose_authoring = {
+                "verified": True,
+                "authored_before_play": True,
+                "selected_pose_id": selected["candidate_id"],
+                "selected_pose_sha256": selected_sha256,
+            }
+
+        def step(
+            self,
+            *,
+            requested_vector_m,
+            action_index: int,
+            physics_substeps: int,
+            phase: str,
+            motif_item,
+        ):
+            assert physics_substeps == 3
+            request = requested_vector_m
+            request_snapshot = list(request)
+            self.requests.append(request)
+            if phase == "measurement" and self.mutate_measurement_request:
+                request[:] = [0.0, 0.0, 0.0]
+            requested_norm = math.sqrt(
+                sum(float(value) ** 2 for value in request_snapshot)
+            )
+            sample = {
+                "scene_token": "requested-vector-trial",
+                "stage_identity": 1,
+                "articulation_identity": 2,
+                "latch_identity": 3,
+                "instance_identity": 4,
+                "requested_vector_m": (
+                    request_snapshot if self.mutate_measurement_request else request
+                ),
+                "action_index": action_index,
+                "window_index": 0 if phase == "measurement" else None,
+                "observed_displacement_m": requested_norm * 0.5,
+                "observed_requested_gain": None,
+                "post_abort_actuation_count": 0,
+                "force_vector_valid": False,
+                "wrench_valid": False,
+                "raw_impulse_used_as_force": False,
+                "contact": False,
+                "raw_contact_count": 0,
+                "collision": False,
+                "finite": True,
+                "controller_mode": (
+                    "lula_fd_translation" if self.compatible_controller else "zero_hold"
+                ),
+                "controller_provider": "lula" if self.compatible_controller else "zero_hold",
+                "qualification_eligible": self.compatible_controller,
+                "qualifying_kernel": {"shared_kernel": True},
+            }
+            if phase == "measurement" and self.omit_measurement_vector:
+                sample.pop("requested_vector_m")
+            return sample
+
+    trial_spec = {
+        "starting_pose_id": selected["candidate_id"],
+        "starting_pose_sha256": selected_sha256,
+        "starting_joint_names": selected["articulation_joint_names"],
+        "starting_joint_values": selected["articulation_joint_values"],
+        "fresh_scene_token": "requested-vector-trial",
+        "scene_id": "requested-vector-trial",
+        "command_m": 0.00029,
+        "motif": {
+            "motif_digest": "requested-vector-trial",
+            "schedule": [
+                {
+                    "measurement_action_index": 0,
+                    "requested_vector_m": list(nonzero_request),
+                }
+            ],
+        },
+    }
+    with monkeypatch.context() as context:
+        context.setattr(runner, "READINESS_ACTIONS", 1)
+        context.setattr(runner, "ACTIONS_PER_TRIAL", 1)
+        context.setattr(runner, "WINDOW_COUNT", 1)
+        context.setattr(runner, "WINDOW_SIZE", 1)
+        scene = RequestedVectorScene()
+        trial = runner.execute_g1_pose_conditioned_tracking_trial(
+            spec=trial_spec,
+            scene=scene,
+            selected_candidate=selected,
+            selected_pose_sha256=selected_sha256,
+        )
+        assert scene.requests == [zero_request, nonzero_request]
+        assert trial["measurement_samples"][0]["requested_vector_m"] is scene.requests[1]
+        assert trial["retained_gains"] == [0.5]
+        with pytest.raises(runner.G1ValidationError) as missing_in_trial:
+            runner.execute_g1_pose_conditioned_tracking_trial(
+                spec=trial_spec,
+                scene=RequestedVectorScene(omit_measurement_vector=True),
+                selected_candidate=selected,
+                selected_pose_sha256=selected_sha256,
+            )
+        assert missing_in_trial.value.code == "G1_C1_REQUESTED_VECTOR_INVALID"
+        assert str(missing_in_trial.value).strip()
+        mutation_bypass = runner.execute_g1_pose_conditioned_tracking_trial(
+            spec=trial_spec,
+            scene=RequestedVectorScene(
+                mutate_measurement_request=True,
+                compatible_controller=False,
+            ),
+            selected_candidate=selected,
+            selected_pose_sha256=selected_sha256,
+        )
+        assert mutation_bypass["failure_code"] == (
+            "G1_C1_COMPATIBILITY_CONTROLLER_FORBIDDEN"
+        )
+        assert mutation_bypass["complete"] is False
+
     events: list[str] = []
     factory = _FakeLifecycleFactory(events)
 
@@ -1131,13 +1404,6 @@ def test_c1_runtime_failure_writes_evidence_before_shutdown(
     assert factory.close_count == 1
 
     pose_orchestrate = getattr(runner, "orchestrate_g1_pose_conditioned_tracking")
-    selected = {"candidate_id": "selected-test-pose"}
-    selected_sha256 = "a" * 64
-    monkeypatch.setattr(
-        runner,
-        "_require_selected_candidate",
-        lambda candidate, **_kwargs: dict(candidate),
-    )
     monkeypatch.setattr(runner, "_validate_legacy_pose_routes", lambda *_args, **_kwargs: None)
     pose_common = {
         "repository_commit": "b" * 40,
@@ -1154,14 +1420,37 @@ def test_c1_runtime_failure_writes_evidence_before_shutdown(
         "plan": {"trials": []},
     }
 
+    pose_runtime_events: list[str] = []
+
     def fail_pose_runtime(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        raise runner.G1ValidationError(
-            "G1_C1_MEASUREMENT_RUNTIME_ERROR",
-            "pose-conditioned measurement failed",
+        pose_runtime_events.append("validate_requested_vector")
+        runner._validate_pose_conditioned_sample(
+            {
+                "post_abort_actuation_count": 0,
+                "force_vector_valid": False,
+                "wrench_valid": False,
+                "raw_impulse_used_as_force": False,
+                "contact": False,
+                "raw_contact_count": 0,
+                "collision": False,
+                "finite": True,
+            },
+            phase="measurement",
+            requested_vector_m=nonzero_request,
         )
 
-    pose_runtime_factory = _FakeLifecycleFactory([])
+    pose_runtime_factory = _FakeLifecycleFactory(pose_runtime_events)
     pose_runtime_written: dict[str, Any] = {}
+
+    def write_pose_runtime_evidence(**kwargs: Any) -> dict[str, Any]:
+        pose_runtime_events.append("write_evidence")
+        pose_runtime_written.update(kwargs)
+        return {
+            "status": "BLOCKED",
+            "selected_command_cap_m": None,
+            "post_abort_actuation_count": 0,
+        }
+
     pose_runtime_outcome = pose_orchestrate(
         **pose_common,
         output=tmp_path / "pose-runtime-failure",
@@ -1170,17 +1459,24 @@ def test_c1_runtime_failure_writes_evidence_before_shutdown(
         multiclass_aggregator=lambda *_args, **_kwargs: pytest.fail(
             "aggregation must not run after a runner exception"
         ),
-        evidence_writer=lambda **kwargs: pose_runtime_written.update(kwargs),
+        evidence_writer=write_pose_runtime_evidence,
     )
 
     assert pose_runtime_written["trials"] == ()
     assert pose_runtime_written["aggregation"] == {
         "systemic_failure": True,
-        "systemic_failure_code": "G1_C1_MEASUREMENT_RUNTIME_ERROR",
-        "systemic_failure_message": "pose-conditioned measurement failed",
+        "systemic_failure_code": "G1_C1_REQUESTED_VECTOR_INVALID",
+        "systemic_failure_message": "measurement sample is missing requested_vector_m",
     }
     assert pose_runtime_written["aggregation"].get("selected_command_cap_m") is None
+    assert pose_runtime_events == [
+        "validate_requested_vector",
+        "write_evidence",
+        "shutdown",
+    ]
     assert pose_runtime_outcome["exit_code"] == 1
+    assert pose_runtime_outcome["report"]["selected_command_cap_m"] is None
+    assert pose_runtime_outcome["report"]["post_abort_actuation_count"] == 0
     assert pose_runtime_factory.close_exit_codes == [1]
 
     retained = {"trials": [{"trial_id": "retained-before-aggregation-error"}]}
