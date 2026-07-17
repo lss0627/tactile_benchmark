@@ -497,6 +497,7 @@ class FR3DifferentialIKRuntime:
         )
         base_result = {
             **context,
+            "action_name": str(action_name),
             "requested_action_7d": action.copy(),
             "requested_vector_m": action[:3].copy(),
             "current_observed_q": observed_q.copy(),

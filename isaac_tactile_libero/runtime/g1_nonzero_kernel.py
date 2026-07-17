@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from decimal import Decimal, InvalidOperation
 import math
 from typing import Any, Mapping, Sequence
@@ -638,11 +639,31 @@ def invoke_g1_qualifying_kernel(
 ) -> dict[str, Any]:
     """Invoke the one qualifying runtime method without rewriting its inputs."""
 
+    if "shared_kernel" in kernel_input:
+        raise G1ValidationError(
+            "G1_C1_CONTROLLER_UNQUALIFIED",
+            "shared_kernel attestation belongs only to the invoke boundary",
+        )
     action = kernel_input.get("requested_action_7d")
     if not isinstance(action, Sequence) or isinstance(action, (str, bytes)) or len(action) != 7:
         raise G1ValidationError(
             "G1_NONZERO_GOVERNOR_INPUT_INVALID",
             "qualifying kernel requires the exact public 7D action schema",
+        )
+    try:
+        authoritative_action = np.asarray(action, dtype=np.float64)
+    except (TypeError, ValueError) as error:
+        raise G1ValidationError(
+            "G1_NONZERO_GOVERNOR_INPUT_INVALID",
+            "qualifying kernel action must be float64-compatible",
+        ) from error
+    if (
+        authoritative_action.shape != (7,)
+        or not np.all(np.isfinite(authoritative_action))
+    ):
+        raise G1ValidationError(
+            "G1_NONZERO_GOVERNOR_INPUT_INVALID",
+            "qualifying kernel action must be a finite shape-[7] vector",
         )
     method = getattr(runtime, "compute_governed_translation_target", None)
     if not callable(method):
@@ -650,7 +671,65 @@ def invoke_g1_qualifying_kernel(
             "G1_C1_CONTROLLER_UNQUALIFIED",
             "runtime does not expose the shared qualifying non-zero method",
         )
-    return dict(method(**dict(kernel_input)))
+    runtime_result = method(**dict(kernel_input))
+    if not isinstance(runtime_result, Mapping):
+        raise G1ValidationError(
+            "G1_C1_DIAGNOSTIC_MISSING",
+            "shared qualifying kernel result must be a mapping",
+        )
+    result = dict(runtime_result)
+    result.pop("shared_kernel", None)
+    if result.get("send_allowed") is True:
+        try:
+            returned_action = np.asarray(
+                result.get("requested_action_7d"),
+                dtype=np.float64,
+            )
+            returned_vector = np.asarray(
+                result.get("requested_vector_m"),
+                dtype=np.float64,
+            )
+            governed_target = np.asarray(
+                result.get("governed_target"),
+                dtype=np.float64,
+            )
+        except (TypeError, ValueError) as error:
+            raise G1ValidationError(
+                "G1_C1_DIAGNOSTIC_MISSING",
+                "successful shared kernel result has non-numeric provenance",
+            ) from error
+        if (
+            returned_action.shape != (7,)
+            or returned_vector.shape != (3,)
+            or governed_target.shape != (9,)
+            or not np.all(np.isfinite(returned_action))
+            or not np.all(np.isfinite(returned_vector))
+            or not np.all(np.isfinite(governed_target))
+            or not np.array_equal(returned_action, authoritative_action)
+            or not np.array_equal(returned_vector, authoritative_action[:3])
+        ):
+            raise G1ValidationError(
+                "G1_C1_TARGET_PROVENANCE",
+                "successful shared kernel result has invalid action or target provenance",
+            )
+        if (
+            result.get("controller_qualification") != CONTROLLER_QUALIFICATION
+            or result.get("jacobian_provider") != JACOBIAN_PROVIDER
+            or result.get("benchmark_cap_eligible") is not True
+        ):
+            raise G1ValidationError(
+                "G1_C1_CONTROLLER_UNQUALIFIED",
+                "successful shared kernel result is not cap-qualifying",
+            )
+    try:
+        json.dumps(result, allow_nan=False)
+    except (TypeError, ValueError) as error:
+        raise G1ValidationError(
+            "G1_C1_DIAGNOSTIC_MISSING",
+            "shared qualifying kernel result must be JSON-safe",
+        ) from error
+    result["shared_kernel"] = True
+    return result
 
 
 def execute_g1_qualifying_kernel_send(
