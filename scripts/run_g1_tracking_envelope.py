@@ -841,6 +841,81 @@ def _sample_with_trial_provenance(
     return result
 
 
+def _retain_pose_failure_summary(
+    sample: dict[str, Any],
+    *,
+    requested_vector_m: tuple[float, float, float],
+) -> dict[str, Any]:
+    """Bind failure-summary fields to the retained authoritative sample."""
+
+    action_index = sample.get("action_index")
+    window_index = sample.get("window_index")
+    observed_m = sample.get("observed_displacement_m")
+    if (
+        type(action_index) is not int
+        or type(window_index) is not int
+        or isinstance(observed_m, bool)
+        or not isinstance(observed_m, (int, float))
+        or not math.isfinite(float(observed_m))
+    ):
+        raise G1ValidationError(
+            "G1_C1_FAILURE_PROVENANCE_MISMATCH",
+            "retained failure sample lacks exact action/window/observation provenance",
+        )
+    requested_m = math.sqrt(sum(value**2 for value in requested_vector_m))
+    if not math.isfinite(requested_m):
+        raise G1ValidationError(
+            "G1_C1_FAILURE_PROVENANCE_MISMATCH",
+            "retained failure sample requested magnitude is non-finite",
+        )
+    detail = ""
+    events = sample.get("safety_events")
+    if isinstance(events, Sequence) and not isinstance(events, (str, bytes, Mapping)):
+        for event in events:
+            if not isinstance(event, Mapping):
+                continue
+            code = event.get("code")
+            message = event.get("message")
+            if (
+                type(code) is str
+                and code.strip()
+                and type(message) is str
+                and message.strip()
+            ):
+                detail = f"{code}: {message}"
+                break
+    if not detail:
+        controller_mode = sample.get("controller_mode")
+        controller_provider = sample.get("controller_provider")
+        qualification_eligible = sample.get("qualification_eligible")
+        if (
+            type(controller_mode) is str
+            and controller_mode.strip()
+            and type(controller_provider) is str
+            and controller_provider.strip()
+            and type(qualification_eligible) is bool
+        ):
+            detail = (
+                f"controller_mode={controller_mode}; "
+                f"controller_provider={controller_provider}; "
+                f"qualification_eligible={qualification_eligible}"
+            )
+    if not detail:
+        raise G1ValidationError(
+            "G1_C1_FAILURE_PROVENANCE_MISMATCH",
+            "retained failure sample lacks a non-empty failure detail",
+        )
+    summary = {
+        "failure_action_index": action_index,
+        "failure_window_index": window_index,
+        "requested_m": requested_m,
+        "observed_m": float(observed_m),
+        "failure_detail": detail,
+    }
+    sample.update(summary)
+    return summary
+
+
 def execute_g1_pose_conditioned_tracking_trial(
     *,
     spec: Mapping[str, Any],
@@ -965,6 +1040,7 @@ def execute_g1_pose_conditioned_tracking_trial(
     validated_measurement_vectors: list[tuple[float, float, float]] = []
     failure_code: str | None = None
     failure_message: str | None = None
+    failure_summary: dict[str, Any] = {}
     cap_eligible_count = 0
     materialization = motif.get("float64_materialization")
     if materialization is not None and (
@@ -1016,6 +1092,10 @@ def execute_g1_pose_conditioned_tracking_trial(
             failure_code = "G1_C1_COMPATIBILITY_CONTROLLER_FORBIDDEN"
             failure_message = (
                 "compatibility/Jacobian controller output cannot enter benchmark-cap evidence"
+            )
+            failure_summary = _retain_pose_failure_summary(
+                sample,
+                requested_vector_m=validated_requested_vector,
             )
             break
         if nonzero:
@@ -1082,6 +1162,7 @@ def execute_g1_pose_conditioned_tracking_trial(
         "candidate_eligible": complete,
         "failure_code": failure_code,
         "failure_message": failure_message,
+        **failure_summary,
         "retained_rejection": failure_code is not None,
         "cap_eligible_measurement_sample_count": cap_eligible_count,
         "post_abort_actuation_count": sum(

@@ -1124,6 +1124,16 @@ def validate_g1_trial_identity(
     return trial_id
 
 
+def _canonical_g1_multiclass_trial_id(
+    *,
+    seed: int,
+    class_id: str,
+    command_m: float,
+    scene_index: int,
+) -> str:
+    return f"g1-c1-{seed}-{class_id}-{command_m:.8f}-{scene_index}"
+
+
 def validate_g1_multiclass_plan_trial_identities(
     plan: Mapping[str, Any],
 ) -> tuple[str, ...]:
@@ -1138,19 +1148,57 @@ def validate_g1_multiclass_plan_trial_identities(
             "G1_C1_TRIAL_IDENTITY_INVALID",
             "multiclass plan trials must be an ordered sequence",
         )
-    trial_ids = tuple(
-        validate_g1_trial_identity(
-            spec.get("trial_id") if isinstance(spec, Mapping) else None,
-            label=f"multiclass plan trial {index}",
+    plan_seed = plan.get("seed")
+    if type(plan_seed) is not int:
+        raise G1ValidationError(
+            "G1_C1_TRIAL_IDENTITY_INVALID",
+            "multiclass plan seed must be an exact integer",
         )
-        for index, spec in enumerate(trials)
-    )
-    if len(trial_ids) != len(set(trial_ids)):
+    trial_ids: list[str] = []
+    for index, spec in enumerate(trials):
+        if not isinstance(spec, Mapping):
+            raise G1ValidationError(
+                "G1_C1_TRIAL_IDENTITY_INVALID",
+                f"multiclass plan trial {index} must be a mapping",
+            )
+        class_id = spec.get("class_id")
+        command_m = spec.get("command_m")
+        scene_index = spec.get("scene_index")
+        spec_seed = spec.get("seed")
+        if (
+            type(class_id) is not str
+            or class_id not in G1_TRAJECTORY_CLASS_IDS
+            or isinstance(command_m, bool)
+            or not isinstance(command_m, (int, float))
+            or not math.isfinite(float(command_m))
+            or type(scene_index) is not int
+            or type(spec_seed) is not int
+            or spec_seed != plan_seed
+        ):
+            raise G1ValidationError(
+                "G1_C1_TRIAL_IDENTITY_INVALID",
+                f"multiclass plan trial {index} lacks canonical identity inputs",
+            )
+        expected = _canonical_g1_multiclass_trial_id(
+            seed=plan_seed,
+            class_id=class_id,
+            command_m=float(command_m),
+            scene_index=scene_index,
+        )
+        trial_ids.append(
+            validate_g1_trial_identity(
+                spec.get("trial_id"),
+                expected_trial_id=expected,
+                label=f"multiclass plan trial {index}",
+            )
+        )
+    trial_ids_tuple = tuple(trial_ids)
+    if len(trial_ids_tuple) != len(set(trial_ids_tuple)):
         raise G1ValidationError(
             "G1_C1_TRIAL_IDENTITY_INVALID",
             "multiclass plan trial_id values must be unique",
         )
-    return trial_ids
+    return trial_ids_tuple
 
 
 def build_g1_multiclass_tracking_plan(*, seed: int) -> dict[str, Any]:
@@ -1163,8 +1211,11 @@ def build_g1_multiclass_tracking_plan(*, seed: int) -> dict[str, Any]:
             "command_m": command,
             "scene_index": scene_index,
             "scene_id": f"{class_id}-{command:.8f}-{scene_index}",
-            "trial_id": (
-                f"g1-c1-{int(seed)}-{class_id}-{command:.8f}-{scene_index}"
+            "trial_id": _canonical_g1_multiclass_trial_id(
+                seed=int(seed),
+                class_id=class_id,
+                command_m=command,
+                scene_index=scene_index,
             ),
             "fresh_scene_token": f"g1-{seed}-{class_id}-{command:.8f}-{scene_index}",
             "seed": int(seed),
@@ -1199,6 +1250,56 @@ def _multiclass_systemic(code: str, message: str) -> dict[str, Any]:
     }
 
 
+def _retained_failure_summary(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Read exact failure facts retained by the authoritative trial sample."""
+
+    required = (
+        "failure_action_index",
+        "failure_window_index",
+        "requested_m",
+        "observed_m",
+        "failure_detail",
+    )
+    missing = [field for field in required if field not in row]
+    if missing:
+        raise G1ValidationError(
+            "G1_C1_FAILURE_PROVENANCE_MISMATCH",
+            f"retained rejection is missing {missing[0]}",
+        )
+    action = row["failure_action_index"]
+    window = row["failure_window_index"]
+    requested = row["requested_m"]
+    observed = row["observed_m"]
+    detail = row["failure_detail"]
+    if (
+        type(action) is not int
+        or type(window) is not int
+        or action < 0
+        or not 0 <= window < WINDOW_COUNT
+        or isinstance(requested, bool)
+        or not isinstance(requested, (int, float))
+        or isinstance(observed, bool)
+        or not isinstance(observed, (int, float))
+        or not math.isfinite(float(requested))
+        or float(requested) < 0.0
+        or not math.isfinite(float(observed))
+        or float(observed) < 0.0
+        or type(detail) is not str
+        or not detail.strip()
+    ):
+        raise G1ValidationError(
+            "G1_C1_FAILURE_PROVENANCE_MISMATCH",
+            "retained rejection failure summary is malformed",
+        )
+    return {
+        "failure_action_index": action,
+        "failure_window_index": window,
+        "requested_m": float(requested),
+        "observed_m": float(observed),
+        "failure_detail": detail,
+    }
+
+
 def _multiclass_candidate_message(
     *,
     code: str,
@@ -1208,19 +1309,47 @@ def _multiclass_candidate_message(
 ) -> str:
     row = row or {}
     maxima = list(row.get("window_maxima", ()))
-    action = row.get("failure_action_index")
-    window = row.get("failure_window_index")
-    if window is None and maxima:
+    retained_summary = (
+        _retained_failure_summary(row)
+        if row.get("retained_rejection") is True
+        else None
+    )
+    action = (
+        retained_summary["failure_action_index"]
+        if retained_summary is not None
+        else row.get("failure_action_index")
+    )
+    window = (
+        retained_summary["failure_window_index"]
+        if retained_summary is not None
+        else row.get("failure_window_index")
+    )
+    if retained_summary is None and window is None and maxima:
         window = len(maxima) - 1
+    requested = (
+        retained_summary["requested_m"]
+        if retained_summary is not None
+        else row.get("requested_m", command)
+    )
+    observed = (
+        retained_summary["observed_m"]
+        if retained_summary is not None
+        else row.get("observed_m")
+    )
+    detail = (
+        retained_summary["failure_detail"]
+        if retained_summary is not None
+        else row.get("failure_detail", code)
+    )
     return (
         f"{code}: command={command}; class={row.get('class_id', '')}; "
         f"scene={row.get('scene_id', '')}; action={action}; window={window}; "
-        f"requested_m={row.get('requested_m', command)}; "
-        f"observed_m={row.get('observed_m')}; retained_samples={retained_samples}; "
+        f"requested_m={requested}; "
+        f"observed_m={observed}; retained_samples={retained_samples}; "
         f"skipped_remaining_classes={list(row.get('skipped_remaining_classes', ())) }; "
         f"skipped_remaining_scenes={list(row.get('skipped_remaining_scenes', ())) }; "
         f"skipped_higher_commands={list(row.get('skipped_higher_commands', ())) }; "
-        f"detail={row.get('failure_detail', code)}"
+        f"detail={detail}"
     )
 
 
@@ -1401,6 +1530,7 @@ def aggregate_g1_multiclass_tracking_envelope(
             (row for row in command_rows if row.get("retained_rejection") is True),
             None,
         )
+        failure_summary_error: G1ValidationError | None = None
         if not complete_matrix:
             proven_stop_tail = False
             if retained_rejection is not None:
@@ -1421,6 +1551,10 @@ def aggregate_g1_multiclass_tracking_envelope(
                 skipped_commands = retained_rejection.get(
                     "skipped_higher_commands"
                 )
+                try:
+                    _retained_failure_summary(retained_rejection)
+                except G1ValidationError as error:
+                    failure_summary_error = error
                 proven_stop_tail = (
                     failed_index >= 0
                     and expected_remaining_scenes is not None
@@ -1444,6 +1578,11 @@ def aggregate_g1_multiclass_tracking_envelope(
                     "G1_C1_CLASS_PROVENANCE_MISMATCH",
                     f"candidate {command} retained rejection lacks a proven safe stop-tail",
                 )
+            elif failure_summary_error is not None:
+                systemic = _multiclass_systemic(
+                    failure_summary_error.code,
+                    failure_summary_error.message,
+                )
             elif retained_rejection is None:
                 systemic = _multiclass_systemic(
                     "G1_C1_REQUIRED_CLASS_MISSING",
@@ -1451,14 +1590,17 @@ def aggregate_g1_multiclass_tracking_envelope(
                 )
         decision: dict[str, Any] = {"eligible": eligible, "code": code, "command_m": command}
         if not eligible:
-            decision["message"] = _multiclass_candidate_message(
-                code=code,
-                command=command,
-                row=first_failure,
-                retained_samples=sum(
-                    len(row.get("retained_gains", ())) for row in command_rows
-                ),
-            )
+            if failure_summary_error is not None:
+                decision["message"] = failure_summary_error.message
+            else:
+                decision["message"] = _multiclass_candidate_message(
+                    code=code,
+                    command=command,
+                    row=first_failure,
+                    retained_samples=sum(
+                        len(row.get("retained_gains", ())) for row in command_rows
+                    ),
+                )
         candidate_decisions[f"{command:.8f}"] = decision
         if eligible:
             eligible_commands.append(command)
