@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -176,6 +177,71 @@ def test_qualifying_kernel_bases_target_on_current_observed_q() -> None:
     assert callable(method), (
         "T140 missing FR3DifferentialIKRuntime.compute_governed_translation_target"
     )
+    runtime = object.__new__(FR3DifferentialIKRuntime)
+    runtime.ik_runtime = SimpleNamespace(
+        solver_joint_names=SOLVER_NAMES,
+        warnings=(),
+    )
+    runtime.compute_numeric_translation_jacobian = (
+        lambda _solver_joint_positions, *, epsilon: (
+            np.zeros(3, dtype=np.float64),
+            np.eye(3, 7, dtype=np.float64),
+        )
+    )
+    requested_action = np.asarray(
+        [0.0, 0.0, -0.00025, 0.0, 0.0, 0.0, 0.0],
+        dtype=np.float64,
+    )
+    current_q = np.zeros(9, dtype=np.float64)
+    current_qd = np.zeros(9, dtype=np.float64)
+    previous_target = np.zeros(9, dtype=np.float64)
+    safety_limits = SimpleNamespace(
+        joint_position_lower=(-2.0,) * 9,
+        joint_position_upper=(2.0,) * 9,
+        joint_velocity_abs=(1.0,) * 9,
+        max_step_motion_m=0.0005,
+    )
+
+    composed_results = {
+        input_kind: runtime.compute_governed_translation_target(
+            requested_action_7d=input_value,
+            current_observed_q=current_q,
+            current_observed_qd=current_qd,
+            previous_accepted_target=previous_target,
+            articulation_joint_names=ARTICULATION_NAMES,
+            safety_limits=safety_limits,
+            action_name=f"real_type_{input_kind}",
+        )
+        for input_kind, input_value in (
+            ("ndarray", requested_action),
+            ("tuple", tuple(requested_action.tolist())),
+            ("list", requested_action.tolist()),
+        )
+    }
+    expected_composed = composed_results["ndarray"]
+    for composed in composed_results.values():
+        assert composed["requested_action_7d"] == requested_action.tolist()
+        assert composed["requested_vector_m"] == requested_action[:3].tolist()
+        assert composed["requested_action_7d"][3:] == [0.0, 0.0, 0.0, 0.0]
+        assert composed["controller_qualification"] == "lula_fd_translation"
+        assert composed["jacobian_provider"] == "lula_fd_translation"
+        assert composed["benchmark_cap_eligible"] is True
+        assert composed["send_allowed"] is True
+        assert composed["governor_state"] == "ALLOW_UNMODIFIED"
+        assert composed["raw_dq"] == expected_composed["raw_dq"]
+        assert composed["clipped_dq"] == expected_composed["clipped_dq"]
+        assert composed["governed_target"] == expected_composed["governed_target"]
+        assert all(
+            np.all(np.isfinite(np.asarray(composed[field], dtype=np.float64)))
+            for field in (
+                "requested_action_7d",
+                "raw_dq",
+                "clipped_dq",
+                "governed_target",
+            )
+        )
+        json.dumps(composed)
+
     compute = _kernel_capability("compute_observed_q_target")
     observed = np.linspace(-0.3, 0.3, 9)
     previous = np.full(9, 4.0)

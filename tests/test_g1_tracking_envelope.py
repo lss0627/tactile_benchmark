@@ -1178,6 +1178,10 @@ def test_c1_invalid_collision_report_blocks_measurement_evidence() -> None:
 def test_c1_runtime_failure_writes_evidence_before_shutdown(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from isaac_tactile_libero.robots.fr3_differential_ik import (
+        FR3DifferentialIKRuntime,
+    )
+
     runner, orchestrate = _tracking_lifecycle()
     zero_request = [0.0, 0.0, 0.0]
     nonzero_request = [0.00012, -0.00016, 0.00021]
@@ -1560,6 +1564,76 @@ def test_c1_runtime_failure_writes_evidence_before_shutdown(
     assert pose_runtime_outcome["report"]["selected_command_cap_m"] is None
     assert pose_runtime_outcome["report"]["post_abort_actuation_count"] == 0
     assert pose_runtime_factory.close_exit_codes == [1]
+
+    invalid_ndarray_events: list[str] = []
+    invalid_ndarray_factory = _FakeLifecycleFactory(invalid_ndarray_events)
+    invalid_ndarray_written: dict[str, Any] = {}
+    invalid_ndarray_runtime = object.__new__(FR3DifferentialIKRuntime)
+    invalid_ndarray_runtime.ik_runtime = SimpleNamespace(
+        solver_joint_names=tuple(EXPECTED_TEST_DOFS[:7]),
+        warnings=(),
+    )
+
+    def fail_invalid_ndarray_composition(
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
+        invalid_ndarray_events.append("invalid_ndarray_composition")
+        return invalid_ndarray_runtime.compute_governed_translation_target(
+            requested_action_7d=np.zeros(6, dtype=np.float64),
+            current_observed_q=np.zeros(9, dtype=np.float64),
+            current_observed_qd=np.zeros(9, dtype=np.float64),
+            previous_accepted_target=np.zeros(9, dtype=np.float64),
+            articulation_joint_names=EXPECTED_TEST_DOFS,
+            safety_limits=SimpleNamespace(
+                joint_position_lower=(-2.0,) * 9,
+                joint_position_upper=(2.0,) * 9,
+                joint_velocity_abs=(1.0,) * 9,
+                max_step_motion_m=0.0005,
+            ),
+        )
+
+    def write_invalid_ndarray_evidence(**kwargs: Any) -> dict[str, Any]:
+        invalid_ndarray_events.extend(["write_evidence", "checksums_complete"])
+        invalid_ndarray_written.update(kwargs)
+        blocker = kwargs["aggregation"]
+        return {
+            "status": "BLOCKED",
+            "systemic_failure": blocker["systemic_failure"],
+            "systemic_failure_code": blocker["systemic_failure_code"],
+            "systemic_failure_message": blocker["systemic_failure_message"],
+            "selected_command_cap_m": None,
+            "post_abort_actuation_count": 0,
+        }
+
+    invalid_ndarray_outcome = pose_orchestrate(
+        **pose_common,
+        output=tmp_path / "pose-invalid-ndarray",
+        factory_builder=lambda: invalid_ndarray_factory,
+        plan_runner=fail_invalid_ndarray_composition,
+        multiclass_aggregator=lambda *_args, **_kwargs: pytest.fail(
+            "aggregation must not run after invalid ndarray composition"
+        ),
+        evidence_writer=write_invalid_ndarray_evidence,
+    )
+
+    invalid_ndarray_blocker = invalid_ndarray_written["aggregation"]
+    assert invalid_ndarray_written["trials"] == ()
+    assert invalid_ndarray_blocker["systemic_failure"] is True
+    assert invalid_ndarray_blocker["systemic_failure_code"].startswith("G1_")
+    assert invalid_ndarray_blocker["systemic_failure_message"].strip()
+    assert invalid_ndarray_blocker.get("selected_command_cap_m") is None
+    assert invalid_ndarray_outcome["exit_code"] == 1
+    assert invalid_ndarray_outcome["report"]["selected_command_cap_m"] is None
+    assert invalid_ndarray_outcome["report"]["post_abort_actuation_count"] == 0
+    assert invalid_ndarray_events == [
+        "invalid_ndarray_composition",
+        "write_evidence",
+        "checksums_complete",
+        "shutdown",
+    ]
+    assert invalid_ndarray_factory.close_count == 1
+    assert invalid_ndarray_factory.close_exit_codes == [1]
 
     retained = {"trials": [{"trial_id": "retained-before-aggregation-error"}]}
 
@@ -2718,6 +2792,10 @@ class _SharedQualifyingKernelSpy:
 def test_c1_nonzero_path_invokes_shared_qualifying_kernel_with_observed_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from isaac_tactile_libero.robots.fr3_differential_ik import (
+        FR3DifferentialIKRuntime,
+    )
+
     runner = _tracking_runner()
     invoke = getattr(runner, "_invoke_g1_qualifying_kernel", None)
     assert callable(invoke), (
@@ -2732,11 +2810,18 @@ def test_c1_nonzero_path_invokes_shared_qualifying_kernel_with_observed_state(
         "class_id": TRAJECTORY_CLASS_IDS[0],
         "starting_pose_sha256": "a" * 64,
     }
+    assert "shared_kernel" not in kernel_input
+    assert "shared_kernel" not in spy.result
 
     result = invoke(runtime=spy, kernel_input=kernel_input)
 
     assert spy.calls == [kernel_input]
+    assert result.get("shared_kernel") is True, (
+        "the real shared invoke boundary must author shared_kernel=true "
+        "only after the runtime method succeeds"
+    )
     assert result["controller_qualification"] == "lula_fd_translation"
+    assert result["jacobian_provider"] == "lula_fd_translation"
     assert result["benchmark_cap_eligible"] is True
     assert result["requested_action_7d"] == kernel_input["requested_action_7d"]
 
@@ -2802,105 +2887,249 @@ def test_c1_nonzero_path_invokes_shared_qualifying_kernel_with_observed_state(
         )
         trial_id = spec["trial_id"]
         requested_vector = [0.0, 0.0, -0.00025]
-        kernel_calls: list[dict[str, Any]] = []
 
-        def invoke_spy(*, runtime: Any, kernel_input: dict[str, Any]):
-            kernel_calls.append(dict(kernel_input))
-            return {
-                "shared_kernel": True,
-                "send_allowed": True,
-                "requested_action_7d": list(kernel_input["requested_action_7d"]),
-                "requested_vector_m": list(
-                    kernel_input["requested_action_7d"][:3]
+        def real_scene(numerical_jacobian):
+            joint_state = SimpleNamespace(
+                joint_names=list(EXPECTED_TEST_DOFS),
+                joint_positions=[0.0] * len(EXPECTED_TEST_DOFS),
+                joint_velocities=[0.0] * len(EXPECTED_TEST_DOFS),
+            )
+            stage = object()
+            articulation = object()
+            runtime = object.__new__(FR3DifferentialIKRuntime)
+            runtime.ik_runtime = SimpleNamespace(
+                solver_joint_names=tuple(EXPECTED_TEST_DOFS[:7]),
+                warnings=(),
+                ee_controller=SimpleNamespace(
+                    controller=SimpleNamespace(
+                        stage=stage,
+                        articulation=articulation,
+                    )
                 ),
-                "governed_target": [0.001] * len(EXPECTED_TEST_DOFS),
-                "controller_qualification": "lula_fd_translation",
-                "benchmark_cap_eligible": True,
-                "governor_state": "ALLOW_UNMODIFIED",
-                "trial_id": kernel_input.get("trial_id"),
-            }
+            )
+            runtime.articulation_root_path = "/World/FR3"
+            runtime.compute_numeric_translation_jacobian = numerical_jacobian
+            runtime.read_current_ee_transform = lambda: SimpleNamespace(
+                position=[0.3, 0.0, 0.8]
+            )
+            runtime.read_joint_state = lambda: joint_state
+            sent_targets: list[list[float]] = []
 
-        def send_spy(*, kernel_result, send_target, accept_target):
-            target = list(kernel_result["governed_target"])
-            assert send_target(target) is True
-            accept_target(target)
-            return {
-                **dict(kernel_result),
-                "send_result": True,
-                "runtime_state": "SENT",
-                "executed_joint_target": target,
-            }
+            def send_target(target):
+                sent_targets.append(list(target))
+                return True
 
-        context.setattr(runner, "_invoke_g1_qualifying_kernel", invoke_spy)
-        context.setattr(runner, "_execute_g1_qualifying_kernel_send", send_spy)
-        sample = _real_pose_scene_sample(
-            runner,
-            requested_vector,
-            trial_spec=spec,
-            phase="measurement",
+            runtime.send_joint_position_targets = send_target
+            runtime.update = lambda _substeps: None
+            accepted_targets: list[list[float]] = []
+            abort_reasons: list[str] = []
+            target_latch = SimpleNamespace(
+                resolve_zero_target=lambda **_kwargs: np.zeros(
+                    len(EXPECTED_TEST_DOFS)
+                ),
+                abort=lambda reason: abort_reasons.append(str(reason)),
+                accept_target=lambda target, **_kwargs: accepted_targets.append(
+                    list(target)
+                ),
+                provenance={"source": "get_dof_position_targets"},
+            )
+            scene = object.__new__(runner._PoseConditionedIsaacTrackingScene)
+            scene._aborted = False
+            scene._scene_token = "real-kernel-composition"
+            scene.runtime = runtime
+            scene.contact_sensor = SimpleNamespace(
+                read=lambda _index: SimpleNamespace(
+                    in_contact=False,
+                    raw_contacts=[],
+                )
+            )
+            scene.collision_monitor = SimpleNamespace(
+                read=lambda: {
+                    "valid": True,
+                    "unsafe_collision": False,
+                    "max_penetration_m": 0.0,
+                    "error": None,
+                }
+            )
+            scene.safety = SimpleNamespace(
+                check=lambda _sample: SimpleNamespace(
+                    allow_actuation=True,
+                    violations=[],
+                ),
+                limits=SimpleNamespace(
+                    joint_position_lower=(-2.0,) * 9,
+                    joint_position_upper=(2.0,) * 9,
+                    joint_velocity_abs=(1.0,) * 9,
+                    max_step_motion_m=0.0005,
+                ),
+            )
+            scene.target_latch = target_latch
+            scene.mechanism = SimpleNamespace(
+                read_stage=lambda _stage: SimpleNamespace(travel_m=0.0)
+            )
+            scene.initial_tcp_position_m = (0.3, 0.0, 0.8)
+            scene.spec = dict(spec)
+            scene.provenance = {
+                "stage_identity": 1,
+                "articulation_identity": 2,
+                "target_latch_identity": 3,
+                "instance_identity": 4,
+            }
+            sample = runner._PoseConditionedIsaacTrackingScene.step(
+                scene,
+                requested_vector_m=requested_vector,
+                action_index=0,
+                physics_substeps=3,
+                phase="measurement",
+                motif_item=None,
+            )
+            return sample, sent_targets, accepted_targets, abort_reasons
+
+        sample, sent_targets, accepted_targets, abort_reasons = real_scene(
+            lambda _solver_joint_positions, *, epsilon: (
+                np.zeros(3, dtype=np.float64),
+                np.eye(3, 7, dtype=np.float64),
+            )
         )
 
-        assert len(kernel_calls) == 1
-        assert kernel_calls[0].get("trial_id") == trial_id
-        assert kernel_calls[0]["action_name"] == f"c1_{trial_id}_0"
-        assert kernel_calls[0]["requested_action_7d"][:3] == requested_vector
         assert sample.get("trial_id") == trial_id
         assert sample["requested_vector_m"] == requested_vector
         assert sample["controller_mode"] == "lula_fd_translation"
         assert sample["controller_provider"] == "lula"
         assert sample["qualification_eligible"] is True
+        assert sample["qualifying_kernel"]["shared_kernel"] is True
+        assert sample["qualifying_kernel"]["controller_qualification"] == (
+            "lula_fd_translation"
+        )
+        assert sample["qualifying_kernel"]["jacobian_provider"] == (
+            "lula_fd_translation"
+        )
+        assert sample["qualifying_kernel"]["benchmark_cap_eligible"] is True
         assert sample["qualifying_kernel"]["trial_id"] == trial_id
+        assert sample["qualifying_kernel"]["action_name"] == f"c1_{trial_id}_0"
+        assert sample["qualifying_kernel"]["requested_action_7d"] == [
+            *requested_vector,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        ]
+        assert sent_targets == accepted_targets
+        assert len(sent_targets) == 1
+        assert abort_reasons == []
+        json.dumps(sample["qualifying_kernel"])
 
-        context.setattr(
-            runner,
-            "_invoke_g1_qualifying_kernel",
-            lambda **_kwargs: (_ for _ in ()).throw(
+        failed_sample, failed_sends, failed_accepts, failed_aborts = real_scene(
+            lambda _solver_joint_positions, *, epsilon: (_ for _ in ()).throw(
                 runner.G1ValidationError(
                     "G1_C1_KERNEL_SYNTHETIC_FAILURE",
-                    "synthetic shared-kernel failure",
+                    "synthetic numerical seam failure",
                 )
-            ),
+            )
         )
-        failed_sample = _real_pose_scene_sample(
-            runner,
-            requested_vector,
-            trial_spec=spec,
-            phase="measurement",
-        )
+        assert failed_sends == []
+        assert failed_accepts == []
+        assert failed_aborts == ["qualifying non-zero kernel failure"]
         assert failed_sample["post_abort_actuation_count"] == 0
         assert failed_sample["qualification_eligible"] is False
         assert failed_sample["safety_events"] == [
             {
                 "code": "G1_C1_KERNEL_SYNTHETIC_FAILURE",
-                "message": "synthetic shared-kernel failure",
+                "message": "synthetic numerical seam failure",
             }
         ]
 
 
 def test_c1_shared_kernel_latch_updates_only_after_successful_send() -> None:
     runner = _tracking_runner()
+    invoke = getattr(runner, "_invoke_g1_qualifying_kernel", None)
     execute = getattr(runner, "_execute_g1_qualifying_kernel_send", None)
+    assert callable(invoke), "T147 C1 runner missing shared-kernel invoke seam"
     assert callable(execute), (
         "T147 C1 runner missing governed send/latch integration seam"
     )
-    accepted: list[list[float]] = []
-    result = {
-        "send_allowed": True,
-        "governed_target": [0.001] * 7 + [0.02, 0.02],
+    kernel_input = {
+        "requested_action_7d": [
+            0.0,
+            0.0,
+            -0.00025,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        ]
     }
+    send_calls: list[list[float]] = []
+    accepted: list[list[float]] = []
+
+    with pytest.raises(runner.G1ValidationError):
+        invoke(
+            runtime=_SharedQualifyingKernelSpy(),
+            kernel_input={"requested_action_7d": [0.0] * 6},
+        )
+    assert send_calls == []
+    assert accepted == []
+
+    raising_runtime = SimpleNamespace(
+        compute_governed_translation_target=lambda **_kwargs: (
+            _ for _ in ()
+        ).throw(RuntimeError("synthetic real-kernel failure"))
+    )
+    with pytest.raises(RuntimeError, match="synthetic real-kernel failure"):
+        invoke(runtime=raising_runtime, kernel_input=kernel_input)
+    assert send_calls == []
+    assert accepted == []
+
+    rejected_kernel = invoke(
+        runtime=_SharedQualifyingKernelSpy(
+            {
+                "send_allowed": False,
+                "governed_target": [0.001] * 7 + [0.02, 0.02],
+                "governor_state": "REJECTED",
+                "governor_code": "G1_NONZERO_GOVERNOR_REQUEST_LIMIT",
+                "post_abort_actuation_count": 0,
+            }
+        ),
+        kernel_input=kernel_input,
+    )
+    rejected = execute(
+        kernel_result=rejected_kernel,
+        send_target=lambda target: send_calls.append(list(target)) or True,
+        accept_target=lambda target: accepted.append(list(target)),
+        physical_context={"post_abort_actuation_count": 0},
+    )
+    assert rejected["send_attempted"] is False
+    assert rejected["send_result"] is None
+    assert rejected["post_abort_actuation_count"] == 0
+    assert send_calls == []
+    assert accepted == []
+
+    result = invoke(
+        runtime=_SharedQualifyingKernelSpy(),
+        kernel_input=kernel_input,
+    )
+    assert result.get("shared_kernel") is True, (
+        "send eligibility requires the real invoke boundary attestation"
+    )
 
     failed = execute(
         kernel_result=result,
-        send_target=lambda _target: False,
+        send_target=lambda target: send_calls.append(list(target)) or False,
         accept_target=lambda target: accepted.append(list(target)),
+        physical_context={"post_abort_actuation_count": 0},
     )
     assert failed["send_result"] is False
+    assert failed["post_abort_actuation_count"] == 0
+    assert len(send_calls) == 1
     assert accepted == []
 
     succeeded = execute(
         kernel_result=result,
-        send_target=lambda _target: True,
+        send_target=lambda target: send_calls.append(list(target)) or True,
         accept_target=lambda target: accepted.append(list(target)),
+        physical_context={"post_abort_actuation_count": 0},
     )
     assert succeeded["send_result"] is True
+    assert succeeded["post_abort_actuation_count"] == 0
     assert accepted == [result["governed_target"]]
+    assert len(send_calls) == 2
