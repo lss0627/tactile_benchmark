@@ -29,6 +29,7 @@ from isaac_tactile_libero.robots.fr3_static_pose_diagnostic import (
 from isaac_tactile_libero.runtime.fr3_target_latch import FR3PositionTargetLatch
 from isaac_tactile_libero.runtime.g1_static_pose import (
     C2A_ARTICULATION_JOINT_NAMES,
+    C2A_CANDIDATES,
     build_c2a_offline_records,
     c2a_candidate_definitions,
 )
