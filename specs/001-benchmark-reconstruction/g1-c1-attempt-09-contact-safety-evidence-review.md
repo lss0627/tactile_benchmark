@@ -247,3 +247,8 @@ lower non-zero candidate, or another approved physical/control architecture.
 No threshold, `0.0005 m` hard limit, `0.005 m` clearance, budget, physics
 policy, driver policy, Contact policy, or force/wrench truth boundary was
 changed by this review.
+
+## Architecture follow-up
+
+The evidence-driven full-robot safety architecture review is
+[`g1-c1-attempt-09-full-robot-contact-architecture-review.md`](g1-c1-attempt-09-full-robot-contact-architecture-review.md).
