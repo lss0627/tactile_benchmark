@@ -32,7 +32,11 @@ from isaac_tactile_libero.runtime.g1_static_pose import (
     c2a_candidate_definitions,
 )
 from isaac_tactile_libero.runtime.g1_tracking import G1ValidationError
-from isaac_tactile_libero.sensors.isaacsim6_contact import IsaacSim6ContactSensor
+from isaac_tactile_libero.sensors.isaacsim6_contact import (
+    IsaacSim6ContactSensor,
+    inspect_g1_contact_stage_authority,
+    normalize_g1_contact_provenance,
+)
 from isaac_tactile_libero.tasks.press_button_mechanism import (
     PressButtonMechanism,
     load_press_button_mechanism_config,
@@ -539,6 +543,21 @@ class C2ARealStaticScene:
             max_threshold=10000000.0,
             radius=-1.0,
         )
+        stage = self.runtime.ik_runtime.ee_controller.controller.stage
+        (
+            self.contact_authority,
+            self.contact_body_path_resolver,
+            self.contact_rigid_body_path_resolver,
+            self.contact_report_api_resolver,
+        ) = inspect_g1_contact_stage_authority(
+            stage=stage,
+            sensor_prim_path=self.mechanism.config.contact_sensor_prim_path,
+        )
+        from isaacsim.core.simulation_manager import SimulationManager  # type: ignore
+
+        self.read_observed_physics_step = lambda: int(
+            SimulationManager.get_num_physics_steps()
+        )
         self.runtime.update(1)
         self.contact_sensor = IsaacSim6ContactSensor(
             self.mechanism.config.contact_sensor_prim_path
@@ -550,6 +569,10 @@ class C2ARealStaticScene:
                 break
         else:
             _fail("G1_C2A_CONTACT", "C2a Contact did not become valid")
+        self.contact_previous_sensor_time_s: float | None = None
+        self.contact_previous_observed_physics_step = (
+            self.read_observed_physics_step()
+        )
         import omni.physx  # type: ignore
         from pxr import PhysicsSchemaTools  # type: ignore
         from scripts.run_fr3_press_button_press_smoke import PhysXCollisionMonitor
@@ -592,6 +615,9 @@ class C2ARealStaticScene:
         pre_joint = self.runtime.read_joint_state()
         pre_ee = self.runtime.read_current_ee_transform()
         target_before = self.target.copy()
+        previous_observed_physics_step = (
+            self.contact_previous_observed_physics_step
+        )
         sent = self.runtime.send_joint_position_targets(target_before)
         if not sent:
             self._aborted = True
@@ -603,7 +629,37 @@ class C2ARealStaticScene:
         target_after = np.asarray(
             articulation.get_dof_position_targets(), dtype=np.float64
         ).reshape(-1)
+        observed_physics_step = self.read_observed_physics_step()
         contact = self.contact_sensor.read(int(action_index))
+        contact_provenance = normalize_g1_contact_provenance(
+            sample=contact,
+            execution={
+                "consumer": "c2a",
+                "trial_id": None,
+                "candidate_id": self.candidate["candidate_id"],
+                "class_id": None,
+                "scene_id": self.spec["fresh_scene_token"],
+                "scene_index": int(self.spec["scene_index"]),
+                "phase": "c2a_readiness",
+                "action_index": int(action_index),
+                "window_index": None,
+                "requested_vector_m": [0.0, 0.0, 0.0],
+            },
+            sensor_authority=self.contact_authority,
+            expected_read_sequence_index=int(action_index),
+            previous_sensor_time_s=self.contact_previous_sensor_time_s,
+            previous_observed_physics_step=previous_observed_physics_step,
+            observed_physics_step=observed_physics_step,
+            body_path_resolver=self.contact_body_path_resolver,
+            rigid_body_path_resolver=self.contact_rigid_body_path_resolver,
+            contact_report_api_resolver=self.contact_report_api_resolver,
+        )
+        self.contact_previous_sensor_time_s = (
+            float(contact.time)
+            if math.isfinite(float(contact.time))
+            else self.contact_previous_sensor_time_s
+        )
+        self.contact_previous_observed_physics_step = observed_physics_step
         collision = self.collision_monitor.read()
         stage = self.runtime.ik_runtime.ee_controller.controller.stage
         button = self.mechanism.read_stage(stage)
@@ -624,7 +680,7 @@ class C2ARealStaticScene:
         )
         self._next_action_index += 1
         return {
-            "schema_version": "g1.c2a.static.v1",
+            "schema_version": "g1.c2a.static.v2",
             "candidate_id": self.candidate["candidate_id"],
             "seed": self.owner.seed,
             "readiness_action_index": int(action_index),
@@ -633,9 +689,10 @@ class C2ARealStaticScene:
             "target_before": target_before.tolist(),
             "target_after": target_after.tolist(),
             "send_result": bool(sent),
-            "contact_valid": bool(contact.is_valid),
-            "contact": bool(contact.in_contact),
-            "raw_contact_count": len(contact.raw_contacts),
+            "contact_valid": contact_provenance["reading"]["contact_valid"],
+            "contact": contact_provenance["reading"]["in_contact"],
+            "raw_contact_count": contact_provenance["raw_contact_count"],
+            "contact_provenance": contact_provenance,
             "collision_report_valid": collision.get("valid") is True,
             "collision": bool(collision.get("unsafe_collision", False)),
             "penetration_m": float(collision.get("max_penetration_m", 0.0)),

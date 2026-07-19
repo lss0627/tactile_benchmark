@@ -38,6 +38,10 @@ from isaac_tactile_libero.runtime.g1_static_pose import (
     validate_c2a_readiness_sample,
 )
 from isaac_tactile_libero.runtime.g1_tracking import G1ValidationError
+from isaac_tactile_libero.sensors.isaacsim6_contact import (
+    ContactProvenanceError,
+    classify_g1_contact_provenance,
+)
 
 
 C2A_SEED = 1701
@@ -457,6 +461,15 @@ def validate_real_c2a_offline_candidates(
 def validate_real_c2a_readiness_sample(sample: Mapping[str, Any]) -> dict[str, Any]:
     """Validate complete real per-step static truth without optimistic defaults."""
 
+    if (
+        not isinstance(sample, Mapping)
+        or sample.get("schema_version") != "g1.c2a.static.v2"
+        or "contact_provenance" not in sample
+    ):
+        _fail(
+            "G1_C2A_CONTACT_PROVENANCE_INVALID",
+            "C2a readiness Contact provenance is invalid",
+        )
     required = (
         "contact_valid", "contact", "raw_contact_count", "collision_report_valid",
         "collision", "penetration_m", "penetration_provenance_valid",
@@ -473,8 +486,28 @@ def validate_real_c2a_readiness_sample(sample: Mapping[str, Any]) -> dict[str, A
         _fail("G1_C2A_RUNTIME_TRUTH_MISSING", "C2a real readiness sample is incomplete")
     if sample["synthetic_test_double"] is not False or sample["real_runtime_truth"] is not True:
         _fail("G1_C2A_SYNTHETIC_RUNTIME_FORBIDDEN", "synthetic readiness sample is forbidden")
-    if sample["contact_valid"] is not True:
-        _fail("G1_C2A_CONTACT", "C2a Contact validity is false")
+    try:
+        contact_state = classify_g1_contact_provenance(
+            sample["contact_provenance"],
+            mirrors=sample,
+            consumer="c2a",
+            phase="c2a_readiness",
+            expected_execution={
+                "trial_id": None,
+                "candidate_id": sample.get("candidate_id"),
+                "class_id": None,
+                "action_index": sample.get("readiness_action_index"),
+                "window_index": None,
+                "requested_vector_m": sample.get("requested_vector_m"),
+            },
+        )
+    except ContactProvenanceError:
+        _fail(
+            "G1_C2A_CONTACT_PROVENANCE_INVALID",
+            "C2a readiness Contact provenance is invalid",
+        )
+    if contact_state == "contact":
+        _fail("G1_C2A_CONTACT", "C2a readiness sample contains contact")
     if sample["collision_report_valid"] is not True:
         _fail("G1_C2A_PENETRATION_PROVENANCE", "C2a collision report validity is false")
     if sample["send_result"] is not True:
