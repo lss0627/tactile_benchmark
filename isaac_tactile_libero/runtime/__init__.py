@@ -3,6 +3,7 @@
 from .g1_tracking import (
     G1TrackingSample,
     G1TrackingTrial,
+    G1TrackingRunAccumulator,
     G1ValidationError,
     aggregate_g1_tracking_envelope,
     aggregate_g1_multiclass_tracking_envelope,
@@ -41,6 +42,7 @@ from .g1_static_pose import (
 __all__ = [
     "G1TrackingSample",
     "G1TrackingTrial",
+    "G1TrackingRunAccumulator",
     "G1ValidationError",
     "FR3PositionTargetLatch",
     "G1_NONZERO_GOVERNOR_STATES",

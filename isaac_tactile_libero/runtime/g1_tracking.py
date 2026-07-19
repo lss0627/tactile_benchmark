@@ -1250,6 +1250,421 @@ def _multiclass_systemic(code: str, message: str) -> dict[str, Any]:
     }
 
 
+_G1_TRACKING_TRIAL_STATES = frozenset(
+    {
+        "PLANNED",
+        "RUNNING_READINESS",
+        "RUNNING_MEASUREMENT",
+        "COMPLETE",
+        "RETAINED_REJECTION",
+        "STRUCTURAL_FAILURE",
+        "UNEXPECTED_FAILURE",
+    }
+)
+
+
+def _deep_json_copy(value: Any) -> Any:
+    try:
+        return json.loads(
+            json.dumps(
+                value,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        )
+    except (TypeError, ValueError, OverflowError) as error:
+        raise G1ValidationError(
+            "G1_C1_RUN_SNAPSHOT_INVALID",
+            f"partial-run value is not finite JSON-safe data: {error}",
+        ) from error
+
+
+class G1TrackingRunAccumulator:
+    """Own the one mutable C1 prefix and expose detached audit snapshots."""
+
+    def __init__(self, *, plan: Mapping[str, Any], trial_ids: Sequence[str]) -> None:
+        canonical_plan = _deep_json_copy(dict(plan))
+        plan_payload = json.dumps(
+            canonical_plan,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        self._plan = canonical_plan
+        self._plan_identity = {
+            "plan_schema_version": "g1.pose_conditioned.multiclass_plan.v1",
+            "plan_sha256": hashlib.sha256(plan_payload).hexdigest(),
+            "class_ids": list(G1_TRAJECTORY_CLASS_IDS),
+            "commands_m": list(G1_TRACKING_COMMANDS_M),
+            "scenes_per_class_command": 3,
+            "trial_ids": list(trial_ids),
+        }
+        self._trials: list[dict[str, Any]] = []
+        self._active_trial_index: int | None = None
+        self._last_plan_trial_index = -1
+        self._last_sample_phase: str | None = None
+        self._failure: dict[str, Any] | None = None
+        self._stopped_after_command_m: float | None = None
+        self._skipped_remaining_classes: list[str] = []
+        self._skipped_remaining_scenes: list[int] = []
+        self._skipped_higher_commands: list[float] = []
+        self._systemic_failure = False
+        self._systemic_failure_code: str | None = None
+        self._systemic_failure_message: str | None = None
+        self._selected_command_cap_m: float | None = None
+
+    @classmethod
+    def from_validated_plan(
+        cls,
+        plan: Mapping[str, Any],
+    ) -> "G1TrackingRunAccumulator":
+        if not isinstance(plan, Mapping):
+            raise G1ValidationError(
+                "G1_C1_TRIAL_IDENTITY_INVALID",
+                "partial-run plan must be a mapping",
+            )
+        trial_ids = validate_g1_multiclass_plan_trial_identities(plan)
+        if (
+            tuple(plan.get("class_ids", ())) != G1_TRAJECTORY_CLASS_IDS
+            or tuple(float(value) for value in plan.get("commands_m", ()))
+            != G1_TRACKING_COMMANDS_M
+            or plan.get("scenes_per_class_command") != 3
+            or len(trial_ids) != 90
+        ):
+            raise G1ValidationError(
+                "G1_C1_CLASS_PROVENANCE_MISMATCH",
+                "partial-run plan topology is not canonical",
+            )
+        return cls(plan=plan, trial_ids=trial_ids)
+
+    def _active(self) -> dict[str, Any]:
+        if self._active_trial_index is None:
+            raise G1ValidationError(
+                "G1_C1_RUN_SNAPSHOT_INVALID",
+                "partial-run accumulator has no active trial",
+            )
+        return self._trials[self._active_trial_index]
+
+    def begin_trial(self, spec: Mapping[str, Any]) -> None:
+        if self._active_trial_index is not None:
+            raise G1ValidationError(
+                "G1_C1_RUN_SNAPSHOT_INVALID",
+                "cannot begin a second active C1 trial",
+            )
+        record = _deep_json_copy(dict(spec))
+        trial_id = validate_g1_trial_identity(
+            record.get("trial_id"),
+            label="partial-run trial",
+        )
+        try:
+            plan_trial_index = self._plan_identity["trial_ids"].index(trial_id)
+        except ValueError:
+            raise G1ValidationError(
+                "G1_C1_TRIAL_IDENTITY_INVALID",
+                "partial-run trial is not present in the canonical plan",
+            ) from None
+        if plan_trial_index <= self._last_plan_trial_index:
+            raise G1ValidationError(
+                "G1_C1_TRIAL_IDENTITY_INVALID",
+                "partial-run trial order is not a monotonic plan prefix",
+            )
+        expected_index = len(self._trials)
+        row = {
+            **record,
+            "trial_state": "PLANNED",
+            "complete": False,
+            "candidate_eligible": False,
+            "retained_rejection": False,
+            "readiness_samples": [],
+            "measurement_samples": [],
+            "readiness_action_count": 0,
+            "measurement_action_count": 0,
+            "cap_eligible_measurement_sample_count": 0,
+            "failure_code": None,
+            "failure_message": None,
+            "failure_action_index": None,
+            "failure_window_index": None,
+            "requested_m": None,
+            "observed_m": None,
+            "post_abort_actuation_count": 0,
+            "force_vector_valid": False,
+            "wrench_valid": False,
+            "raw_impulse_used_as_force": False,
+        }
+        self._trials.append(row)
+        self._active_trial_index = expected_index
+        self._last_plan_trial_index = plan_trial_index
+        self._last_sample_phase = None
+
+    def append_sample(
+        self,
+        *,
+        phase: str,
+        sample: Mapping[str, Any],
+    ) -> None:
+        if phase not in {"readiness", "measurement"}:
+            raise G1ValidationError(
+                "G1_C1_RUN_SNAPSHOT_INVALID",
+                f"unsupported partial-run sample phase: {phase}",
+            )
+        row = self._active()
+        if row["trial_state"] in {
+            "COMPLETE",
+            "RETAINED_REJECTION",
+            "STRUCTURAL_FAILURE",
+            "UNEXPECTED_FAILURE",
+        }:
+            raise G1ValidationError(
+                "G1_C1_RUN_SNAPSHOT_INVALID",
+                "cannot append to a finalized C1 trial",
+            )
+        retained = _deep_json_copy(dict(sample))
+        row["trial_state"] = (
+            "RUNNING_READINESS"
+            if phase == "readiness"
+            else "RUNNING_MEASUREMENT"
+        )
+        field = (
+            "readiness_samples"
+            if phase == "readiness"
+            else "measurement_samples"
+        )
+        row[field].append(retained)
+        row[
+            "readiness_action_count"
+            if phase == "readiness"
+            else "measurement_action_count"
+        ] = len(row[field])
+        if (
+            phase == "measurement"
+            and retained.get("qualification_eligible") is True
+        ):
+            row["cap_eligible_measurement_sample_count"] += 1
+        row["post_abort_actuation_count"] += int(
+            retained.get("post_abort_actuation_count", 0)
+        )
+        self._last_sample_phase = phase
+
+    def finalize_active_trial(
+        self,
+        result: Mapping[str, Any],
+        *,
+        trial_state: str,
+    ) -> None:
+        if trial_state not in _G1_TRACKING_TRIAL_STATES - {
+            "PLANNED",
+            "RUNNING_READINESS",
+            "RUNNING_MEASUREMENT",
+        }:
+            raise G1ValidationError(
+                "G1_C1_RUN_SNAPSHOT_INVALID",
+                f"invalid finalized C1 trial state: {trial_state}",
+            )
+        row = self._active()
+        retained_readiness = row["readiness_samples"]
+        retained_measurement = row["measurement_samples"]
+        row.update(_deep_json_copy(dict(result)))
+        row["readiness_samples"] = retained_readiness
+        row["measurement_samples"] = retained_measurement
+        row["readiness_action_count"] = len(retained_readiness)
+        row["measurement_action_count"] = len(retained_measurement)
+        row["trial_state"] = trial_state
+        row["complete"] = trial_state == "COMPLETE"
+        if trial_state != "COMPLETE":
+            row["candidate_eligible"] = False
+        self._active_trial_index = None
+        self._last_sample_phase = None
+
+    def fail_active_trial(
+        self,
+        *,
+        code: str,
+        message: str,
+        trial_state: str,
+        retained_rejection: bool,
+    ) -> None:
+        if not isinstance(code, str) or not code.strip():
+            raise G1ValidationError(
+                "G1_C1_RUN_SNAPSHOT_INVALID",
+                "partial-run failure code must be non-empty",
+            )
+        if not isinstance(message, str) or not message.strip():
+            raise G1ValidationError(
+                "G1_C1_RUN_SNAPSHOT_INVALID",
+                "partial-run failure message must be non-empty",
+            )
+        if trial_state not in {
+            "RETAINED_REJECTION",
+            "STRUCTURAL_FAILURE",
+            "UNEXPECTED_FAILURE",
+        }:
+            raise G1ValidationError(
+                "G1_C1_RUN_SNAPSHOT_INVALID",
+                "partial-run failure state is invalid",
+            )
+        row = self._active()
+        phase = self._last_sample_phase
+        sample: dict[str, Any] | None = None
+        sample_index: int | None = None
+        if phase is not None:
+            samples = row[
+                "readiness_samples"
+                if phase == "readiness"
+                else "measurement_samples"
+            ]
+            if samples:
+                sample_index = len(samples) - 1
+                sample = _deep_json_copy(samples[sample_index])
+        row.update(
+            {
+                "trial_state": trial_state,
+                "complete": False,
+                "candidate_eligible": False,
+                "retained_rejection": bool(retained_rejection),
+                "failure_code": code,
+                "failure_message": message,
+            }
+        )
+        if sample is not None and sample_index is not None and phase is not None:
+            row["failure_action_index"] = sample.get("action_index")
+            row["failure_window_index"] = sample.get("window_index")
+            self._failure = {
+                "code": code,
+                "message": message,
+                "trial_index": int(self._active_trial_index),
+                "phase": phase,
+                "sample_index": sample_index,
+                "sample": sample,
+            }
+        self._active_trial_index = None
+        self._last_sample_phase = None
+
+    def apply_stop_tail(
+        self,
+        *,
+        stopped_after_command_m: float,
+        skipped_remaining_classes: Sequence[str],
+        skipped_remaining_scenes: Sequence[int],
+        skipped_higher_commands: Sequence[float],
+    ) -> None:
+        command = float(stopped_after_command_m)
+        if command not in G1_TRACKING_COMMANDS_M or not self._trials:
+            raise G1ValidationError(
+                "G1_C1_CLASS_PROVENANCE_MISMATCH",
+                "partial-run stop command is not a tested command",
+            )
+        failed = self._trials[-1]
+        failed_class = failed.get("class_id")
+        failed_scene = failed.get("scene_index")
+        if (
+            failed_class not in G1_TRAJECTORY_CLASS_IDS
+            or type(failed_scene) is not int
+        ):
+            raise G1ValidationError(
+                "G1_C1_CLASS_PROVENANCE_MISMATCH",
+                "partial-run failed trial lacks class/scene identity",
+            )
+        expected_classes = list(
+            G1_TRAJECTORY_CLASS_IDS[
+                G1_TRAJECTORY_CLASS_IDS.index(str(failed_class)) + 1 :
+            ]
+        )
+        expected_scenes = list(range(int(failed_scene) + 1, 3))
+        expected_higher = [
+            value for value in G1_TRACKING_COMMANDS_M if value > command
+        ]
+        if (
+            list(skipped_remaining_classes) != expected_classes
+            or list(skipped_remaining_scenes) != expected_scenes
+            or [float(value) for value in skipped_higher_commands]
+            != expected_higher
+        ):
+            raise G1ValidationError(
+                "G1_C1_CLASS_PROVENANCE_MISMATCH",
+                "partial-run stop-tail is not canonical",
+            )
+        self._stopped_after_command_m = command
+        self._skipped_remaining_classes = expected_classes
+        self._skipped_remaining_scenes = expected_scenes
+        self._skipped_higher_commands = expected_higher
+        failed.update(
+            {
+                "skipped_remaining_classes": expected_classes,
+                "skipped_remaining_scenes": expected_scenes,
+                "skipped_higher_commands": expected_higher,
+            }
+        )
+
+    def set_systemic_failure(self, *, code: str, message: str) -> None:
+        if not isinstance(code, str) or not code.strip():
+            raise G1ValidationError(
+                "G1_C1_RUN_SNAPSHOT_INVALID",
+                "systemic failure code must be non-empty",
+            )
+        if not isinstance(message, str) or not message.strip():
+            raise G1ValidationError(
+                "G1_C1_RUN_SNAPSHOT_INVALID",
+                "systemic failure message must be non-empty",
+            )
+        self._systemic_failure = True
+        self._systemic_failure_code = code
+        self._systemic_failure_message = message
+        self._selected_command_cap_m = None
+
+    def _set_selected_command_cap(self, value: float | None) -> None:
+        if value is None:
+            self._selected_command_cap_m = None
+            return
+        command = float(value)
+        if command not in G1_TRACKING_COMMANDS_M[1:]:
+            raise G1ValidationError(
+                "G1_C1_COMMAND_CAP_INVALID",
+                "partial-run selected cap is not a tested non-zero command",
+            )
+        self._selected_command_cap_m = command
+
+    def snapshot(self) -> dict[str, Any]:
+        counts = {
+            "trials_started": len(self._trials),
+            "trials_complete": sum(
+                row.get("trial_state") == "COMPLETE" for row in self._trials
+            ),
+            "readiness_samples": sum(
+                len(row.get("readiness_samples", ())) for row in self._trials
+            ),
+            "measurement_samples": sum(
+                len(row.get("measurement_samples", ())) for row in self._trials
+            ),
+            "cap_eligible_measurement_samples": sum(
+                int(row.get("cap_eligible_measurement_sample_count", 0))
+                for row in self._trials
+            ),
+        }
+        return _deep_json_copy(
+            {
+                "schema_version": "g1.pose_conditioned.partial_run.v1",
+                "plan_identity": self._plan_identity,
+                "trials": self._trials,
+                "active_trial_index": self._active_trial_index,
+                "failure": self._failure,
+                "stopped_after_command_m": self._stopped_after_command_m,
+                "skipped_remaining_classes": self._skipped_remaining_classes,
+                "skipped_remaining_scenes": self._skipped_remaining_scenes,
+                "skipped_higher_commands": self._skipped_higher_commands,
+                "systemic_failure": self._systemic_failure,
+                "systemic_failure_code": self._systemic_failure_code,
+                "systemic_failure_message": self._systemic_failure_message,
+                "selected_command_cap_m": self._selected_command_cap_m,
+                "actual_counts": counts,
+                "post_abort_actuation_count": sum(
+                    int(row.get("post_abort_actuation_count", 0))
+                    for row in self._trials
+                ),
+            }
+        )
+
+
 def _retained_failure_summary(row: Mapping[str, Any]) -> dict[str, Any]:
     """Read exact failure facts retained by the authoritative trial sample."""
 
@@ -1601,6 +2016,36 @@ def aggregate_g1_multiclass_tracking_envelope(
                         len(row.get("retained_gains", ())) for row in command_rows
                     ),
                 )
+            if code == "G1_C1_CANDIDATE_CONTACT":
+                provenance = (
+                    first_failure.get("failure_provenance")
+                    if isinstance(first_failure, Mapping)
+                    else None
+                )
+                required_provenance = {
+                    "trial_id",
+                    "class_id",
+                    "scene_id",
+                    "scene_index",
+                    "phase",
+                    "action_index",
+                    "window_index",
+                    "requested_vector_m",
+                    "observed_displacement_vector_m",
+                    "contact_provenance",
+                }
+                if (
+                    not isinstance(provenance, Mapping)
+                    or set(provenance) != required_provenance
+                ):
+                    systemic = _multiclass_systemic(
+                        "G1_C1_FAILURE_PROVENANCE_MISMATCH",
+                        "candidate Contact failure lacks exact retained provenance",
+                    )
+                else:
+                    decision["failure_provenance"] = _deep_json_copy(
+                        dict(provenance)
+                    )
         candidate_decisions[f"{command:.8f}"] = decision
         if eligible:
             eligible_commands.append(command)
@@ -1645,9 +2090,15 @@ def run_g1_multiclass_tracking_plan(
     plan: Mapping[str, Any],
     *,
     trial_runner: Any,
+    accumulator: G1TrackingRunAccumulator | None = None,
 ) -> dict[str, Any]:
     """Execute ascending commands and retain the first candidate rejection stop-tail."""
 
+    run_accumulator = (
+        G1TrackingRunAccumulator.from_validated_plan(plan)
+        if accumulator is None
+        else accumulator
+    )
     retained: list[dict[str, Any]] = []
     stopped_command: float | None = None
     skipped_classes: list[str] = []
@@ -1671,7 +2122,42 @@ def run_g1_multiclass_tracking_plan(
         command = float(spec["command_m"])
         if stopped_command is not None and command >= stopped_command:
             break
-        result = dict(trial_runner(dict(spec)))
+        run_accumulator.begin_trial(spec)
+        try:
+            result = dict(trial_runner(dict(spec)))
+        except Exception as error:
+            code = str(
+                getattr(error, "code", "G1_C1_RUNNER_RUNTIME_ERROR")
+            )
+            message = str(
+                getattr(
+                    error,
+                    "message",
+                    f"{type(error).__name__}: {error}",
+                )
+            )
+            run_accumulator.fail_active_trial(
+                code=code,
+                message=message,
+                trial_state="UNEXPECTED_FAILURE",
+                retained_rejection=False,
+            )
+            run_accumulator.set_systemic_failure(code=code, message=message)
+            raise
+        for sample in result.get("readiness_samples", ()):
+            run_accumulator.append_sample(
+                phase="readiness",
+                sample=sample,
+            )
+        measurement_records = result.get(
+            "measurement_samples",
+            result.get("samples", ()),
+        )
+        for sample in measurement_records:
+            run_accumulator.append_sample(
+                phase="measurement",
+                sample=sample,
+            )
         retained.append({**dict(spec), **result})
         if result.get("failure_code"):
             stopped_command = command
@@ -1691,7 +2177,32 @@ def run_g1_multiclass_tracking_plan(
             skipped_scenes = list(
                 range(failed_scene + 1, scenes_per_class_command)
             )
+            failure_message = str(
+                result.get("failure_message")
+                or result.get("failure_detail")
+                or result["failure_code"]
+            )
+            run_accumulator.fail_active_trial(
+                code=str(result["failure_code"]),
+                message=failure_message,
+                trial_state=(
+                    "RETAINED_REJECTION"
+                    if str(result["failure_code"])
+                    == "G1_C1_CANDIDATE_CONTACT"
+                    or not str(result["failure_code"]).startswith(
+                        "G1_C1_READINESS_"
+                    )
+                    else "STRUCTURAL_FAILURE"
+                ),
+                retained_rejection=not str(result["failure_code"]).startswith(
+                    "G1_C1_READINESS_"
+                ),
+            )
             break
+        run_accumulator.finalize_active_trial(
+            result,
+            trial_state="COMPLETE" if result.get("complete") is True else "STRUCTURAL_FAILURE",
+        )
     skipped_higher = (
         [value for value in plan.get("commands_m", ()) if float(value) > stopped_command]
         if stopped_command is not None
@@ -1707,6 +2218,17 @@ def run_g1_multiclass_tracking_plan(
                 "skipped_higher_commands": list(skipped_higher),
             }
         )
+        run_accumulator.apply_stop_tail(
+            stopped_after_command_m=stopped_command,
+            skipped_remaining_classes=skipped_classes,
+            skipped_remaining_scenes=skipped_scenes,
+            skipped_higher_commands=skipped_higher,
+        )
+    if zero_systemic:
+        run_accumulator.set_systemic_failure(
+            code="G1_C1_ZERO_COMMAND_INVALID",
+            message="zero-command multiclass matrix failed before non-zero acquisition",
+        )
     return {
         "trials": retained,
         "stopped_after_command_m": stopped_command,
@@ -1720,6 +2242,7 @@ def run_g1_multiclass_tracking_plan(
             if zero_systemic
             else None
         ),
+        "run_snapshot": run_accumulator.snapshot(),
     }
 
 
@@ -1727,6 +2250,7 @@ __all__ = [
     "ACTIONS_PER_TRIAL",
     "G1TrackingSample",
     "G1TrackingTrial",
+    "G1TrackingRunAccumulator",
     "G1ValidationError",
     "PHYSICS_SUBSTEPS_PER_ACTION",
     "PUBLIC_ACTION_HZ",
