@@ -162,7 +162,10 @@ three-vector extracted from the composed local transform. Primitive
 parameters retain exact USD size/radius/height/axis values. A mesh record
 retains points, face indices and the composed
 `PhysicsMeshCollisionAPI.approximation`; only a classified convex
-approximation is accepted for the continuous solver.
+approximation is accepted for the continuous solver. A claim-bearing mesh
+also retains the PhysX property-query local AABB, its canonical agreement
+digest and the componentwise union of the cooked and authored bounds. That
+union is explicitly a conservative local OBB, not the original convex hull.
 
 `CollisionSnapshot` uses
 `g1.full_robot.collision_snapshot.v1` and contains asset/config/geometry
@@ -198,8 +201,12 @@ duplicate or unresolved colliders fail.
 `PhysxResolvedOffsetAdapter` executes only after the PhysX stage is attached.
 For each rigid body it obtains the backend collider callback sequence from
 `IPhysxPropertyQuery` and the same body's `RigidBodyView` contact/rest shape
-arrays. Each callback supplies the collider USD path and local bounds; its
-zero-based callback position is the backend shape slot. The adapter requires:
+arrays. Each callback supplies the collider USD path, local pose and local
+bounds. Callback order is never treated as a tensor shape-slot identity. A
+single-shape body has the unique slot zero; a multi-shape body is accepted
+only when every active contact offset is exactly identical and every active
+rest offset is exactly identical, making its binding order-independent. The
+adapter requires:
 
 1. property-query success for every body;
 2. exact equality between callback collider paths and the stage-discovered
@@ -209,15 +216,23 @@ zero-based callback position is the backend shape slot. The adapter requires:
 5. finite resolved contact/rest values for every slot;
 6. `contact_offset_resolved >= 0`;
 7. `contact_offset_resolved > rest_offset_resolved`;
-8. path/local-bound agreement with the USD collider;
-9. no tensor setter call.
+8. path and local-pose agreement with the USD collider under a recorded
+   `gamma_n` float32 composition bound;
+9. analytic primitive bounds/volume within one exact float32 ULP, or for a
+   cooked convex mesh a digest-bound conservative union OBB covering both
+   property-query and authored bounds;
+10. a unique single-shape slot or exact uniform multi-shape offset multisets;
+11. no tensor setter call.
 
 `offset_authority_source` is
 `physx_property_query_path_plus_rigid_body_tensor_slot`. Authored
 `-inf`/missing values remain recorded as authored sentinels but can never be
 copied into the resolved fields. The offset record has schema
 `g1.physx.collision_offset_authority.v1` and hashes the stage token, body,
-slot/path binding, values and physics policy.
+slot/path binding, values and physics policy. The import-safe validator
+independently recomputes the path, query pose, geometry union, conservative
+pose-displacement inflation and agreement digest. A live-adapter-only check
+is insufficient.
 
 ## 5. Real-stage extraction seam
 
@@ -250,7 +265,23 @@ Each supported collider is converted to an immutable convex support shape:
 - cube → eight composed vertices;
 - sphere → center and radius;
 - cylinder/capsule → exact axis, radius and half-length support function;
-- convex-hull mesh → composed point set support function.
+- non-claim convex-hull fixture → composed point-set support function;
+- claim-bearing cooked convex mesh → the property-query/authored union local
+  OBB support function, rotated and translated by articulated FK.
+
+The cooked-mesh OBB is conservative by construction: property-query
+expansion cannot be ignored, authored geometry cannot be lost when cooking
+shrinks an extremum, and an oversized query makes clearance harder rather
+than producing an unsafe pass. It is not a fixed world AABB translation:
+the local OBB participates in the same articulated rotation, stopping-reach
+and continuous interval certificate as every other support shape.
+
+The exact query-pose residual is never accepted as free clearance. Each
+claim-bearing collider stores
+`local_pose_sweep_inflation_m = translation_delta_norm +
+rotation_operator_norm * support_radius + analytic_aabb_outward_inflation`.
+Every interval subtracts both colliders' inflation from its solid and
+effective-contact lower bounds.
 
 `gjk_distance(shape_a, transform_a, shape_b, transform_b)` returns finite
 solid separation, closest points, closest feature identifiers and
@@ -327,9 +358,11 @@ The C1 route schema migrates from
 `g1.pose_conditioned.command_bound_routes.v1` to `v2`. A route-v2 record
 binds all 256 ordered action receipts for each of six exact classes and every
 existing matrix member. Its digest covers command/class/scene identities,
-snapshot digest, lifecycle digest, pair inventory, interval certificates and
-route digest. Missing pairs, fewer than 256 actions, fewer than six classes,
-duplicates or order changes fail.
+snapshot digest, lifecycle digest, offset/cooked-geometry authority, pair
+inventory, interval certificates and route digest. Supplying a lifecycle
+digest without `offset_authority_claim_eligible=true` fails; authored mesh
+vertices cannot silently substitute. Missing pairs, fewer than 256 actions,
+fewer than six classes, duplicates or order changes fail.
 
 The no-contact policy accepts only positive solid and effective-contact lower
 bounds. A separate `intentional_press` phase identifier cannot be supplied to
