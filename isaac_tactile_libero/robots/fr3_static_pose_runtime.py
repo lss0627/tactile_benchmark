@@ -506,6 +506,7 @@ class PhysxResolvedOffsetAdapter:
         """Return path-keyed resolved offsets plus independently hashed receipts."""
 
         import omni.physics.tensors as tensors  # type: ignore
+        import isaacsim.core.experimental.utils.stage as stage_utils  # type: ignore
         from pxr import Usd, UsdGeom  # type: ignore
 
         from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
@@ -534,7 +535,17 @@ class PhysxResolvedOffsetAdapter:
         by_body: dict[str, list[str]] = {}
         for collider_path, body_path in collider_body_paths.items():
             by_body.setdefault(str(body_path), []).append(str(collider_path))
-        simulation_view = tensors.create_simulation_view("numpy")
+        stage_id = int(stage_utils.get_stage_id(stage))
+        if stage_id < 0:
+            _fail(
+                "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+                "offset authority cannot bind the current USD stage",
+            )
+        simulation_view = tensors.create_simulation_view(
+            "numpy",
+            stage_id=stage_id,
+            backend="physx",
+        )
         simulation_view.set_subspace_roots("/")
         resolved: dict[str, dict[str, Any]] = {}
         authority_records: list[dict[str, Any]] = []
