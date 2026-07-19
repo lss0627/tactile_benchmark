@@ -5,6 +5,7 @@ import importlib
 import hashlib
 import inspect
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -22,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNNER_PATH = ROOT / "scripts/run_g1_static_pose_qualification.py"
 DIAGNOSTIC_PATH = ROOT / "isaac_tactile_libero/robots/fr3_static_pose_diagnostic.py"
 REAL_RUNTIME_MODULE = "isaac_tactile_libero.robots.fr3_static_pose_runtime"
+OPTION_D_MODULE = "isaac_tactile_libero.runtime.g1_full_robot_clearance"
 ARM_NAMES = tuple(f"fr3_joint{index}" for index in range(1, 8))
 JOINT_NAMES = ARM_NAMES + ("fr3_finger_joint1", "fr3_finger_joint2")
 CANDIDATES = (
@@ -58,6 +60,228 @@ def _capability(module: Any, name: str):
     value = getattr(module, name, None)
     assert callable(value), f"T144 real runtime missing callable capability: {name}"
     return value
+
+
+def _option_d_module():
+    spec = importlib.util.find_spec(OPTION_D_MODULE)
+    assert spec is not None, "Option D missing import-safe full-robot clearance module"
+    return importlib.import_module(OPTION_D_MODULE)
+
+
+def _option_d_matrix(*, x: float = 0.0, y: float = 0.0, z: float = 0.0):
+    return [
+        [1.0, 0.0, 0.0, x],
+        [0.0, 1.0, 0.0, y],
+        [0.0, 0.0, 1.0, z],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+
+
+def _option_d_collider(
+    *,
+    body: str,
+    collider: str,
+    collider_type: str = "cube",
+    approximation: str = "analytic",
+) -> dict[str, Any]:
+    parameters = (
+        {"size_m": 1.0}
+        if collider_type == "cube"
+        else {
+            "points": [
+                [-0.1, -0.1, -0.1],
+                [0.1, -0.1, -0.1],
+                [0.0, 0.1, -0.1],
+                [0.0, 0.0, 0.1],
+            ],
+            "face_vertex_indices": [0, 1, 2, 0, 1, 3, 1, 2, 3, 0, 2, 3],
+        }
+    )
+    return {
+        "body_prim_path": body,
+        "collider_prim_path": collider,
+        "collider_type": collider_type,
+        "approximation": approximation,
+        "local_transform": _option_d_matrix(),
+        "scale": [0.1, 0.1, 0.1],
+        "shape_parameters": parameters,
+        "world_transform": _option_d_matrix(),
+        "collision_enabled": True,
+        "contact_offset_authored": None,
+        "rest_offset_authored": None,
+        "contact_offset_resolved": 0.02,
+        "rest_offset_resolved": 0.0,
+        "offset_authority_source": (
+            "physx_property_query_path_plus_rigid_body_tensor_slot"
+        ),
+    }
+
+
+def _option_d_collision_snapshot_fixture() -> dict[str, Any]:
+    subject = [
+        _option_d_collider(
+            body="/World/FR3/fr3_link0",
+            collider="/World/FR3/fr3_link0/collisions",
+            collider_type="mesh",
+            approximation="convexHull",
+        ),
+        _option_d_collider(
+            body="/World/FR3/fr3_hand",
+            collider="/World/FR3/fr3_hand/collisions",
+            collider_type="mesh",
+            approximation="convexHull",
+        ),
+        _option_d_collider(
+            body="/World/FR3/fr3_leftfinger",
+            collider="/World/FR3/fr3_leftfinger/collisions/mesh_0",
+        ),
+        _option_d_collider(
+            body="/World/FR3/fr3_rightfinger",
+            collider="/World/FR3/fr3_rightfinger/collisions/mesh_0",
+        ),
+    ]
+    obstacle = [
+        _option_d_collider(
+            body="/World/PressButton/Button",
+            collider="/World/PressButton/Button",
+            collider_type="cylinder",
+        ),
+        _option_d_collider(
+            body="/World/PressButton/Housing",
+            collider="/World/PressButton/Housing/Geometry",
+        ),
+    ]
+    obstacle[0]["shape_parameters"] = {
+        "radius_m": 0.035,
+        "height_m": 0.018,
+        "axis": "Z",
+    }
+    return {
+        "schema_version": "g1.full_robot.collision_snapshot.v1",
+        "asset_sha256": "1" * 64,
+        "task_config_sha256": "2" * 64,
+        "robot_config_sha256": "3" * 64,
+        "task_card_sha256": "4" * 64,
+        "geometry_sha256": "5" * 64,
+        "meters_per_unit": 1.0,
+        "up_axis": "Z",
+        "physics_device": "cpu",
+        "broadphase_type": "MBP",
+        "gpu_dynamics_enabled": False,
+        "subject_root": "/World/FR3",
+        "obstacle_roots": [
+            "/World/PressButton/Button",
+            "/World/PressButton/Housing",
+        ],
+        "articulation_joint_names": list(JOINT_NAMES),
+        "joint_graph": [],
+        "body_root_transforms": {},
+        "subject_inventory": subject,
+        "obstacle_inventory": obstacle,
+    }
+
+
+def _assert_option_d_inventory_contracts(module: Any) -> None:
+    validate = getattr(module, "validate_collision_snapshot", None)
+    assert callable(validate)
+    snapshot = _option_d_collision_snapshot_fixture()
+    subject_paths = [
+        item["collider_prim_path"] for item in snapshot["subject_inventory"]
+    ]
+    obstacle_paths = [
+        item["collider_prim_path"] for item in snapshot["obstacle_inventory"]
+    ]
+    validated = validate(
+        snapshot,
+        stage_subject_collider_paths=subject_paths,
+        stage_obstacle_collider_paths=obstacle_paths,
+    )
+    assert validated["schema_version"] == "g1.full_robot.collision_snapshot.v1"
+    assert len(validated["subject_inventory"]) == 4
+    assert len(validated["obstacle_inventory"]) == 2
+    assert len(validated["sorted_inventory_sha256"]) == 64
+    json.dumps(validated, allow_nan=False)
+
+    mutations = (
+        ("unknown_type", ("subject_inventory", 0, "collider_type"), "mystery"),
+        ("unknown_mesh", ("subject_inventory", 0, "approximation"), "unknown"),
+        ("bad_transform", ("subject_inventory", 0, "world_transform"), None),
+        ("bad_scale", ("subject_inventory", 0, "scale"), [1.0, 1.0]),
+        ("disabled", ("subject_inventory", 0, "collision_enabled"), False),
+        ("offset_missing", ("subject_inventory", 0, "contact_offset_resolved"), None),
+        ("offset_sentinel", ("subject_inventory", 0, "contact_offset_resolved"), -math.inf),
+        ("offset_source", ("subject_inventory", 0, "offset_authority_source"), "usd_sentinel"),
+    )
+    for _name, (collection, index, field), value in mutations:
+        changed = json.loads(json.dumps(snapshot))
+        changed[collection][index][field] = value
+        with pytest.raises(Exception):
+            validate(
+                changed,
+                stage_subject_collider_paths=subject_paths,
+                stage_obstacle_collider_paths=obstacle_paths,
+            )
+
+    omitted = json.loads(json.dumps(snapshot))
+    omitted["subject_inventory"].pop()
+    with pytest.raises(Exception):
+        validate(
+            omitted,
+            stage_subject_collider_paths=subject_paths,
+            stage_obstacle_collider_paths=obstacle_paths,
+        )
+
+    extra = json.loads(json.dumps(snapshot))
+    extra["subject_inventory"].append(
+        _option_d_collider(
+            body="/World/FR3/fr3_link1",
+            collider="/World/FR3/fr3_link1/extra",
+        )
+    )
+    with pytest.raises(Exception):
+        validate(
+            extra,
+            stage_subject_collider_paths=subject_paths,
+            stage_obstacle_collider_paths=obstacle_paths,
+        )
+
+    duplicate = json.loads(json.dumps(snapshot))
+    duplicate["subject_inventory"].append(duplicate["subject_inventory"][0])
+    with pytest.raises(Exception):
+        validate(
+            duplicate,
+            stage_subject_collider_paths=subject_paths,
+            stage_obstacle_collider_paths=obstacle_paths,
+        )
+
+    missing_required = json.loads(json.dumps(snapshot))
+    missing_required["subject_inventory"][2]["body_prim_path"] = (
+        "/World/FR3/not_leftfinger"
+    )
+    with pytest.raises(Exception):
+        validate(
+            missing_required,
+            stage_subject_collider_paths=subject_paths,
+            stage_obstacle_collider_paths=obstacle_paths,
+        )
+
+    bad_digest = dict(validated)
+    bad_digest["sorted_inventory_sha256"] = "0" * 64
+    with pytest.raises(Exception):
+        validate(
+            bad_digest,
+            stage_subject_collider_paths=subject_paths,
+            stage_obstacle_collider_paths=obstacle_paths,
+        )
+
+    reordered = json.loads(json.dumps(validated))
+    reordered["subject_inventory"].reverse()
+    with pytest.raises(Exception):
+        validate(
+            reordered,
+            stage_subject_collider_paths=subject_paths,
+            stage_obstacle_collider_paths=obstacle_paths,
+        )
 
 
 def _offline_record(candidate_id: str, order: int, position: list[float]) -> dict[str, Any]:
@@ -747,6 +971,7 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(tmp_path
     assert all(scene["physics_device"] == "cpu" for scene in scenes)
     assert all(scene["broadphase_type"] == "MBP" for scene in scenes)
     assert all(scene["gpu_dynamics_enabled"] is False for scene in scenes)
+    _assert_option_d_inventory_contracts(_option_d_module())
 
 
 def test_c2a_real_runtime_executes_only_64_immutable_zero_actions_with_three_substeps(tmp_path: Path) -> None:
@@ -1404,6 +1629,19 @@ def test_c2a_real_runtime_modules_are_import_safe_and_real_factory_is_lazy() -> 
     assert "import omni" not in "\n".join(line for line in source.splitlines() if not line.startswith(" "))
     assert "omni.isaac" not in source
     assert "dynamic_control" not in source
+    option_d = _option_d_module()
+    assert callable(getattr(option_d, "validate_collision_snapshot", None))
+    real_runtime = _real_runtime_module()
+    assert callable(
+        getattr(real_runtime, "extract_full_robot_collision_snapshot", None)
+    )
+    option_source = Path(option_d.__file__).read_text(encoding="utf-8")
+    option_top_level = "\n".join(
+        line for line in option_source.splitlines() if not line.startswith(" ")
+    )
+    assert "from pxr" not in option_top_level
+    assert "import omni" not in option_top_level
+    assert "from isaacsim" not in option_top_level
 
 
 def test_c2a_cli_subprocess_failure_is_nonzero_without_importing_isaac(tmp_path: Path) -> None:

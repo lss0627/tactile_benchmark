@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import importlib.util
 import inspect
 import json
@@ -24,6 +25,7 @@ from isaac_tactile_libero.runtime.fr3_experimental import (
 
 HARD_LIMIT_M = 0.0005
 TESTED_COMMANDS_M = (0.00025, 0.00035, 0.00040, 0.00045)
+OPTION_D_MODULE = "isaac_tactile_libero.runtime.g1_full_robot_clearance"
 
 
 def _capability(name: str) -> Callable[..., Any]:
@@ -36,6 +38,413 @@ def _error_type():
     value = getattr(runtime_api, "G1ValidationError", None)
     assert isinstance(value, type), "G1 C1 missing structured G1ValidationError"
     return value
+
+
+def _option_d_module():
+    spec = importlib.util.find_spec(OPTION_D_MODULE)
+    assert spec is not None, "Option D missing import-safe full-robot clearance module"
+    return importlib.import_module(OPTION_D_MODULE)
+
+
+class _LifecycleStageAdapter:
+    def __init__(self, *, readback_override: str | None = None) -> None:
+        self.session_token: str | None = None
+        self.world_token: str | None = None
+        self.readback_override = readback_override
+        self.actuation_count = 0
+
+    def write_stage_lifecycle_token(self, token: str) -> None:
+        self.session_token = token
+        self.world_token = token
+
+    def read_stage_lifecycle_token(self) -> tuple[str | None, str | None]:
+        if self.readback_override is not None:
+            return self.readback_override, self.readback_override
+        return self.session_token, self.world_token
+
+
+class _LifecycleLatch:
+    def __init__(self) -> None:
+        self.invalidated = False
+
+    def invalidate(self) -> None:
+        self.invalidated = True
+
+
+def _assert_option_d_lifecycle_contracts(module: Any) -> None:
+    authority_type = getattr(module, "SceneLifecycleAuthority", None)
+    validate = getattr(module, "validate_scene_lifecycle_record", None)
+    digest = getattr(module, "canonical_sha256", None)
+    assert isinstance(authority_type, type)
+    assert callable(validate)
+    assert callable(digest)
+
+    authority = authority_type(
+        run_id="option-d-red",
+        factory_session_token="a" * 64,
+    )
+    first = authority.allocate(
+        trial_id="trial-001",
+        planned_fresh_scene_token="planned-001",
+        diagnostic_ids={"stage_object_id": 41, "articulation_object_id": 42},
+    )
+    second = authority.allocate(
+        trial_id="trial-002",
+        planned_fresh_scene_token="planned-002",
+        diagnostic_ids={"stage_object_id": 41, "articulation_object_id": 42},
+    )
+    assert first["monotonic_scene_ordinal"] == 1
+    assert second["monotonic_scene_ordinal"] == 2
+    assert first["stage_lifecycle_token"] != second["stage_lifecycle_token"]
+    assert first["diagnostic_ids"] == second["diagnostic_ids"]
+
+    stage = _LifecycleStageAdapter()
+    first_token = authority.bind_stage(first, stage)
+    assert first_token == first["stage_lifecycle_token"]
+    joint_names = [f"fr3_joint{index}" for index in range(1, 8)] + [
+        "fr3_finger_joint1",
+        "fr3_finger_joint2",
+    ]
+    record = authority.finalize(
+        first,
+        stage_lifecycle_token=first_token,
+        articulation_root_path="/World/FR3",
+        articulation_joint_names=joint_names,
+        preplay_authored_map_sha256="b" * 64,
+        latch_generation=1,
+    )
+    validated = validate(record)
+    required = {
+        "schema_version",
+        "run_id",
+        "factory_session_token",
+        "monotonic_scene_ordinal",
+        "trial_id",
+        "planned_fresh_scene_token",
+        "stage_lifecycle_token",
+        "articulation_binding_sha256",
+        "latch_binding_sha256",
+        "lifecycle_record_sha256",
+    }
+    assert required <= set(validated)
+    assert validated["schema_version"] == "g1.scene.lifecycle.v1"
+    assert validated["lifecycle_record_sha256"] == digest(
+        validated, exclude_fields=("lifecycle_record_sha256",)
+    )
+    json.dumps(validated, allow_nan=False)
+
+    for field in (
+        "trial_id",
+        "stage_lifecycle_token",
+        "articulation_binding_sha256",
+        "latch_binding_sha256",
+        "lifecycle_record_sha256",
+    ):
+        changed = json.loads(json.dumps(validated))
+        changed[field] = "f" * 64
+        with pytest.raises(Exception):
+            validate(changed)
+
+    with pytest.raises(Exception):
+        authority.allocate(
+            trial_id="trial-001",
+            planned_fresh_scene_token="planned-003",
+        )
+    with pytest.raises(Exception):
+        authority.allocate(
+            trial_id="trial-003",
+            planned_fresh_scene_token="planned-002",
+        )
+    mismatched_stage = _LifecycleStageAdapter(readback_override="c" * 64)
+    with pytest.raises(Exception):
+        authority.bind_stage(second, mismatched_stage)
+    assert mismatched_stage.actuation_count == 0
+
+    second_stage = _LifecycleStageAdapter()
+    second_token = authority.bind_stage(second, second_stage)
+    second_record = authority.finalize(
+        second,
+        stage_lifecycle_token=second_token,
+        articulation_root_path="/World/FR3",
+        articulation_joint_names=joint_names,
+        preplay_authored_map_sha256="b" * 64,
+        latch_generation=2,
+    )
+    latch = _LifecycleLatch()
+    closed = authority.close_scene(
+        second_record,
+        stage_lifecycle_token=second_token,
+        latch_invalidator=latch.invalidate,
+    )
+    assert closed["stage_lifecycle_token"] == second_token
+    assert closed["latch_invalidated"] is True
+    assert latch.invalidated is True
+    with pytest.raises(Exception):
+        authority.close_scene(
+            second_record,
+            stage_lifecycle_token="d" * 64,
+            latch_invalidator=latch.invalidate,
+        )
+
+
+def _identity_matrix(*, x: float = 0.0, y: float = 0.0, z: float = 0.0) -> list[list[float]]:
+    return [
+        [1.0, 0.0, 0.0, x],
+        [0.0, 1.0, 0.0, y],
+        [0.0, 0.0, 1.0, z],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+
+
+def _option_d_sphere(
+    *,
+    body: str,
+    collider: str,
+    center: tuple[float, float, float],
+    radius: float,
+) -> dict[str, Any]:
+    return {
+        "body_prim_path": body,
+        "collider_prim_path": collider,
+        "collider_type": "sphere",
+        "approximation": "analytic",
+        "local_transform": _identity_matrix(x=center[0], y=center[1], z=center[2]),
+        "scale": [1.0, 1.0, 1.0],
+        "shape_parameters": {"radius_m": radius},
+        "world_transform": _identity_matrix(x=center[0], y=center[1], z=center[2]),
+        "collision_enabled": True,
+        "contact_offset_authored": None,
+        "rest_offset_authored": None,
+        "contact_offset_resolved": 0.001,
+        "rest_offset_resolved": 0.0,
+        "offset_authority_source": (
+            "physx_property_query_path_plus_rigid_body_tensor_slot"
+        ),
+    }
+
+
+def _option_d_sweep_snapshot() -> dict[str, Any]:
+    subject = [
+        _option_d_sphere(
+            body="/World/FR3/fr3_link0",
+            collider="/World/FR3/fr3_link0/collisions",
+            center=(0.0, 0.0, 0.0),
+            radius=0.05,
+        ),
+        _option_d_sphere(
+            body="/World/FR3/fr3_hand",
+            collider="/World/FR3/fr3_hand/collisions",
+            center=(3.0, 0.0, 0.0),
+            radius=0.05,
+        ),
+        _option_d_sphere(
+            body="/World/FR3/fr3_leftfinger",
+            collider="/World/FR3/fr3_leftfinger/collisions/mesh_0",
+            center=(3.0, 1.0, 0.0),
+            radius=0.05,
+        ),
+        _option_d_sphere(
+            body="/World/FR3/fr3_rightfinger",
+            collider="/World/FR3/fr3_rightfinger/collisions/mesh_0",
+            center=(1.0, 0.0, 0.0),
+            radius=0.1,
+        ),
+    ]
+    obstacle = [
+        _option_d_sphere(
+            body="/World/PressButton/Button",
+            collider="/World/PressButton/Button",
+            center=(0.0, 1.0, 0.0),
+            radius=0.1,
+        ),
+        _option_d_sphere(
+            body="/World/PressButton/Housing",
+            collider="/World/PressButton/Housing/Geometry",
+            center=(5.0, 5.0, 5.0),
+            radius=0.1,
+        ),
+    ]
+    return {
+        "schema_version": "g1.full_robot.collision_snapshot.v1",
+        "asset_sha256": "1" * 64,
+        "task_config_sha256": "2" * 64,
+        "robot_config_sha256": "3" * 64,
+        "task_card_sha256": "4" * 64,
+        "geometry_sha256": "5" * 64,
+        "meters_per_unit": 1.0,
+        "up_axis": "Z",
+        "physics_device": "cpu",
+        "broadphase_type": "MBP",
+        "gpu_dynamics_enabled": False,
+        "subject_root": "/World/FR3",
+        "obstacle_roots": [
+            "/World/PressButton/Button",
+            "/World/PressButton/Housing",
+        ],
+        "articulation_joint_names": ["sweep_joint"],
+        "joint_graph": [
+            {
+                "joint_name": "sweep_joint",
+                "joint_index": 0,
+                "joint_type": "revolute",
+                "parent_body_prim_path": "/World/FR3/fr3_link0",
+                "child_body_prim_path": "/World/FR3/fr3_rightfinger",
+                "axis": [0.0, 0.0, 1.0],
+                "parent_from_joint": _identity_matrix(),
+                "child_from_joint": _identity_matrix(),
+            }
+        ],
+        "body_root_transforms": {
+            "/World/FR3/fr3_link0": _identity_matrix(),
+            "/World/FR3/fr3_hand": _identity_matrix(),
+            "/World/FR3/fr3_leftfinger": _identity_matrix(),
+            "/World/PressButton/Button": _identity_matrix(),
+            "/World/PressButton/Housing": _identity_matrix(),
+        },
+        "subject_inventory": subject,
+        "obstacle_inventory": obstacle,
+    }
+
+
+def _option_d_action(
+    *,
+    start: float,
+    target: float,
+    velocity: float = 0.0,
+    action_index: int = 0,
+) -> dict[str, Any]:
+    return {
+        "command_decimal": "0.00025",
+        "class_id": TRAJECTORY_CLASS_IDS[0],
+        "scene_id": "scene-0",
+        "trial_id": "trial-0",
+        "action_index": action_index,
+        "observed_q": [start],
+        "observed_qd": [velocity],
+        "governed_target": [target],
+        "joint_velocity_limits": [2.0],
+        "physics_substeps": 3,
+        "physics_dt_s": 1.0 / 60.0,
+        "tcp_declared_solid_clearance_m": 0.0051,
+    }
+
+
+def _assert_option_d_sweep_contracts(module: Any) -> None:
+    certify = getattr(module, "certify_articulated_sweep", None)
+    validate_route = getattr(module, "validate_command_bound_swept_route", None)
+    guard = getattr(module, "guard_pre_send_sweep", None)
+    assert callable(certify)
+    assert callable(validate_route)
+    assert callable(guard)
+
+    snapshot = _option_d_sweep_snapshot()
+    with pytest.raises(Exception):
+        certify(
+            snapshot=snapshot,
+            action=_option_d_action(start=0.0, target=math.pi),
+            phase_policy="c1_no_contact",
+        )
+
+    safe_snapshot = json.loads(json.dumps(snapshot))
+    safe_snapshot["obstacle_inventory"][0]["local_transform"] = _identity_matrix(
+        x=0.0, y=3.0, z=0.0
+    )
+    safe_snapshot["obstacle_inventory"][0]["world_transform"] = _identity_matrix(
+        x=0.0, y=3.0, z=0.0
+    )
+    receipt = certify(
+        snapshot=safe_snapshot,
+        action=_option_d_action(start=0.0, target=0.01),
+        phase_policy="c1_no_contact",
+    )
+    assert receipt["schema_version"] == "g1.full_robot.swept_clearance.v1"
+    assert receipt["safe"] is True
+    assert receipt["pair_receipts"]
+    assert receipt["minimum_solid_separation_m"] > 0.0
+    assert receipt["minimum_effective_contact_separation_m"] > 0.0
+    assert receipt["physics_substeps"] == 3
+    assert receipt["stopping_reach_bound"]["validated"] is True
+
+    stopping_snapshot = json.loads(json.dumps(snapshot))
+    stopping_snapshot["obstacle_inventory"][0]["local_transform"] = _identity_matrix(
+        x=math.cos(0.11), y=math.sin(0.11), z=0.0
+    )
+    stopping_snapshot["obstacle_inventory"][0]["world_transform"] = _identity_matrix(
+        x=math.cos(0.11), y=math.sin(0.11), z=0.0
+    )
+    with pytest.raises(Exception):
+        certify(
+            snapshot=stopping_snapshot,
+            action=_option_d_action(start=0.0, target=0.01, velocity=2.0),
+            phase_policy="c1_no_contact",
+        )
+
+    send_count = 0
+    latch_count = 0
+
+    def send() -> bool:
+        nonlocal send_count
+        send_count += 1
+        return True
+
+    def latch() -> None:
+        nonlocal latch_count
+        latch_count += 1
+
+    failed = dict(receipt)
+    failed["safe"] = False
+    with pytest.raises(Exception):
+        guard(receipt=failed, send_command=send, update_latch=latch)
+    assert send_count == 0
+    assert latch_count == 0
+    assert guard(receipt=receipt, send_command=send, update_latch=latch) is True
+    assert send_count == 1
+    assert latch_count == 1
+
+    class_ids = list(TRAJECTORY_CLASS_IDS)
+    action_receipts = []
+    for class_id in class_ids:
+        for action_index in range(256):
+            item = json.loads(json.dumps(receipt))
+            item["class_id"] = class_id
+            item["scene_id"] = f"{class_id}-scene-0"
+            item["trial_id"] = f"{class_id}-trial-0"
+            item["action_index"] = action_index
+            item["record_sha256"] = module.canonical_sha256(
+                item, exclude_fields=("record_sha256",)
+            )
+            action_receipts.append(item)
+    route = {
+        "schema_version": "g1.pose_conditioned.command_bound_routes.v2",
+        "command_decimal": "0.00025",
+        "class_ids": class_ids,
+        "actions_per_class": 256,
+        "scene_count_per_class_command": 3,
+        "phase_policy": "c1_no_contact",
+        "action_receipts": action_receipts,
+    }
+    route["route_sha256"] = module.canonical_sha256(
+        route, exclude_fields=("route_sha256",)
+    )
+    assert validate_route(route)["route_sha256"] == route["route_sha256"]
+
+    for mutation in ("missing_pair", "duplicate_action", "short_route", "missing_class"):
+        changed = json.loads(json.dumps(route))
+        if mutation == "missing_pair":
+            changed["action_receipts"][0]["pair_receipts"].pop()
+        elif mutation == "duplicate_action":
+            changed["action_receipts"][1]["action_index"] = 0
+        elif mutation == "short_route":
+            changed["action_receipts"].pop()
+        else:
+            changed["class_ids"].pop()
+        with pytest.raises(Exception):
+            validate_route(changed)
+
+    intentional = json.loads(json.dumps(route))
+    intentional["phase_policy"] = "intentional_press"
+    with pytest.raises(Exception):
+        validate_route(intentional)
 
 
 def _contact_provenance(
@@ -882,6 +1291,7 @@ def test_every_fresh_scene_builds_distinct_target_latch_provenance() -> None:
     assert len(provenance) == 15
     assert len({item["scene_id"] for item in provenance}) == 15
     assert all(item["source"] == "get_dof_position_targets" for item in provenance)
+    _assert_option_d_lifecycle_contracts(_option_d_module())
 
 
 def test_public_controller_and_c1_use_the_same_position_target_latch_contract() -> None:
@@ -1365,6 +1775,11 @@ def test_c1_runtime_failure_writes_evidence_before_shutdown(
     )
 
     runner, orchestrate = _tracking_lifecycle()
+    module = _option_d_module()
+    assert (
+        getattr(module, "SWEEP_SCHEMA_VERSION", None)
+        == "g1.full_robot.swept_clearance.v1"
+    )
     accumulator_type = getattr(runtime_api, "G1TrackingRunAccumulator", None)
     assert isinstance(accumulator_type, type), (
         "C1 lifecycle missing run-owned retained-prefix authority"
@@ -2615,6 +3030,7 @@ def test_each_class_requires_64_readiness_256_measurement_three_scenes_and_no_wi
     assert all(type(trial_id) is str and trial_id for trial_id in trial_ids)
     assert len(set(trial_ids)) == 90
     assert [trial["trial_id"] for trial in rebuilt["trials"]] == trial_ids
+    _assert_option_d_sweep_contracts(_option_d_module())
 
 
 def _multiclass_summary_fixture() -> list[dict[str, Any]]:
