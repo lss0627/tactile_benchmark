@@ -1246,6 +1246,61 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
     _assert_option_d_inventory_contracts(_option_d_module())
 
     real_runtime = _real_runtime_module()
+    tensors = types.ModuleType("omni.physics.tensors")
+
+    def require_stage_bound_view(backend_name: str, **kwargs: Any) -> None:
+        assert backend_name == "numpy"
+        assert kwargs == {"stage_id": 731, "backend": "physx"}
+        raise RuntimeError("stage-bound-view-probe")
+
+    tensors.create_simulation_view = require_stage_bound_view  # type: ignore[attr-defined]
+    omni = types.ModuleType("omni")
+    omni.__path__ = []  # type: ignore[attr-defined]
+    omni_physics = types.ModuleType("omni.physics")
+    omni_physics.__path__ = []  # type: ignore[attr-defined]
+    omni_physics.tensors = tensors  # type: ignore[attr-defined]
+    omni.physics = omni_physics  # type: ignore[attr-defined]
+    stage_utils = types.ModuleType("isaacsim.core.experimental.utils.stage")
+    stage_utils.get_stage_id = lambda stage: 731  # type: ignore[attr-defined]
+    isaacsim = types.ModuleType("isaacsim")
+    isaacsim.__path__ = []  # type: ignore[attr-defined]
+    isaacsim_core = types.ModuleType("isaacsim.core")
+    isaacsim_core.__path__ = []  # type: ignore[attr-defined]
+    isaacsim_experimental = types.ModuleType("isaacsim.core.experimental")
+    isaacsim_experimental.__path__ = []  # type: ignore[attr-defined]
+    isaacsim_utils = types.ModuleType("isaacsim.core.experimental.utils")
+    isaacsim_utils.__path__ = []  # type: ignore[attr-defined]
+    isaacsim_utils.stage = stage_utils  # type: ignore[attr-defined]
+    pxr = types.ModuleType("pxr")
+    pxr.Usd = types.SimpleNamespace()  # type: ignore[attr-defined]
+    pxr.UsdGeom = types.SimpleNamespace()  # type: ignore[attr-defined]
+    for name, module in (
+        ("omni", omni),
+        ("omni.physics", omni_physics),
+        ("omni.physics.tensors", tensors),
+        ("isaacsim", isaacsim),
+        ("isaacsim.core", isaacsim_core),
+        ("isaacsim.core.experimental", isaacsim_experimental),
+        ("isaacsim.core.experimental.utils", isaacsim_utils),
+        ("isaacsim.core.experimental.utils.stage", stage_utils),
+        ("pxr", pxr),
+    ):
+        monkeypatch.setitem(sys.modules, name, module)
+    offset_adapter = real_runtime.PhysxResolvedOffsetAdapter.__new__(
+        real_runtime.PhysxResolvedOffsetAdapter
+    )
+    with pytest.raises(RuntimeError, match="stage-bound-view-probe"):
+        offset_adapter.resolve(
+            stage=object(),
+            collider_body_paths={"/World/FR3/Collider": "/World/FR3"},
+            stage_lifecycle_token="a" * 64,
+            physics_policy={
+                "physics_device": "cpu",
+                "broadphase_type": "MBP",
+                "gpu_dynamics_enabled": False,
+            },
+        )
+
     quaternion = np.asarray(
         [0.0, 0.0, 0.38268343, 0.9238795],
         dtype=np.float32,
