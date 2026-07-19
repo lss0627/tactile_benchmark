@@ -82,6 +82,52 @@ G2=NOT_STARTED
 
 Attempt-09, C2b, C3, T070, and PressButton episodes remain unauthorized.
 
+### 2.1 Verified implementation status
+
+The plan's RED and GREEN sequence is complete through the production
+implementation HEAD:
+
+```text
+c479e7c404ffe5321ad2ae8201c2fde03206265b
+  test(g1): require retained Contact failure provenance
+
+e9ca5204827c7583e6684c65cfc1f98638e684c5
+  fix(g1): normalize Contact provenance explicitly
+
+fccb8fac88fdbe25f272f221b3b4483b8820e5dd
+  fix(g1): retain partial tracking run state
+
+5824b6d4a4e69a2d9ab794256743224da489075d
+  fix(g1): persist Contact failure snapshots
+```
+
+The frozen RED failed only on the intended missing Contact-provenance,
+retention, accumulator, and v2-writer capabilities. After GREEN, the exact
+seven nodes passed `15/15`; complete focused C1/C2a passed `138/138`;
+C1/C2a/static passed `168/168`; and the wider affected composition passed
+`263/263`.
+
+The implementation uses:
+
+- one `g1.contact.provenance.v1` normalizer shared by C1 and C2a;
+- an independently observed simulator step, distinct from read sequence;
+- retain-before-classify ordering;
+- one run-owned `G1TrackingRunAccumulator`;
+- an immutable `g1.pose_conditioned.partial_run.v1` snapshot;
+- C1 `g1.pose_conditioned.tracking_evidence.v2`;
+- C2a `g1.c2a.static.v2`;
+- fail-closed rejection of historical C2a v1 as fresh C1 input.
+
+No Contact rule, command, threshold, hard limit, clearance, class identity,
+motif, DLS/Jacobian/governor behavior, budget, physics/driver policy, or
+force/wrench truth boundary changed.
+
+The repository ladder preserved `1091/966/965/1/125`, original GREEN
+`748/748`, future RED `125/125 (78/29/10/8)`, hard-limit `4/4`, Contact
+analytic `38/38`, T152 pose-conditioned CLI `113/113`, and the two approved
+current-GREEN digests. Projection and formal G0 are the next freshness
+boundary; they do not themselves authorize or pass a runtime stage.
+
 ## 3. Exact schema-version decision
 
 The following values are normative:

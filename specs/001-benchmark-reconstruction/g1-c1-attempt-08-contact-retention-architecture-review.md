@@ -85,6 +85,51 @@ G1=BLOCKED
 G2=NOT_STARTED
 ```
 
+### 2.1 Verified implementation closure
+
+The approved architecture was implemented without changing Contact
+acceptance, the command matrix, thresholds, control formulas, physics policy,
+driver policy, or force/wrench truth:
+
+| Boundary | Verified commit |
+|---|---|
+| frozen-node RED contract | `c479e7c404ffe5321ad2ae8201c2fde03206265b` |
+| explicit Contact normalization and stage/read authority | `e9ca5204827c7583e6684c65cfc1f98638e684c5` |
+| run-owned accumulator and canonical partial snapshot | `fccb8fac88fdbe25f272f221b3b4483b8820e5dd` |
+| retain-before-classify and C1/C2a v2 evidence | `5824b6d4a4e69a2d9ab794256743224da489075d` |
+
+The seven frozen nodes first failed only on the approved missing capability,
+then passed as `15/15` parameter expansions. The complete C1/C2a focused
+files passed `138/138`, the combined C1/C2a/static set passed `168/168`, and
+the wider pose-conditioned/shared-kernel/runtime-safety/Contact set passed
+`263/263`.
+
+The verified repository ladder at the GREEN implementation HEAD preserved:
+
+```text
+full/current/portable/external/future = 1091/966/965/1/125
+original GREEN = 748/748
+intentional future RED = 125/125 (78/29/10/8)
+hard limit = 4/4
+Contact analytic = 38/38
+T152 pose-conditioned CLI = 113/113
+deprecated imports = 0 errors / 0 warnings
+```
+
+The approved current-GREEN node digests remain:
+
+```text
+collection-order:
+1c8e6a8e9b09da6b06435ea6c75191c5fb4b3c3fa7e1b97161951e65249d45ad
+
+sorted:
+00a6e84c5d2e1f623f2211db8272ca95859e8050417f7c25cbfeef9afd84efc7
+```
+
+This implementation closure does not reinterpret attempt-08, create a C1
+cap, or pass G1. A fresh C2a v2 and a later C1 runtime remain separate
+freshness-bound stages.
+
 ## 3. Immutable attempt-08 facts
 
 The following facts were re-read from the immutable artifact set and must not
