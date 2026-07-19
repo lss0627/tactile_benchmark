@@ -682,7 +682,7 @@ def run_c2a_static_qualification(
                         systemic_failure_message = failure_message
             static_scenes.append(
                 {
-                    "schema_version": "g1.c2a.static.v1",
+                    "schema_version": "g1.c2a.static.v2",
                     "candidate_id": candidate["candidate_id"],
                     "scene_id": scene_id,
                     "fresh_scene_token": token,
@@ -801,7 +801,7 @@ def write_c2a_static_evidence(
             "solver_identity": selected.get("solver_identity"),
         }
     report = {
-        "schema_version": "g1.c2a.static.v1",
+        "schema_version": "g1.c2a.static.v2",
         "evidence_stage": "preliminary",
         "status": "BLOCKED",
         "repository": {"commit": str(repository_commit), "dirty": False},
@@ -879,7 +879,7 @@ def build_real_c2a_scene_factory(
 
 def _base_preliminary_report() -> dict[str, Any]:
     return {
-        "schema_version": "g1.c2a.static.v1",
+        "schema_version": "g1.c2a.static.v2",
         "evidence_stage": "preliminary",
         "status": "BLOCKED",
         "claim_eligible": False,

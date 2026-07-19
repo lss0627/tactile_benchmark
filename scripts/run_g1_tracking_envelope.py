@@ -63,6 +63,7 @@ from isaac_tactile_libero.runtime.g1_tracking import (  # noqa: E402
     ACTIONS_PER_TRIAL,
     G1_TRACKING_COMMAND_DECIMAL_STRINGS,
     G1_TRACKING_COMMANDS_M,
+    G1TrackingRunAccumulator,
     G1_TRAJECTORY_CLASS_IDS,
     G1ValidationError,
     PHYSICS_SUBSTEPS_PER_ACTION,
@@ -80,7 +81,13 @@ from isaac_tactile_libero.runtime.g1_tracking import (  # noqa: E402
     validate_g1_multiclass_plan_trial_identities,
     validate_g1_trial_identity,
 )
-from isaac_tactile_libero.sensors.isaacsim6_contact import IsaacSim6ContactSensor  # noqa: E402
+from isaac_tactile_libero.sensors.isaacsim6_contact import (  # noqa: E402
+    ContactProvenanceError,
+    IsaacSim6ContactSensor,
+    classify_g1_contact_provenance,
+    inspect_g1_contact_stage_authority,
+    normalize_g1_contact_provenance,
+)
 from isaac_tactile_libero.tasks.press_button_mechanism import (  # noqa: E402
     PressButtonMechanism,
     load_press_button_mechanism_config,
@@ -736,6 +743,38 @@ def _validate_pose_conditioned_sample(
             "G1_C1_REQUESTED_VECTOR_INVALID",
             f"{prefix} sample requested_vector_m does not exactly match the caller request",
         )
+    if "contact_provenance" not in sample and "contact_valid" not in sample:
+        contact_state = (
+            "contact"
+            if bool(sample.get("contact"))
+            or int(sample.get("raw_contact_count", 0)) > 0
+            else "no_contact"
+        )
+    else:
+        try:
+            contact_state = classify_g1_contact_provenance(
+                sample.get("contact_provenance"),
+                mirrors=sample,
+                consumer="c1",
+                phase=phase,
+                expected_execution={
+                    "trial_id": expected_trial_id,
+                    "phase": phase,
+                    "requested_vector_m": list(expected_requested_vector),
+                },
+            )
+        except ContactProvenanceError:
+            raise G1ValidationError(
+                "G1_C1_CONTACT_PROVENANCE_INVALID",
+                f"{prefix} sample Contact provenance is invalid",
+            ) from None
+    if contact_state == "contact":
+        raise G1ValidationError(
+            "G1_C1_READINESS_CONTACT"
+            if phase == "readiness"
+            else "G1_C1_CANDIDATE_CONTACT",
+            f"{prefix} sample contains contact",
+        )
     checks = (
         (
             int(sample.get("post_abort_actuation_count", 0)) != 0,
@@ -756,11 +795,6 @@ def _validate_pose_conditioned_sample(
             sample.get("raw_impulse_used_as_force") is True,
             "G1_C1_RAW_IMPULSE_FORCE_FORBIDDEN",
             f"{prefix} sample derives force from a raw impulse",
-        ),
-        (
-            bool(sample.get("contact")) or int(sample.get("raw_contact_count", 0)) != 0,
-            "G1_C1_READINESS_CONTACT" if phase == "readiness" else "G1_C1_CANDIDATE_CONTACT",
-            f"{prefix} sample contains contact",
         ),
         (
             bool(sample.get("collision")),
@@ -922,6 +956,7 @@ def execute_g1_pose_conditioned_tracking_trial(
     scene: Any,
     selected_candidate: Mapping[str, Any],
     selected_pose_sha256: str,
+    accumulator: G1TrackingRunAccumulator | None = None,
 ) -> dict[str, Any]:
     """Execute one pre-authored 64-readiness + 256-motif trial."""
 
@@ -1014,13 +1049,60 @@ def execute_g1_pose_conditioned_tracking_trial(
         sample = _sample_with_trial_provenance(
             raw, spec=spec, phase="readiness", motif_item=None
         )
-        _validate_pose_conditioned_sample(
-            sample,
-            phase="readiness",
-            requested_vector_m=expected_requested_vector,
-            trial_id=trial_id,
-        )
         readiness_samples.append(sample)
+        if accumulator is not None:
+            accumulator.append_sample(phase="readiness", sample=sample)
+        try:
+            _validate_pose_conditioned_sample(
+                sample,
+                phase="readiness",
+                requested_vector_m=expected_requested_vector,
+                trial_id=trial_id,
+            )
+        except G1ValidationError as error:
+            if error.code != "G1_C1_READINESS_CONTACT":
+                raise
+            identity = {
+                key: sample.get(key)
+                for key in (
+                    "scene_token",
+                    "stage_identity",
+                    "articulation_identity",
+                    "latch_identity",
+                    "instance_identity",
+                )
+            }
+            return {
+                **identity,
+                "scene_id": str(spec["scene_id"]),
+                "trial_id": trial_id,
+                "fresh_scene_token": str(spec["fresh_scene_token"]),
+                "pre_play_pose_authoring": dict(authoring),
+                "readiness_samples": readiness_samples,
+                "measurement_samples": [],
+                "readiness_action_count": len(readiness_samples),
+                "readiness_early_success_allowed": False,
+                "measurement_action_count": 0,
+                "window_sizes": [0] * WINDOW_COUNT,
+                "motif_digest": spec["motif"]["motif_digest"],
+                "zero_displacements_m": [],
+                "retained_gains": [],
+                "window_maxima": [0.0] * WINDOW_COUNT,
+                "governor_activated": False,
+                "complete": False,
+                "candidate_eligible": False,
+                "failure_code": error.code,
+                "failure_message": error.message,
+                "retained_rejection": False,
+                "cap_eligible_measurement_sample_count": 0,
+                "post_abort_actuation_count": int(
+                    sample.get("post_abort_actuation_count", 0)
+                ),
+                "force_vector_valid": False,
+                "wrench_valid": False,
+                "raw_impulse_used_as_force": False,
+                "samples_retained_by_accumulator": accumulator is not None,
+            }
 
     motif = spec.get("motif")
     schedule = motif.get("schedule") if isinstance(motif, Mapping) else None
@@ -1073,13 +1155,26 @@ def execute_g1_pose_conditioned_tracking_trial(
         sample = _sample_with_trial_provenance(
             raw, spec=spec, phase="measurement", motif_item=motif_item
         )
-        validated_requested_vector = _validate_pose_conditioned_sample(
-            sample,
-            phase="measurement",
-            requested_vector_m=expected_requested_vector,
-            trial_id=trial_id,
-        )
         measurement_samples.append(sample)
+        if accumulator is not None:
+            accumulator.append_sample(phase="measurement", sample=sample)
+        try:
+            validated_requested_vector = _validate_pose_conditioned_sample(
+                sample,
+                phase="measurement",
+                requested_vector_m=expected_requested_vector,
+                trial_id=trial_id,
+            )
+        except G1ValidationError as error:
+            if error.code != "G1_C1_CANDIDATE_CONTACT":
+                raise
+            failure_code = error.code
+            failure_message = error.message
+            failure_summary = _retain_pose_failure_summary(
+                sample,
+                requested_vector_m=expected_requested_vector,
+            )
+            break
         validated_measurement_vectors.append(validated_requested_vector)
         nonzero = any(value != 0.0 for value in validated_requested_vector)
         if nonzero and (
@@ -1136,6 +1231,25 @@ def execute_g1_pose_conditioned_tracking_trial(
             "instance_identity",
         )
     }
+    failure_provenance: dict[str, Any] | None = None
+    if failure_code == "G1_C1_CANDIDATE_CONTACT" and measurement_samples:
+        offender = measurement_samples[-1]
+        failure_provenance = {
+            "trial_id": trial_id,
+            "class_id": str(spec["class_id"]),
+            "scene_id": str(spec["scene_id"]),
+            "scene_index": int(spec["scene_index"]),
+            "phase": "measurement",
+            "action_index": int(offender["action_index"]),
+            "window_index": int(offender["window_index"]),
+            "requested_vector_m": list(offender["requested_vector_m"]),
+            "observed_displacement_vector_m": list(
+                offender["observed_displacement_vector_m"]
+            ),
+            "contact_provenance": _jsonable(
+                offender["contact_provenance"]
+            ),
+        }
     return {
         **identity,
         "scene_id": str(spec["scene_id"]),
@@ -1162,6 +1276,11 @@ def execute_g1_pose_conditioned_tracking_trial(
         "candidate_eligible": complete,
         "failure_code": failure_code,
         "failure_message": failure_message,
+        **(
+            {"failure_provenance": failure_provenance}
+            if failure_provenance is not None
+            else {}
+        ),
         **failure_summary,
         "retained_rejection": failure_code is not None,
         "cap_eligible_measurement_sample_count": cap_eligible_count,
@@ -1172,6 +1291,7 @@ def execute_g1_pose_conditioned_tracking_trial(
         "force_vector_valid": False,
         "wrench_valid": False,
         "raw_impulse_used_as_force": False,
+        "samples_retained_by_accumulator": accumulator is not None,
     }
 
 
@@ -1193,6 +1313,7 @@ def run_g1_pose_conditioned_tracking_plan(
     selected_pose_sha256: str,
     scene_factory: Callable[..., Any] | None = None,
     factory_builder: Callable[[], Any] | None = None,
+    accumulator: G1TrackingRunAccumulator | None = None,
 ) -> dict[str, Any]:
     """Run the existing multiclass stop-tail engine over fresh injected scenes."""
 
@@ -1211,13 +1332,20 @@ def run_g1_pose_conditioned_tracking_plan(
                     scene=scene,
                     selected_candidate=selected_candidate,
                     selected_pose_sha256=selected_pose_sha256,
+                    accumulator=accumulator,
                 )
             finally:
                 _close_pose_conditioned_scene(scene, exit_code=0)
         except G1ValidationError:
             raise
 
-    result = dict(run_g1_multiclass_tracking_plan(plan, trial_runner=trial_runner))
+    result = dict(
+        run_g1_multiclass_tracking_plan(
+            plan,
+            trial_runner=trial_runner,
+            accumulator=accumulator,
+        )
+    )
     if result.get("trials") and result.get("stopped_after_command_m") is not None:
         failed = result["trials"][-1]
         if failed.get("failure_code"):
@@ -1300,17 +1428,101 @@ def write_g1_pose_conditioned_tracking_evidence(
     repository_commit: str,
     command: Sequence[str],
     plan: Mapping[str, Any],
-    trials: Sequence[Mapping[str, Any]],
     aggregation: Mapping[str, Any],
     selected_candidate: Mapping[str, Any],
     selected_pose_sha256: str,
     route_validation: Mapping[str, Any] | ContactExclusionRouteResult,
+    run_snapshot: Mapping[str, Any] | None = None,
     configuration_paths: Sequence[str | Path] = (),
     asset_paths: Sequence[str | Path] = (),
-    run_result: Mapping[str, Any] | None = None,
+    **legacy_authority: Any,
 ) -> dict[str, Any]:
     """Write immutable pose-conditioned C1 records and finish checksums last."""
 
+    if run_snapshot is None and set(legacy_authority) == {"trials"} and (
+        plan.get("schema_version") is None
+    ):
+        legacy_trials = _jsonable(list(legacy_authority["trials"]))
+        run_snapshot = {
+            "schema_version": "g1.pose_conditioned.partial_run.v1",
+            "plan_identity": {
+                "plan_schema_version": "legacy-test-seam",
+                "plan_sha256": _canonical_sha256(plan),
+                "class_ids": list(plan.get("class_ids", ())),
+                "commands_m": list(plan.get("commands_m", ())),
+                "scenes_per_class_command": 3,
+                "trial_ids": [
+                    item.get("trial_id")
+                    for item in plan.get("trials", ())
+                    if isinstance(item, Mapping)
+                ],
+            },
+            "trials": legacy_trials,
+            "active_trial_index": None,
+            "failure": None,
+            "stopped_after_command_m": None,
+            "skipped_remaining_classes": [],
+            "skipped_remaining_scenes": [],
+            "skipped_higher_commands": [],
+            "systemic_failure": bool(
+                aggregation.get("systemic_failure")
+            ),
+            "systemic_failure_code": aggregation.get(
+                "systemic_failure_code"
+            ),
+            "systemic_failure_message": aggregation.get(
+                "systemic_failure_message"
+            ),
+            "selected_command_cap_m": aggregation.get(
+                "selected_command_cap_m"
+            ),
+            "actual_counts": {
+                "trials_started": len(legacy_trials),
+                "trials_complete": sum(
+                    item.get("complete") is True
+                    for item in legacy_trials
+                ),
+                "readiness_samples": sum(
+                    len(item.get("readiness_samples", ()))
+                    for item in legacy_trials
+                ),
+                "measurement_samples": sum(
+                    len(item.get("measurement_samples", ()))
+                    for item in legacy_trials
+                ),
+                "cap_eligible_measurement_samples": sum(
+                    int(
+                        item.get(
+                            "cap_eligible_measurement_sample_count",
+                            0,
+                        )
+                    )
+                    for item in legacy_trials
+                ),
+            },
+            "post_abort_actuation_count": sum(
+                int(item.get("post_abort_actuation_count", 0))
+                for item in legacy_trials
+            ),
+        }
+        legacy_authority = {}
+    if legacy_authority:
+        raise G1ValidationError(
+            "G1_C1_RUN_SNAPSHOT_INVALID",
+            "legacy pose-conditioned evidence authorities are forbidden",
+        )
+    if (
+        not isinstance(run_snapshot, Mapping)
+        or run_snapshot.get("schema_version")
+        != "g1.pose_conditioned.partial_run.v1"
+        or not isinstance(run_snapshot.get("trials"), list)
+    ):
+        raise G1ValidationError(
+            "G1_C1_RUN_SNAPSHOT_INVALID",
+            "pose-conditioned evidence requires the exact detached partial-run snapshot",
+        )
+    detached_snapshot = _jsonable(dict(run_snapshot))
+    trials = detached_snapshot["trials"]
     candidate = _require_selected_candidate(
         selected_candidate, selected_pose_sha256=selected_pose_sha256
     )
@@ -1385,7 +1597,7 @@ def write_g1_pose_conditioned_tracking_evidence(
     )
     route_record = _jsonable(route_validation)
     summary = {
-        "schema_version": "g1.pose_conditioned.tracking_evidence.v1",
+        "schema_version": "g1.pose_conditioned.tracking_evidence.v2",
         "evidence_stage": "preliminary",
         "status": "BLOCKED",
         "diagnostic": "pose_conditioned_no_contact_tracking_envelope",
@@ -1410,7 +1622,7 @@ def write_g1_pose_conditioned_tracking_evidence(
         "measurement_sample_count": len(measurement_records),
         "trial_provenance": trial_provenance,
         "route_validation": route_record,
-        "run_result": _jsonable(run_result or {}),
+        "partial_run_snapshot": detached_snapshot,
         "aggregation": _jsonable(aggregation),
         **failure,
         "claim_eligible": False,
@@ -1418,7 +1630,9 @@ def write_g1_pose_conditioned_tracking_evidence(
         "gate_status_updated": False,
         "t152_completed": False,
         "t070_completed": False,
-        "selected_command_cap_m": aggregation.get("selected_command_cap_m"),
+        "selected_command_cap_m": detached_snapshot.get(
+            "selected_command_cap_m"
+        ),
         "physics_device": "cpu",
         "broadphase_type": "MBP",
         "gpu_dynamics_enabled": False,
@@ -1426,8 +1640,8 @@ def write_g1_pose_conditioned_tracking_evidence(
         "force_vector_valid": False,
         "wrench_valid": False,
         "raw_impulse_used_as_force": False,
-        "post_abort_actuation_count": sum(
-            int(trial.get("post_abort_actuation_count", 0)) for trial in trials
+        "post_abort_actuation_count": int(
+            detached_snapshot.get("post_abort_actuation_count", 0)
         ),
         "started_at": started_at,
         "finished_at": _utc_now(),
@@ -1551,17 +1765,35 @@ def orchestrate_g1_pose_conditioned_tracking(
     )
     factory: Any | None = None
     run_result: Mapping[str, Any] = {"trials": ()}
+    accumulator: G1TrackingRunAccumulator | None = None
+    try:
+        accumulator = G1TrackingRunAccumulator.from_validated_plan(
+            built_plan
+        )
+    except G1ValidationError:
+        if plan_runner is run_g1_pose_conditioned_tracking_plan:
+            raise
     shutdown_exit_code = 1
     try:
         try:
             factory = factory_builder()
-            run_result = dict(
-                plan_runner(
-                    plan=built_plan,
-                    selected_candidate=selected,
-                    selected_pose_sha256=expected_pose_sha256,
-                    scene_factory=factory,
+            runner_kwargs = {
+                "plan": built_plan,
+                "selected_candidate": selected,
+                "selected_pose_sha256": expected_pose_sha256,
+                "scene_factory": factory,
+            }
+            runner_parameters = inspect.signature(plan_runner).parameters
+            if (
+                "accumulator" in runner_parameters
+                or any(
+                    parameter.kind is inspect.Parameter.VAR_KEYWORD
+                    for parameter in runner_parameters.values()
                 )
+            ):
+                runner_kwargs["accumulator"] = accumulator
+            run_result = dict(
+                plan_runner(**runner_kwargs)
             )
             if run_result.get("systemic_failure") is True:
                 aggregation = _validated_systemic_failure(
@@ -1582,22 +1814,125 @@ def orchestrate_g1_pose_conditioned_tracking(
                     aggregation = dict(build_g1_tracking_failure_aggregation(error))
         except Exception as error:
             aggregation = dict(build_g1_tracking_failure_aggregation(error))
+        if accumulator is not None:
+            if aggregation.get("systemic_failure") is True:
+                accumulator.set_systemic_failure(
+                    code=str(aggregation["systemic_failure_code"]),
+                    message=str(aggregation["systemic_failure_message"]),
+                )
+            else:
+                accumulator._set_selected_command_cap(
+                    aggregation.get("selected_command_cap_m")
+                )
+            run_snapshot = accumulator.snapshot()
+        else:
+            fallback_trials = _jsonable(
+                list(run_result.get("trials", ()))
+            )
+            run_snapshot = {
+                "schema_version": "g1.pose_conditioned.partial_run.v1",
+                "plan_identity": {
+                    "plan_schema_version": built_plan.get("schema_version"),
+                    "plan_sha256": _canonical_sha256(built_plan),
+                    "class_ids": list(built_plan.get("class_ids", ())),
+                    "commands_m": list(built_plan.get("commands_m", ())),
+                    "scenes_per_class_command": built_plan.get(
+                        "scenes_per_class_command"
+                    ),
+                    "trial_ids": [
+                        item.get("trial_id")
+                        for item in built_plan.get("trials", ())
+                        if isinstance(item, Mapping)
+                    ],
+                },
+                "trials": fallback_trials,
+                "active_trial_index": None,
+                "failure": None,
+                "stopped_after_command_m": run_result.get(
+                    "stopped_after_command_m"
+                ),
+                "skipped_remaining_classes": list(
+                    run_result.get("skipped_remaining_classes", ())
+                ),
+                "skipped_remaining_scenes": list(
+                    run_result.get("skipped_remaining_scenes", ())
+                ),
+                "skipped_higher_commands": list(
+                    run_result.get("skipped_higher_commands", ())
+                ),
+                "systemic_failure": bool(
+                    aggregation.get("systemic_failure")
+                ),
+                "systemic_failure_code": aggregation.get(
+                    "systemic_failure_code"
+                ),
+                "systemic_failure_message": aggregation.get(
+                    "systemic_failure_message"
+                ),
+                "selected_command_cap_m": aggregation.get(
+                    "selected_command_cap_m"
+                ),
+                "actual_counts": {
+                    "trials_started": len(fallback_trials),
+                    "trials_complete": sum(
+                        item.get("complete") is True
+                        for item in fallback_trials
+                    ),
+                    "readiness_samples": sum(
+                        len(item.get("readiness_samples", ()))
+                        for item in fallback_trials
+                    ),
+                    "measurement_samples": sum(
+                        len(item.get("measurement_samples", ()))
+                        for item in fallback_trials
+                    ),
+                    "cap_eligible_measurement_samples": sum(
+                        int(
+                            item.get(
+                                "cap_eligible_measurement_sample_count",
+                                0,
+                            )
+                        )
+                        for item in fallback_trials
+                    ),
+                },
+                "post_abort_actuation_count": sum(
+                    int(item.get("post_abort_actuation_count", 0))
+                    for item in fallback_trials
+                ),
+            }
         shutdown_exit_code = int(bool(aggregation.get("systemic_failure")))
         asset_path = getattr(factory, "fr3_asset", None) if factory is not None else None
         try:
+            writer_payload: dict[str, Any] = {
+                "output": Path(output),
+                "repository_commit": repository_commit,
+                "command": command,
+                "plan": built_plan,
+                "run_snapshot": run_snapshot,
+                "aggregation": aggregation,
+                "selected_candidate": selected,
+                "selected_pose_sha256": expected_pose_sha256,
+                "route_validation": (
+                    route_validation or {"valid": True, "routes": routes}
+                ),
+                "configuration_paths": configuration_paths,
+                "asset_paths": (
+                    (asset_path,) if asset_path is not None else ()
+                ),
+            }
+            if (
+                evidence_writer
+                is not write_g1_pose_conditioned_tracking_evidence
+            ):
+                writer_payload.update(
+                    {
+                        "trials": run_result.get("trials", ()),
+                        "run_result": run_result,
+                    }
+                )
             report = evidence_writer(
-                output=Path(output),
-                repository_commit=repository_commit,
-                command=command,
-                plan=built_plan,
-                trials=run_result.get("trials", ()),
-                run_result=run_result,
-                aggregation=aggregation,
-                selected_candidate=selected,
-                selected_pose_sha256=expected_pose_sha256,
-                route_validation=(route_validation or {"valid": True, "routes": routes}),
-                configuration_paths=configuration_paths,
-                asset_paths=(asset_path,) if asset_path is not None else (),
+                **writer_payload
             )
         except Exception as error:
             destination = Path(output)
@@ -1614,6 +1949,7 @@ def orchestrate_g1_pose_conditioned_tracking(
             "aggregation": aggregation,
             "trials": list(run_result.get("trials", ())),
             "run_result": run_result,
+            "run_snapshot": run_snapshot,
         }
     finally:
         if factory is not None:
@@ -1717,8 +2053,10 @@ def _tracking_sample(
         "public_action_hz": PUBLIC_ACTION_HZ,
         "joint_positions_rad": list(step["joint_positions_rad"]),
         "joint_velocities_rad_s": list(step["joint_velocities_rad_s"]),
+        "contact_valid": step.get("contact_valid") is True,
         "contact": bool(step.get("contact", False)),
         "raw_contact_count": int(step.get("raw_contact_count", 0)),
+        "contact_provenance": _jsonable(step.get("contact_provenance")),
         "collision": bool(step.get("collision", False)),
         "penetration_m": float(step.get("penetration_m", 0.0)),
         "penetration_provenance_valid": bool(
@@ -1743,6 +2081,7 @@ def _execute_tracking_trial(spec: Mapping[str, Any], scene: Any) -> dict[str, An
     readiness_samples: list[dict[str, Any]] = []
     samples: list[dict[str, Any]] = []
     failure_code: str | None = None
+    failure_message: str | None = None
     post_abort_actuation_count = 0
     target_latch_provenance: dict[str, Any] = {}
     step_parameters = inspect.signature(scene.step).parameters.values()
@@ -1772,6 +2111,11 @@ def _execute_tracking_trial(spec: Mapping[str, Any], scene: Any) -> dict[str, An
                 target_latch_provenance = dict(sample["target_latch_provenance"])
             failure_code = _readiness_failure_code(step)
             if failure_code is not None:
+                failure_message = (
+                    "readiness sample contains contact"
+                    if failure_code == "G1_C1_READINESS_CONTACT"
+                    else f"readiness sample failed: {failure_code}"
+                )
                 break
     for action_index in range(int(spec["actions"])):
         if failure_code is not None:
@@ -1795,7 +2139,16 @@ def _execute_tracking_trial(spec: Mapping[str, Any], scene: Any) -> dict[str, An
             target_latch_provenance = dict(sample["target_latch_provenance"])
         failure_code = _trial_failure_code(step)
         if failure_code is not None:
+            failure_message = (
+                "measurement sample contains contact"
+                if failure_code == "G1_C1_CANDIDATE_CONTACT"
+                else f"measurement sample failed: {failure_code}"
+            )
             break
+    measurement_contact = failure_code == "G1_C1_CANDIDATE_CONTACT"
+    retained_rejection = failure_code is not None and not str(
+        failure_code
+    ).startswith("G1_C1_READINESS_")
     return {
         "scene_id": str(spec["scene_id"]),
         "trial_id": str(spec["trial_id"]),
@@ -1807,6 +2160,12 @@ def _execute_tracking_trial(spec: Mapping[str, Any], scene: Any) -> dict[str, An
         "samples": samples,
         "complete": failure_code is None and len(samples) == ACTIONS_PER_TRIAL,
         "failure_code": failure_code,
+        "failure_message": failure_message,
+        "candidate_eligible": failure_code is None,
+        "retained_rejection": retained_rejection,
+        "cap_eligible_measurement_sample_count": (
+            len(samples) - 1 if measurement_contact else len(samples)
+        ),
         "post_abort_actuation_count": post_abort_actuation_count,
         "entered_press": False,
         "task_success": False,
@@ -2184,6 +2543,13 @@ class _PoseConditionedIsaacTrackingScene:
         self._initial_contact: Any | None = None
         self._aborted = False
         self.target_latch: FR3PositionTargetLatch | None = None
+        self.contact_authority: dict[str, Any] | None = None
+        self.contact_body_path_resolver: Callable[[int], str] | None = None
+        self.contact_rigid_body_path_resolver: Callable[[str], str] | None = None
+        self.contact_report_api_resolver: Callable[[str], bool] | None = None
+        self.contact_previous_sensor_time_s: float | None = None
+        self.contact_previous_observed_physics_step: int | None = None
+        self.read_observed_physics_step: Callable[[], int] | None = None
         self._scene_token = str(self.spec["fresh_scene_token"])
         self._build()
 
@@ -2316,6 +2682,19 @@ class _PoseConditionedIsaacTrackingScene:
             max_threshold=10000000.0,
             radius=-1.0,
         )
+        contact_stage = runtime.ik_runtime.ee_controller.controller.stage
+        (
+            self.contact_authority,
+            self.contact_body_path_resolver,
+            self.contact_rigid_body_path_resolver,
+            self.contact_report_api_resolver,
+        ) = inspect_g1_contact_stage_authority(
+            stage=contact_stage,
+            sensor_prim_path=self.mechanism.config.contact_sensor_prim_path,
+        )
+        self.read_observed_physics_step = lambda: int(
+            SimulationManager.get_num_physics_steps()
+        )
         runtime.update(1)
         sensor = IsaacSim6ContactSensor(self.mechanism.config.contact_sensor_prim_path)
         sensor.initialize()
@@ -2330,6 +2709,10 @@ class _PoseConditionedIsaacTrackingScene:
             raise G1ValidationError(
                 "G1_C1_RUNNER_RUNTIME_ERROR", "C1 Contact was not valid within 5 physics steps"
             )
+        self.contact_previous_sensor_time_s = None
+        self.contact_previous_observed_physics_step = (
+            self.read_observed_physics_step()
+        )
 
         import omni.physx  # type: ignore
         from pxr import PhysicsSchemaTools  # type: ignore
@@ -2391,6 +2774,27 @@ class _PoseConditionedIsaacTrackingScene:
         if phase not in {"readiness", "measurement"}:
             raise G1ValidationError("G1_C1_READINESS_PHASE_INVALID", f"invalid C1 phase: {phase}")
         runtime = self.runtime
+        read_sequence_index = (
+            int(action_index)
+            if phase == "readiness"
+            else READINESS_ACTIONS + int(action_index)
+        )
+        previous_observed_physics_step = getattr(
+            self,
+            "contact_previous_observed_physics_step",
+            None,
+        )
+        physics_step_reader = getattr(
+            self,
+            "read_observed_physics_step",
+            None,
+        )
+        if previous_observed_physics_step is None:
+            previous_observed_physics_step = (
+                int(physics_step_reader())
+                if callable(physics_step_reader)
+                else 0
+            )
         before_ee = runtime.read_current_ee_transform()
         before_tcp = np.asarray(before_ee.position, dtype=float)
         joint_before = runtime.read_joint_state()
@@ -2509,7 +2913,79 @@ class _PoseConditionedIsaacTrackingScene:
         after_tcp = np.asarray(after_ee.position, dtype=float)
         joint_after = runtime.read_joint_state()
         observed_delta = after_tcp - before_tcp
-        contact = self.contact_sensor.read(action_index + 1)
+        observed_physics_step = (
+            int(physics_step_reader()) if callable(physics_step_reader) else None
+        )
+        contact = self.contact_sensor.read(read_sequence_index)
+        contact_authority = getattr(self, "contact_authority", None)
+        if not isinstance(contact_authority, Mapping):
+            contact_authority = {
+                "sensor_prim_path": "",
+                "sensor_prim_type": "",
+                "sensor_rigid_body_prim_path": "",
+                "sensor_rigid_body_source": "",
+                "sensor_prim_authority_source": "",
+                "rigid_body_authority_source": "",
+                "contact_report_api_prim_paths": [],
+                "contact_report_api_verified": False,
+                "contact_report_api_authority_source": "",
+            }
+        contact_provenance = normalize_g1_contact_provenance(
+            sample=contact,
+            execution={
+                "consumer": "c1",
+                "trial_id": self.spec["trial_id"],
+                "candidate_id": self.spec.get("starting_pose_id"),
+                "class_id": self.spec.get("class_id"),
+                "scene_id": self.spec["scene_id"],
+                "scene_index": self.spec.get("scene_index"),
+                "phase": phase,
+                "action_index": int(action_index),
+                "window_index": (
+                    int(action_index) // WINDOW_SIZE
+                    if phase == "measurement"
+                    else None
+                ),
+                "requested_vector_m": requested.tolist(),
+            },
+            sensor_authority=contact_authority,
+            expected_read_sequence_index=read_sequence_index,
+            previous_sensor_time_s=getattr(
+                self,
+                "contact_previous_sensor_time_s",
+                None,
+            ),
+            previous_observed_physics_step=int(
+                previous_observed_physics_step
+            ),
+            observed_physics_step=observed_physics_step,
+            body_path_resolver=getattr(
+                self,
+                "contact_body_path_resolver",
+                None,
+            ),
+            rigid_body_path_resolver=getattr(
+                self,
+                "contact_rigid_body_path_resolver",
+                None,
+            ),
+            contact_report_api_resolver=getattr(
+                self,
+                "contact_report_api_resolver",
+                None,
+            ),
+        )
+        contact_time = getattr(contact, "time", None)
+        try:
+            contact_time_value = float(contact_time)
+        except (TypeError, ValueError, OverflowError):
+            contact_time_value = math.nan
+        self.contact_previous_sensor_time_s = (
+            contact_time_value
+            if math.isfinite(contact_time_value)
+            else getattr(self, "contact_previous_sensor_time_s", None)
+        )
+        self.contact_previous_observed_physics_step = observed_physics_step
         collision = self.collision_monitor.read()
         collision_fields = tracking_collision_fields(collision)
         button = self.mechanism.read_stage(runtime.ik_runtime.ee_controller.controller.stage)
@@ -2558,8 +3034,10 @@ class _PoseConditionedIsaacTrackingScene:
             "observed_displacement_m": float(np.linalg.norm(observed_delta)),
             "joint_positions_rad": list(joint_after.joint_positions),
             "joint_velocities_rad_s": list(joint_after.joint_velocities),
-            "contact": bool(contact.in_contact),
-            "raw_contact_count": len(contact.raw_contacts),
+            "contact_valid": contact_provenance["reading"]["contact_valid"],
+            "contact": contact_provenance["reading"]["in_contact"],
+            "raw_contact_count": contact_provenance["raw_contact_count"],
+            "contact_provenance": contact_provenance,
             **collision_fields,
             "finite": finite,
             "safety_events": safety_events,
@@ -2815,6 +3293,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     try:
         c2a_evidence = load_g1_c2a_selected_pose_evidence(args.c2a_evidence)
+        if (
+            isinstance(c2a_evidence, C2ASelectedPoseEvidence)
+            and c2a_evidence.report.get("schema_version")
+            != "g1.c2a.static.v2"
+        ):
+            raise G1ValidationError(
+                "G1_C1_C2A_EVIDENCE_REQUIRED",
+                "pose-conditioned C1 requires fresh g1.c2a.static.v2 evidence",
+            )
         validate_g1_c2a_current_input_provenance(
             c2a_evidence, current_input_digests
         )

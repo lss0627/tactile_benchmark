@@ -1476,6 +1476,16 @@ class G1TrackingRunAccumulator:
         self._active_trial_index = None
         self._last_sample_phase = None
 
+    def _merge_active_result(self, result: Mapping[str, Any]) -> None:
+        row = self._active()
+        retained_readiness = row["readiness_samples"]
+        retained_measurement = row["measurement_samples"]
+        row.update(_deep_json_copy(dict(result)))
+        row["readiness_samples"] = retained_readiness
+        row["measurement_samples"] = retained_measurement
+        row["readiness_action_count"] = len(retained_readiness)
+        row["measurement_action_count"] = len(retained_measurement)
+
     def fail_active_trial(
         self,
         *,
@@ -2144,20 +2154,21 @@ def run_g1_multiclass_tracking_plan(
             )
             run_accumulator.set_systemic_failure(code=code, message=message)
             raise
-        for sample in result.get("readiness_samples", ()):
-            run_accumulator.append_sample(
-                phase="readiness",
-                sample=sample,
+        if result.get("samples_retained_by_accumulator") is not True:
+            for sample in result.get("readiness_samples", ()):
+                run_accumulator.append_sample(
+                    phase="readiness",
+                    sample=sample,
+                )
+            measurement_records = result.get(
+                "measurement_samples",
+                result.get("samples", ()),
             )
-        measurement_records = result.get(
-            "measurement_samples",
-            result.get("samples", ()),
-        )
-        for sample in measurement_records:
-            run_accumulator.append_sample(
-                phase="measurement",
-                sample=sample,
-            )
+            for sample in measurement_records:
+                run_accumulator.append_sample(
+                    phase="measurement",
+                    sample=sample,
+                )
         retained.append({**dict(spec), **result})
         if result.get("failure_code"):
             stopped_command = command
@@ -2182,6 +2193,7 @@ def run_g1_multiclass_tracking_plan(
                 or result.get("failure_detail")
                 or result["failure_code"]
             )
+            run_accumulator._merge_active_result(result)
             run_accumulator.fail_active_trial(
                 code=str(result["failure_code"]),
                 message=failure_message,
@@ -2208,11 +2220,17 @@ def run_g1_multiclass_tracking_plan(
         if stopped_command is not None
         else []
     )
+    readiness_systemic = bool(
+        retained
+        and str(retained[-1].get("failure_code", "")).startswith(
+            "G1_C1_READINESS_"
+        )
+    )
     zero_systemic = stopped_command == 0.0
     if stopped_command is not None and retained:
         retained[-1].update(
             {
-                "retained_rejection": True,
+                "retained_rejection": not readiness_systemic,
                 "skipped_remaining_classes": list(skipped_classes),
                 "skipped_remaining_scenes": list(skipped_scenes),
                 "skipped_higher_commands": list(skipped_higher),
@@ -2224,10 +2242,23 @@ def run_g1_multiclass_tracking_plan(
             skipped_remaining_scenes=skipped_scenes,
             skipped_higher_commands=skipped_higher,
         )
-    if zero_systemic:
+    if zero_systemic or readiness_systemic:
+        systemic_code = (
+            str(retained[-1]["failure_code"])
+            if readiness_systemic
+            else "G1_C1_ZERO_COMMAND_INVALID"
+        )
+        systemic_message = (
+            str(
+                retained[-1].get("failure_message")
+                or "C1 readiness failed before measurement"
+            )
+            if readiness_systemic
+            else "zero-command multiclass matrix failed before non-zero acquisition"
+        )
         run_accumulator.set_systemic_failure(
-            code="G1_C1_ZERO_COMMAND_INVALID",
-            message="zero-command multiclass matrix failed before non-zero acquisition",
+            code=systemic_code,
+            message=systemic_message,
         )
     return {
         "trials": retained,
@@ -2235,12 +2266,23 @@ def run_g1_multiclass_tracking_plan(
         "skipped_remaining_classes": skipped_classes,
         "skipped_remaining_scenes": skipped_scenes,
         "skipped_higher_commands": skipped_higher,
-        "systemic_failure": zero_systemic,
-        "systemic_failure_code": "G1_C1_ZERO_COMMAND_INVALID" if zero_systemic else None,
+        "systemic_failure": zero_systemic or readiness_systemic,
+        "systemic_failure_code": (
+            str(retained[-1]["failure_code"])
+            if readiness_systemic
+            else ("G1_C1_ZERO_COMMAND_INVALID" if zero_systemic else None)
+        ),
         "systemic_failure_message": (
-            "zero-command multiclass matrix failed before non-zero acquisition"
-            if zero_systemic
-            else None
+            str(
+                retained[-1].get("failure_message")
+                or "C1 readiness failed before measurement"
+            )
+            if readiness_systemic
+            else (
+                "zero-command multiclass matrix failed before non-zero acquisition"
+                if zero_systemic
+                else None
+            )
         ),
         "run_snapshot": run_accumulator.snapshot(),
     }
