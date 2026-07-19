@@ -251,6 +251,183 @@ def _assert_option_d_inventory_contracts(module: Any) -> None:
         usd_geometry=geometry,
     )
     assert agreement["geometry_agreement_valid"] is True
+    one_ulp_geometry = json.loads(json.dumps(query_geometry))
+    one_ulp_geometry["property_query_local_aabb_max"][0] = float(
+        np.nextafter(
+            np.float32(1.0),
+            np.float32(math.inf),
+            dtype=np.float32,
+        )
+    )
+    one_ulp_geometry["property_query_volume"] = float(
+        np.nextafter(
+            np.float32(8.0),
+            np.float32(-math.inf),
+            dtype=np.float32,
+        )
+    )
+    one_ulp_agreement = validate_geometry(
+        property_query_record=one_ulp_geometry,
+        usd_geometry=geometry,
+    )
+    assert one_ulp_agreement[
+        "local_aabb_max_float32_ulp_distance"
+    ][0] == 1
+    assert one_ulp_agreement["volume_float32_ulp_distance"] == 1
+    link0_mesh_geometry = {
+        "body_prim_path": "/World/FR3/fr3_link0",
+        "collider_prim_path": "/World/FR3/fr3_link0/collisions",
+        "collider_type": "mesh",
+        "approximation": "convexHull",
+        "local_transform": _option_d_matrix(),
+        "scale": [1.0, 1.0, 1.0],
+        "shape_parameters": {
+            "points": [
+                [
+                    -0.15407869219779968,
+                    -0.09461374580860138,
+                    -3.249277506256476e-05,
+                ],
+                [
+                    0.07156699150800705,
+                    0.09467043727636337,
+                    0.14000283181667328,
+                ],
+                [
+                    -0.15407869219779968,
+                    0.09467043727636337,
+                    0.14000283181667328,
+                ],
+                [
+                    0.07156699150800705,
+                    -0.09461374580860138,
+                    -3.249277506256476e-05,
+                ],
+            ],
+            "face_vertex_indices": [0, 1, 2, 0, 3, 1],
+        },
+    }
+    link0_property_query = {
+        "collider_prim_path": "/World/FR3/fr3_link0/collisions",
+        "property_query_local_aabb_min": [
+            -0.15407869219779968,
+            -0.09461374580860138,
+            -3.249943256378174e-05,
+        ],
+        "property_query_local_aabb_max": [
+            0.07156699895858765,
+            0.09467042982578278,
+            0.14000283181667328,
+        ],
+        "property_query_local_position": [0.0, 0.0, 0.0],
+        "property_query_local_rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "property_query_volume": float(np.float32(0.001)),
+    }
+    link0_agreement = validate_geometry(
+        property_query_record=link0_property_query,
+        usd_geometry=link0_mesh_geometry,
+    )
+    assert (
+        link0_agreement["aabb_authority_model"]
+        == "physx_cooked_mesh_aabb_union_authored_conservative_obb"
+    )
+    assert link0_agreement["local_aabb_min_float32_ulp_distance"] == [
+        0,
+        0,
+        1830,
+    ]
+    assert link0_agreement["mesh_sweep_local_aabb_min"] == [
+        -0.15407869219779968,
+        -0.09461374580860138,
+        -3.249943256378174e-05,
+    ]
+    assert link0_agreement["mesh_sweep_local_aabb_max"] == [
+        0.07156699895858765,
+        0.09467043727636337,
+        0.14000283181667328,
+    ]
+    inward_mesh_query = json.loads(json.dumps(link0_property_query))
+    inward_mesh_query["property_query_local_aabb_max"][1] = float(
+        np.nextafter(
+            np.float32(
+                link0_mesh_geometry["shape_parameters"]["points"][1][1]
+            ),
+            np.float32(-math.inf),
+            dtype=np.float32,
+        )
+    )
+    inward_mesh_query["property_query_local_aabb_max"][1] = float(
+        np.nextafter(
+            np.float32(
+                inward_mesh_query["property_query_local_aabb_max"][1]
+            ),
+            np.float32(-math.inf),
+            dtype=np.float32,
+        )
+    )
+    inward_agreement = validate_geometry(
+        property_query_record=inward_mesh_query,
+        usd_geometry=link0_mesh_geometry,
+    )
+    assert inward_agreement["mesh_sweep_local_aabb_max"][1] == (
+        0.09467043727636337
+    )
+    oversized_mesh_query = json.loads(json.dumps(link0_property_query))
+    oversized_mesh_query["property_query_local_aabb_min"] = [
+        -100.0,
+        -100.0,
+        -100.0,
+    ]
+    oversized_mesh_query["property_query_local_aabb_max"] = [
+        100.0,
+        100.0,
+        100.0,
+    ]
+    oversized_agreement = validate_geometry(
+        property_query_record=oversized_mesh_query,
+        usd_geometry=link0_mesh_geometry,
+    )
+    assert oversized_agreement["mesh_sweep_local_aabb_min"] == [
+        -100.0,
+        -100.0,
+        -100.0,
+    ]
+    assert oversized_agreement["mesh_sweep_local_aabb_max"] == [
+        100.0,
+        100.0,
+        100.0,
+    ]
+    mismatched_query_pose = json.loads(json.dumps(link0_property_query))
+    mismatched_query_pose["property_query_local_position"] = [
+        100.0,
+        200.0,
+        300.0,
+    ]
+    mismatched_query_pose["property_query_local_rotation_xyzw"] = [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+    ]
+    with pytest.raises(Exception):
+        validate_geometry(
+            property_query_record=mismatched_query_pose,
+            usd_geometry=link0_mesh_geometry,
+        )
+
+    readback = getattr(
+        module,
+        "stage_world_transform_readback_contract",
+        None,
+    )
+    assert callable(readback)
+    with pytest.raises(Exception):
+        readback(
+            canonical_world_transform=_option_d_matrix(),
+            stage_world_transform=_option_d_matrix(x=100.0),
+            joint_graph=[],
+            body_prim_path="/World/Body",
+        )
     for field, value in (
         ("property_query_local_aabb_max", [1.1, 1.0, 1.0]),
         ("property_query_volume", 7.0),

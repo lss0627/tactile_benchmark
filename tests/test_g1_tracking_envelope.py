@@ -368,21 +368,63 @@ def _assert_option_d_sweep_contracts(module: Any) -> None:
     assert receipt["physics_substeps"] == 3
     assert receipt["stopping_reach_bound"]["validated"] is True
 
+    fixed_initial_snapshot = json.loads(json.dumps(safe_snapshot))
+    fixed_initial_snapshot["articulation_joint_positions"] = [0.0]
+    fixed_initial_snapshot = module.validate_collision_snapshot(
+        fixed_initial_snapshot,
+        require_kinematics=True,
+    )
+    moving_receipt = certify(
+        snapshot=fixed_initial_snapshot,
+        action=_option_d_action(start=0.001, target=0.002),
+        phase_policy="c1_no_contact",
+    )
+    assert moving_receipt["observed_q"] == [0.001]
+
     claim_action = _option_d_action(start=0.0, target=0.01)
     claim_action["lifecycle_record_sha256"] = "a" * 64
+    with pytest.raises(Exception):
+        certify(
+            snapshot=safe_snapshot,
+            action=claim_action,
+            phase_policy="c1_no_contact",
+        )
+    claim_snapshot = json.loads(json.dumps(safe_snapshot))
+    claim_snapshot["offset_authority_claim_eligible"] = True
+    for index, collider in enumerate(
+        claim_snapshot["subject_inventory"]
+        + claim_snapshot["obstacle_inventory"]
+    ):
+        collider["offset_authority_sha256"] = f"{index + 1:064x}"
+        collider["property_query_geometry_agreement_sha256"] = (
+            f"{index + 101:064x}"
+        )
+        collider["aabb_authority_model"] = (
+            "analytic_shape_exact_within_one_float32_ulp"
+        )
+        collider["mesh_sweep_local_aabb_min"] = None
+        collider["mesh_sweep_local_aabb_max"] = None
+        collider["stage_world_transform_diagnostic"] = collider[
+            "world_transform"
+        ]
+        collider.update(
+            module.stage_world_transform_readback_contract(
+                canonical_world_transform=collider["world_transform"],
+                stage_world_transform=collider["world_transform"],
+                joint_graph=claim_snapshot["joint_graph"],
+                body_prim_path=collider["body_prim_path"],
+            )
+        )
+        collider["world_transform_authority"] = (
+            "normalized_usd_joint_graph_with_stage_readback"
+        )
     claim_receipt = certify(
-        snapshot=safe_snapshot,
+        snapshot=claim_snapshot,
         action=claim_action,
         phase_policy="c1_no_contact",
     )
     tampered = json.loads(json.dumps(claim_receipt))
     for pair in tampered["pair_receipts"]:
-        for certificate in pair["interval_certificates"]:
-            certificate["effective_contact_lower_bound_m"] += 0.1
-            certificate["certificate_sha256"] = module.canonical_sha256(
-                certificate,
-                exclude_fields=("certificate_sha256",),
-            )
         pair["minimum_effective_contact_separation_m"] += 0.1
         pair["pair_record_sha256"] = module.canonical_sha256(
             pair,
@@ -394,7 +436,7 @@ def _assert_option_d_sweep_contracts(module: Any) -> None:
         exclude_fields=("record_sha256",),
     )
     with pytest.raises(Exception):
-        validate_receipt(tampered, snapshot=safe_snapshot)
+        validate_receipt(tampered, snapshot=claim_snapshot)
 
     stopping_snapshot = json.loads(json.dumps(snapshot))
     stopping_snapshot["obstacle_inventory"][0]["local_transform"] = _identity_matrix(
