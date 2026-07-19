@@ -1070,6 +1070,7 @@ def execute_g1_pose_conditioned_tracking_trial(
                     "articulation_identity",
                     "latch_identity",
                     "instance_identity",
+                    "lifecycle_record_sha256",
                 )
             }
             return {
@@ -1102,6 +1103,18 @@ def execute_g1_pose_conditioned_tracking_trial(
                 "wrench_valid": False,
                 "raw_impulse_used_as_force": False,
                 "samples_retained_by_accumulator": accumulator is not None,
+                "scene_lifecycle": _jsonable(
+                    getattr(scene, "lifecycle_record", None)
+                ),
+                "collision_snapshot": _jsonable(
+                    getattr(scene, "collision_snapshot", None)
+                ),
+                "offset_authority_records": _jsonable(
+                    getattr(scene, "offset_authority_records", ())
+                ),
+                "swept_clearance_receipts": _jsonable(
+                    getattr(scene, "swept_clearance_receipts", ())
+                ),
             }
 
     motif = spec.get("motif")
@@ -1229,6 +1242,7 @@ def execute_g1_pose_conditioned_tracking_trial(
             "articulation_identity",
             "latch_identity",
             "instance_identity",
+            "lifecycle_record_sha256",
         )
     }
     failure_provenance: dict[str, Any] | None = None
@@ -1292,6 +1306,18 @@ def execute_g1_pose_conditioned_tracking_trial(
         "wrench_valid": False,
         "raw_impulse_used_as_force": False,
         "samples_retained_by_accumulator": accumulator is not None,
+        "scene_lifecycle": _jsonable(
+            getattr(scene, "lifecycle_record", None)
+        ),
+        "collision_snapshot": _jsonable(
+            getattr(scene, "collision_snapshot", None)
+        ),
+        "offset_authority_records": _jsonable(
+            getattr(scene, "offset_authority_records", ())
+        ),
+        "swept_clearance_receipts": _jsonable(
+            getattr(scene, "swept_clearance_receipts", ())
+        ),
     }
 
 
@@ -1357,25 +1383,42 @@ def run_g1_pose_conditioned_tracking_plan(
                 result["skipped_remaining_scenes"]
             )
             failed["skipped_higher_commands"] = list(result["skipped_higher_commands"])
-    identities = [
-        tuple(trial.get(key) for key in (
-            "scene_token",
-            "stage_identity",
-            "articulation_identity",
-            "latch_identity",
-            "instance_identity",
-        ))
+    option_d_v3 = getattr(factory, "option_d_v3", False) is True
+    lifecycle_values = [
+        trial.get("lifecycle_record_sha256")
         for trial in result.get("trials", ())
     ]
-    for column, label in enumerate(
-        ("scene token", "stage", "articulation", "latch", "runtime instance")
-    ):
-        values = [identity[column] for identity in identities]
-        if values and (any(value is None for value in values) or len(values) != len(set(values))):
+    if option_d_v3:
+        if not lifecycle_values or any(
+            value is None for value in lifecycle_values
+        ):
             raise G1ValidationError(
                 "G1_C1_FRESH_SCENE_UNPROVEN",
-                f"fresh-scene {label} identity is missing or reused",
+                "Option D requires a stable lifecycle digest for every trial",
             )
+        if len(lifecycle_values) != len(set(lifecycle_values)):
+            raise G1ValidationError(
+                "G1_C1_FRESH_SCENE_UNPROVEN",
+                "fresh-scene lifecycle digest is missing or reused",
+            )
+        return result
+    planned_tokens = [
+        trial.get("fresh_scene_token")
+        for trial in result.get("trials", ())
+    ]
+    if planned_tokens and (
+        any(
+            not isinstance(value, str) or not value
+            for value in planned_tokens
+        )
+        or len(planned_tokens) != len(set(planned_tokens))
+    ):
+        raise G1ValidationError(
+            "G1_C1_FRESH_SCENE_UNPROVEN",
+            "legacy planned fresh-scene token is missing or reused",
+        )
+    result["fresh_scene_authority"] = "legacy_planned_token_nonclaim"
+    result["fresh_scene_claim_eligible"] = False
     return result
 
 
@@ -1433,6 +1476,9 @@ def write_g1_pose_conditioned_tracking_evidence(
     selected_pose_sha256: str,
     route_validation: Mapping[str, Any] | ContactExclusionRouteResult,
     run_snapshot: Mapping[str, Any] | None = None,
+    lifecycle_audit: Mapping[str, Any] | None = None,
+    lifecycle_close_records: Sequence[Mapping[str, Any]] = (),
+    scene_creation_failures: Sequence[Mapping[str, Any]] = (),
     configuration_paths: Sequence[str | Path] = (),
     asset_paths: Sequence[str | Path] = (),
     **legacy_authority: Any,
@@ -1536,6 +1582,67 @@ def write_g1_pose_conditioned_tracking_evidence(
     for planned in plan.get("trials", ()):
         if isinstance(planned, dict) and isinstance(planned.get("motif"), Mapping):
             planned.setdefault("motif_digest", planned["motif"]["motif_digest"])
+    option_d = lifecycle_audit is not None
+    if option_d and any(
+        not isinstance(trial.get("scene_lifecycle"), Mapping)
+        or not isinstance(trial.get("collision_snapshot"), Mapping)
+        for trial in trials
+    ):
+        raise G1ValidationError(
+            "G1_C1_OPTION_D_INVALID",
+            "Option D partial evidence contains a downgraded trial",
+        )
+    if option_d:
+        from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
+            build_claim_bearing_command_bound_routes_v2,
+            canonical_sha256 as option_d_sha256,
+        )
+
+        lifecycle_audit_path = destination / "lifecycle_audit.json"
+        lifecycle_audit_path.write_text(
+            json.dumps(_jsonable(dict(lifecycle_audit)), indent=2, sort_keys=True)
+            + "\n",
+            encoding="utf-8",
+        )
+        close_tokens = [
+            str(record.get("stage_lifecycle_token", ""))
+            for record in lifecycle_close_records
+            if isinstance(record, Mapping)
+        ]
+        if (
+            len(close_tokens) != len(lifecycle_close_records)
+            or len(close_tokens) != len(set(close_tokens))
+            or sorted(close_tokens)
+            != list(lifecycle_audit.get("closed_stage_lifecycle_tokens", ()))
+        ):
+            raise G1ValidationError(
+                "G1_C1_FRESH_SCENE_UNPROVEN",
+                "lifecycle close records differ from factory close authority",
+            )
+        lifecycle_close_path = destination / "lifecycle_close_records.jsonl"
+        lifecycle_close_path.write_text(
+            "".join(
+                json.dumps(_jsonable(dict(record)), sort_keys=True) + "\n"
+                for record in lifecycle_close_records
+            ),
+            encoding="utf-8",
+        )
+        creation_failure_path = destination / "scene_creation_failures.jsonl"
+        creation_failure_path.write_text(
+            "".join(
+                json.dumps(_jsonable(dict(record)), sort_keys=True) + "\n"
+                for record in scene_creation_failures
+            ),
+            encoding="utf-8",
+        )
+        from isaac_tactile_libero.runtime.g1_tracking import (
+            validate_g1_option_d_trial_record,
+        )
+
+        trials[:] = [
+            validate_g1_option_d_trial_record(trial)
+            for trial in trials
+        ]
     trial_records = []
     for trial in trials:
         record = _jsonable(dict(trial))
@@ -1566,6 +1673,96 @@ def write_g1_pose_conditioned_tracking_evidence(
         "".join(json.dumps(_jsonable(record), sort_keys=True) + "\n" for record in measurement_records),
         encoding="utf-8",
     )
+    option_d_paths: list[Path] = []
+    if option_d:
+        lifecycle_path = destination / "lifecycle_records.jsonl"
+        lifecycle_path.write_text(
+            "".join(
+                json.dumps(_jsonable(trial["scene_lifecycle"]), sort_keys=True)
+                + "\n"
+                for trial in trials
+            ),
+            encoding="utf-8",
+        )
+        collision_path = destination / "collision_snapshots.jsonl"
+        collision_path.write_text(
+            "".join(
+                json.dumps(_jsonable(trial["collision_snapshot"]), sort_keys=True)
+                + "\n"
+                for trial in trials
+            ),
+            encoding="utf-8",
+        )
+        offset_path = destination / "offset_authority_records.jsonl"
+        offset_path.write_text(
+            "".join(
+                json.dumps(_jsonable(record), sort_keys=True) + "\n"
+                for trial in trials
+                for record in trial.get("offset_authority_records", ())
+            ),
+            encoding="utf-8",
+        )
+        sweep_path = destination / "swept_clearance_receipts.jsonl"
+        sweep_path.write_text(
+            "".join(
+                json.dumps(_jsonable(record), sort_keys=True) + "\n"
+                for trial in trials
+                for record in trial.get("swept_clearance_receipts", ())
+            ),
+            encoding="utf-8",
+        )
+        command_route_path = destination / "command_bound_routes_v2.jsonl"
+        command_routes = build_claim_bearing_command_bound_routes_v2(
+            trials
+        )
+        command_route_path.write_text(
+            "".join(
+                json.dumps(_jsonable(route), sort_keys=True) + "\n"
+                for route in command_routes
+            ),
+            encoding="utf-8",
+        )
+        partial_route = {
+            "schema_version": (
+                "g1.pose_conditioned.command_bound_routes.v2.partial"
+            ),
+            "claim_eligible": False,
+            "complete_route_sha256s": [
+                route["route_sha256"] for route in command_routes
+            ],
+            "retained_sweep_record_sha256s": [
+                record.get("record_sha256")
+                for trial in trials
+                for record in trial.get(
+                    "swept_clearance_receipts",
+                    (),
+                )
+                if isinstance(record, Mapping)
+                and record.get("record_sha256")
+            ],
+        }
+        partial_route["partial_route_sha256"] = option_d_sha256(
+            partial_route
+        )
+        partial_route_path = destination / "command_bound_routes_v2.partial.json"
+        partial_route_path.write_text(
+            json.dumps(_jsonable(partial_route), indent=2, sort_keys=True)
+            + "\n",
+            encoding="utf-8",
+        )
+        option_d_paths.extend(
+            (
+                lifecycle_audit_path,
+                lifecycle_close_path,
+                creation_failure_path,
+                lifecycle_path,
+                collision_path,
+                offset_path,
+                sweep_path,
+                command_route_path,
+                partial_route_path,
+            )
+        )
     class_ids = list(dict.fromkeys(str(trial["class_id"]) for trial in trials))
     trial_provenance = [
         {
@@ -1597,7 +1794,11 @@ def write_g1_pose_conditioned_tracking_evidence(
     )
     route_record = _jsonable(route_validation)
     summary = {
-        "schema_version": "g1.pose_conditioned.tracking_evidence.v2",
+        "schema_version": (
+            "g1.pose_conditioned.tracking_evidence.v3"
+            if option_d
+            else "g1.pose_conditioned.tracking_evidence.v2"
+        ),
         "evidence_stage": "preliminary",
         "status": "BLOCKED",
         "diagnostic": "pose_conditioned_no_contact_tracking_envelope",
@@ -1678,6 +1879,7 @@ def write_g1_pose_conditioned_tracking_evidence(
         trials_path,
         readiness_path,
         samples_path,
+        *option_d_paths,
         report_path,
     )
     manifest["artifacts"] = [_artifact_reference(path) for path in artifact_paths]
@@ -1904,6 +2106,22 @@ def orchestrate_g1_pose_conditioned_tracking(
         shutdown_exit_code = int(bool(aggregation.get("systemic_failure")))
         asset_path = getattr(factory, "fr3_asset", None) if factory is not None else None
         try:
+            lifecycle_audit = None
+            lifecycle_close_records: Sequence[Mapping[str, Any]] = ()
+            scene_creation_failures: Sequence[Mapping[str, Any]] = ()
+            finalize_lifecycle = getattr(
+                factory,
+                "finalize_lifecycle_audit",
+                None,
+            )
+            if callable(finalize_lifecycle):
+                lifecycle_audit = finalize_lifecycle()
+                lifecycle_close_records = tuple(
+                    getattr(factory, "lifecycle_close_records", ())
+                )
+                scene_creation_failures = tuple(
+                    getattr(factory, "scene_creation_failures", ())
+                )
             writer_payload: dict[str, Any] = {
                 "output": Path(output),
                 "repository_commit": repository_commit,
@@ -1921,6 +2139,14 @@ def orchestrate_g1_pose_conditioned_tracking(
                     (asset_path,) if asset_path is not None else ()
                 ),
             }
+            if lifecycle_audit is not None:
+                writer_payload.update(
+                    {
+                        "lifecycle_audit": lifecycle_audit,
+                        "lifecycle_close_records": lifecycle_close_records,
+                        "scene_creation_failures": scene_creation_failures,
+                    }
+                )
             if (
                 evidence_writer
                 is not write_g1_pose_conditioned_tracking_evidence
@@ -2551,6 +2777,11 @@ class _PoseConditionedIsaacTrackingScene:
         self.contact_previous_observed_physics_step: int | None = None
         self.read_observed_physics_step: Callable[[], int] | None = None
         self._scene_token = str(self.spec["fresh_scene_token"])
+        self.lifecycle_allocation = dict(self.spec["lifecycle_allocation"])
+        self.lifecycle_record: dict[str, Any] | None = None
+        self.collision_snapshot: dict[str, Any] | None = None
+        self.offset_authority_records: list[dict[str, Any]] = []
+        self.swept_clearance_receipts: list[dict[str, Any]] = []
         self._build()
 
     def _build(self) -> None:
@@ -2563,6 +2794,7 @@ class _PoseConditionedIsaacTrackingScene:
         authoring_record: dict[str, Any] = {}
         selected_candidate = owner.c2a_evidence.candidate_record
         selected_pose_sha256 = owner.c2a_evidence.selected_pose_sha256
+        lifecycle_capture: dict[str, Any] = {}
 
         def stage_builder(stage: Any) -> None:
             from isaacsim.core.simulation_manager import SimulationManager  # type: ignore
@@ -2590,6 +2822,20 @@ class _PoseConditionedIsaacTrackingScene:
                     authoring_adapter=UsdPhysxC2APrePlayAdapter(),
                     play_after_author=False,
                 )
+            )
+            from isaac_tactile_libero.robots.fr3_static_pose_runtime import (
+                UsdSceneLifecycleStageAdapter,
+                preplay_authored_map_sha256,
+            )
+
+            lifecycle_capture["stage_lifecycle_token"] = (
+                owner.lifecycle_authority.bind_stage(
+                    self.lifecycle_allocation,
+                    UsdSceneLifecycleStageAdapter(stage),
+                )
+            )
+            lifecycle_capture["preplay_authored_map_sha256"] = (
+                preplay_authored_map_sha256(stage)
             )
 
         runtime = FR3DifferentialIKRuntime(
@@ -2636,7 +2882,8 @@ class _PoseConditionedIsaacTrackingScene:
                 "post_play_gpu_dynamics_enabled": observed_policy["gpu_dynamics_enabled"],
             }
         )
-        observed_names = tuple(runtime.read_joint_state().joint_names)
+        observed_state = runtime.read_joint_state()
+        observed_names = tuple(observed_state.joint_names)
         expected_names = tuple(str(item) for item in owner.robot_safe["joint_limits"]["names"])
         if observed_names != expected_names:
             raise G1ValidationError(
@@ -2658,6 +2905,9 @@ class _PoseConditionedIsaacTrackingScene:
                 scene_token=self._scene_token,
                 prim_path=runtime.articulation_root_path,
                 articulation_object_id=id(articulation),
+                stage_lifecycle_token=str(
+                    lifecycle_capture["stage_lifecycle_token"]
+                ),
             )
             latch.seed(
                 initial_targets,
@@ -2673,6 +2923,68 @@ class _PoseConditionedIsaacTrackingScene:
                 f"C1 articulation position target is invalid: {error}",
             ) from error
         self.target_latch = latch
+        self.lifecycle_record = owner.lifecycle_authority.finalize(
+            self.lifecycle_allocation,
+            stage_lifecycle_token=str(
+                lifecycle_capture["stage_lifecycle_token"]
+            ),
+            articulation_root_path=runtime.articulation_root_path,
+            articulation_joint_names=observed_names,
+            preplay_authored_map_sha256=str(
+                lifecycle_capture["preplay_authored_map_sha256"]
+            ),
+            latch_generation=int(latch.provenance["latch_generation"]),
+        )
+        owner.lifecycle_records.append(dict(self.lifecycle_record))
+
+        from isaac_tactile_libero.robots.fr3_static_pose_runtime import (
+            PhysxResolvedOffsetAdapter,
+            discover_full_robot_collider_body_paths,
+            extract_full_robot_collision_snapshot,
+        )
+
+        stage = runtime.ik_runtime.ee_controller.controller.stage
+        collider_body_paths = discover_full_robot_collider_body_paths(stage)
+        resolved_offsets, self.offset_authority_records = (
+            PhysxResolvedOffsetAdapter(
+                simulation_app=owner.simulation_app
+            ).resolve(
+                stage=stage,
+                collider_body_paths=collider_body_paths,
+                stage_lifecycle_token=self.lifecycle_record[
+                    "stage_lifecycle_token"
+                ],
+                physics_policy={
+                    "physics_device": "cpu",
+                    "broadphase_type": "MBP",
+                    "gpu_dynamics_enabled": False,
+                },
+            )
+        )
+        input_hashes = asdict(owner.current_input_digests)
+        self.collision_snapshot = extract_full_robot_collision_snapshot(
+            stage=stage,
+            subject_root="/World/FR3",
+            obstacle_roots=(
+                self.mechanism.config.button_prim_path,
+                self.mechanism.config.housing_prim_path,
+            ),
+            articulation_joint_names=observed_names,
+            articulation_joint_positions=observed_state.joint_positions,
+            resolved_offsets=resolved_offsets,
+            metadata={
+                "asset_sha256": input_hashes["fr3_asset_sha256"],
+                "task_config_sha256": input_hashes["task_config_sha256"],
+                "robot_config_sha256": input_hashes["robot_config_sha256"],
+                "task_card_sha256": input_hashes["task_card_sha256"],
+                "geometry_sha256": input_hashes["geometry_sha256"],
+            },
+            physics_policy={
+                "physics_device": "cpu",
+                "broadphase_type": "MBP",
+                "gpu_dynamics_enabled": False,
+            },
+        )
 
         from isaacsim.sensors.experimental.physics import Contact  # type: ignore
 
@@ -2720,7 +3032,7 @@ class _PoseConditionedIsaacTrackingScene:
         self.collision_monitor = PhysXCollisionMonitor(
             interface=omni.physx.get_physx_simulation_interface(),
             path_decoder=PhysicsSchemaTools.intToSdfPath,
-            allowed_contact_pairs=owner.robot_safe["collision"]["allowed_contact_pairs"],
+            allowed_contact_pairs=(),
         )
         self.safety = FR3RuntimeSafety(load_fr3_runtime_safety(owner.robot_safety_path))
         initial_ee = runtime.read_current_ee_transform()
@@ -2732,7 +3044,6 @@ class _PoseConditionedIsaacTrackingScene:
             float(value)
             for value in base + normal * float(owner.task_config["motion"]["approach_offset_m"])
         )
-        stage = runtime.ik_runtime.ee_controller.controller.stage
         self.provenance = {
             "scene_id": self.spec["scene_id"],
             "fresh_scene_token": self.spec["fresh_scene_token"],
@@ -2751,7 +3062,69 @@ class _PoseConditionedIsaacTrackingScene:
             "wrench_valid": False,
             "target_latch_provenance": self.target_latch.provenance,
             "pre_play_pose_authoring": dict(self.pre_play_pose_authoring),
+            "lifecycle_record": dict(self.lifecycle_record),
+            "lifecycle_record_sha256": self.lifecycle_record[
+                "lifecycle_record_sha256"
+            ],
+            "collision_snapshot_sha256": self.collision_snapshot[
+                "snapshot_sha256"
+            ],
         }
+
+    def _certify_pre_send_sweep(
+        self,
+        *,
+        joint_state: Any,
+        governed_target: Sequence[float],
+        phase: str,
+        action_index: int,
+    ) -> dict[str, Any]:
+        from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
+            certify_articulated_sweep,
+        )
+
+        if not hasattr(self, "collision_snapshot") and not hasattr(self, "owner"):
+            return {
+                "schema_version": None,
+                "safe": True,
+                "claim_eligible": False,
+                "composition_scope": "shared_kernel_only",
+            }
+        if getattr(self, "collision_snapshot", None) is None:
+            raise G1ValidationError(
+                "G1_FULL_ROBOT_SNAPSHOT_INVALID",
+                "C1 real scene lacks a full-robot collision snapshot",
+            )
+        receipt = certify_articulated_sweep(
+            snapshot=self.collision_snapshot,
+            action={
+                "command_decimal": str(Decimal(str(self.spec["command_m"]))),
+                "class_id": str(self.spec["class_id"]),
+                "scene_id": str(self.spec["scene_id"]),
+                "trial_id": str(self.spec["trial_id"]),
+                "action_index": int(action_index),
+                "observed_q": list(joint_state.joint_positions),
+                "observed_qd": list(joint_state.joint_velocities),
+                "governed_target": list(governed_target),
+                "joint_velocity_limits": list(
+                    self.owner.robot_safe["joint_limits"][
+                        "max_abs_velocity_rad_s"
+                    ]
+                ),
+                "physics_substeps": PHYSICS_SUBSTEPS_PER_ACTION,
+                "physics_dt_s": float(
+                    self.owner.task_config["runtime"]["physics_dt_s"]
+                ),
+                "tcp_declared_solid_clearance_m": 0.005,
+                "phase": phase,
+                "lifecycle_record_sha256": self.lifecycle_record[
+                    "lifecycle_record_sha256"
+                ],
+            },
+            phase_policy="c1_no_contact",
+        )
+        self.swept_clearance_receipts.append(dict(receipt))
+        return receipt
 
     def step(
         self,
@@ -2819,6 +3192,7 @@ class _PoseConditionedIsaacTrackingScene:
             scene_token=self._scene_token,
         )
         kernel_record: dict[str, Any] | None = None
+        swept_clearance: dict[str, Any] | None = None
         if not pre_decision.allow_actuation:
             safety_events.extend(violation.as_dict() for violation in pre_decision.violations)
             self._aborted = True
@@ -2858,57 +3232,169 @@ class _PoseConditionedIsaacTrackingScene:
                     self._aborted = True
                     self.target_latch.abort("qualifying non-zero kernel failure")
                 else:
-                    send_record = _execute_g1_qualifying_kernel_send(
-                        kernel_result=kernel_record,
-                        send_target=runtime.send_joint_position_targets,
-                        accept_target=lambda target: self.target_latch.accept_target(
-                            target,
-                            send_succeeded=True,
-                            dof_names=joint_before.joint_names,
-                            scene_token=self._scene_token,
-                            source="accepted_nonzero_action",
-                            prim_path=runtime.articulation_root_path,
-                            articulation_object_id=id(
-                                runtime.ik_runtime.ee_controller.controller.articulation
-                            ),
-                        ),
-                    )
-                    kernel_record = send_record
-                    if (
-                        send_record.get("send_result") is not True
-                        or send_record.get("runtime_state") == "ABORTED"
-                    ):
+                    try:
+                        swept_clearance = self._certify_pre_send_sweep(
+                            joint_state=joint_before,
+                            governed_target=kernel_record["governed_target"],
+                            phase=phase,
+                            action_index=int(action_index),
+                        )
+                    except Exception as error:
                         safety_events.append(
                             {
                                 "code": str(
-                                    send_record.get("governor_code")
-                                    or "CONTROLLER_FAILURE"
+                                    getattr(
+                                        error,
+                                        "code",
+                                        "G1_FULL_ROBOT_SWEEP_UNSAFE",
+                                    )
                                 ),
-                                "message": str(
-                                    send_record.get("governor_message")
-                                    or "qualifying kernel blocked or failed send"
-                                ),
+                                "message": str(error),
                             }
                         )
                         self._aborted = True
-                        self.target_latch.abort("qualifying non-zero kernel blocked send")
-                    else:
-                        targets = np.asarray(
-                            send_record["executed_joint_target"], dtype=float
+                        self.target_latch.abort(
+                            "full-robot pre-send sweep failed"
                         )
+                        partial = getattr(error, "receipt", None)
+                        if isinstance(partial, Mapping):
+                            swept_clearance = dict(partial)
+                    else:
+                        send_record = _execute_g1_qualifying_kernel_send(
+                            kernel_result=kernel_record,
+                            send_target=runtime.send_joint_position_targets,
+                            accept_target=lambda target: self.target_latch.accept_target(
+                                target,
+                                send_succeeded=True,
+                                dof_names=joint_before.joint_names,
+                                scene_token=self._scene_token,
+                                source="accepted_nonzero_action",
+                                prim_path=runtime.articulation_root_path,
+                                articulation_object_id=id(
+                                    runtime.ik_runtime.ee_controller.controller.articulation
+                                ),
+                            ),
+                        )
+                        kernel_record = send_record
+                        if (
+                            send_record.get("send_result") is not True
+                            or send_record.get("runtime_state") == "ABORTED"
+                        ):
+                            safety_events.append(
+                                {
+                                    "code": str(
+                                        send_record.get("governor_code")
+                                        or "CONTROLLER_FAILURE"
+                                    ),
+                                    "message": str(
+                                        send_record.get("governor_message")
+                                        or "qualifying kernel blocked or failed send"
+                                    ),
+                                }
+                            )
+                            self._aborted = True
+                            self.target_latch.abort(
+                                "qualifying non-zero kernel blocked send"
+                            )
+                        else:
+                            targets = np.asarray(
+                                send_record["executed_joint_target"], dtype=float
+                            )
             if not self._aborted and not (
                 phase == "measurement" and float(np.linalg.norm(requested)) > 0.0
             ):
-                sent = runtime.send_joint_position_targets(targets)
-                if not sent:
+                try:
+                    swept_clearance = self._certify_pre_send_sweep(
+                        joint_state=joint_before,
+                        governed_target=targets,
+                        phase=phase,
+                        action_index=int(action_index),
+                    )
+                except Exception as error:
+                    safety_events.append(
+                        {
+                            "code": str(
+                                getattr(
+                                    error,
+                                    "code",
+                                    "G1_FULL_ROBOT_SWEEP_UNSAFE",
+                                )
+                            ),
+                            "message": str(error),
+                        }
+                    )
+                    partial = getattr(error, "receipt", None)
+                    if isinstance(partial, Mapping):
+                        swept_clearance = dict(partial)
+                    self._aborted = True
+                    self.target_latch.abort("full-robot zero-hold sweep failed")
+                else:
+                    sent = runtime.send_joint_position_targets(targets)
+                if not self._aborted and not sent:
                     safety_events.append(
                         {"code": "CONTROLLER_FAILURE", "message": "joint target API returned false"}
                     )
                     self._aborted = True
                     self.target_latch.abort("joint target API returned false")
 
+        substep_safety: list[dict[str, Any]] = []
         if not self._aborted:
-            runtime.update(int(physics_substeps))
+            for substep_index in range(int(physics_substeps)):
+                runtime.update(1)
+                substep_contact = self.contact_sensor.read(
+                    read_sequence_index * PHYSICS_SUBSTEPS_PER_ACTION
+                    + substep_index
+                )
+                substep_collision = self.collision_monitor.read()
+                substep_contact_valid = getattr(
+                    substep_contact,
+                    "is_valid",
+                    None,
+                )
+                if substep_contact_valid is None:
+                    substep_contact_valid = not hasattr(self, "owner")
+                substep_record = {
+                    "substep_index": substep_index,
+                    "contact_valid": bool(substep_contact_valid),
+                    "contact": bool(substep_contact.in_contact),
+                    "raw_contact_count": len(substep_contact.raw_contacts),
+                    "collision_report_valid": (
+                        substep_collision.get("valid") is True
+                    ),
+                    "collision": bool(
+                        substep_collision.get("unsafe_collision", False)
+                    ),
+                    "penetration_m": float(
+                        substep_collision.get("max_penetration_m", 0.0)
+                    ),
+                }
+                substep_safety.append(substep_record)
+                if (
+                    substep_record["contact_valid"] is not True
+                    or substep_record["contact"]
+                    or substep_record["raw_contact_count"] > 0
+                    or substep_record["collision_report_valid"] is not True
+                    or substep_record["collision"]
+                    or substep_record["penetration_m"] > 0.0
+                ):
+                    safety_events.append(
+                        {
+                            "code": (
+                                "G1_C1_READINESS_CONTACT"
+                                if phase == "readiness"
+                                else "G1_C1_CANDIDATE_CONTACT"
+                            ),
+                            "message": (
+                                "C1 no-contact phase failed at physics substep "
+                                f"{substep_index}"
+                            ),
+                        }
+                    )
+                    self._aborted = True
+                    self.target_latch.abort(
+                        "per-substep Contact/collision failure"
+                    )
+                    break
         after_ee = runtime.read_current_ee_transform()
         after_tcp = np.asarray(after_ee.position, dtype=float)
         joint_after = runtime.read_joint_state()
@@ -3070,22 +3556,57 @@ class _PoseConditionedIsaacTrackingScene:
                 else "zero_hold"
             ),
             "qualification_eligible": bool(
-                kernel_record and kernel_record.get("benchmark_cap_eligible") is True
+                kernel_record
+                and kernel_record.get("benchmark_cap_eligible") is True
+                and swept_clearance
+                and swept_clearance.get("safe") is True
             ),
             "governor_activated": bool(
                 kernel_record
                 and kernel_record.get("governor_state") not in {None, "ALLOW_UNMODIFIED"}
             ),
             "motif_item": _jsonable(motif_item),
+            "scene_lifecycle": _jsonable(
+                getattr(self, "lifecycle_record", None)
+            ),
+            "lifecycle_record_sha256": (
+                self.lifecycle_record["lifecycle_record_sha256"]
+                if getattr(self, "lifecycle_record", None) is not None
+                else None
+            ),
+            "collision_snapshot_sha256": (
+                self.collision_snapshot["snapshot_sha256"]
+                if getattr(self, "collision_snapshot", None) is not None
+                else None
+            ),
+            "swept_clearance": _jsonable(swept_clearance),
+            "full_robot_sweep_valid": bool(
+                swept_clearance and swept_clearance.get("safe") is True
+            ),
+            "substep_safety": substep_safety,
         }
 
     def close(self) -> None:
-        if self.contact_sensor is not None:
-            self.contact_sensor.reset()
-        if self.runtime is not None:
-            self.runtime.close()
-        if self.target_latch is not None:
-            self.target_latch.invalidate("scene closed")
+        try:
+            if getattr(self, "contact_sensor", None) is not None:
+                self.contact_sensor.reset()
+            if getattr(self, "target_latch", None) is not None:
+                if getattr(self, "lifecycle_record", None) is not None:
+                    close_record = self.owner.lifecycle_authority.close_scene(
+                        self.lifecycle_record,
+                        stage_lifecycle_token=str(
+                            self.lifecycle_record["stage_lifecycle_token"]
+                        ),
+                        latch_invalidator=lambda: self.target_latch.invalidate(
+                            "scene closed"
+                        ),
+                    )
+                    self.owner.lifecycle_close_records.append(close_record)
+                else:
+                    self.target_latch.invalidate("scene closed")
+        finally:
+            if getattr(self, "runtime", None) is not None:
+                self.runtime.close()
 
 
 _IsaacTrackingScene = _PoseConditionedIsaacTrackingScene
@@ -3101,12 +3622,23 @@ class _IsaacSceneFactory:
         c2a_evidence: C2ASelectedPoseEvidence,
         current_input_digests: G1CurrentInputDigests,
         headless: bool,
+        run_id: str = "c1-option-d-v3",
     ) -> None:
         self.task_config_path = task_config_path
         self.robot_safety_path = robot_safety_path
         self.task_card_path = task_card_path
         self.c2a_evidence = c2a_evidence
         self.current_input_digests = current_input_digests
+        from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
+            SceneLifecycleAuthority,
+        )
+
+        self.lifecycle_authority = SceneLifecycleAuthority(run_id=str(run_id))
+        self.option_d_v3 = True
+        self.lifecycle_records: list[dict[str, Any]] = []
+        self.lifecycle_close_records: list[dict[str, Any]] = []
+        self.scene_creation_failures: list[dict[str, Any]] = []
+        self.lifecycle_audit: dict[str, Any] | None = None
         self.task_config = yaml.safe_load(task_config_path.read_text(encoding="utf-8")) or {}
         self.robot_safe = yaml.safe_load(robot_safety_path.read_text(encoding="utf-8")) or {}
         if str(self.task_config.get("runtime", {}).get("physics_device", "")).lower() != "cpu":
@@ -3124,9 +3656,76 @@ class _IsaacSceneFactory:
         combined = dict(spec or {})
         combined.update(spec_kwargs)
         np.random.seed(int(combined["seed"]))
-        return _PoseConditionedIsaacTrackingScene(self, combined)
+        allocation = self.lifecycle_authority.allocate(
+            trial_id=str(combined["trial_id"]),
+            planned_fresh_scene_token=str(combined["fresh_scene_token"]),
+            diagnostic_ids={},
+        )
+        combined["lifecycle_allocation"] = allocation
+        scene = object.__new__(_PoseConditionedIsaacTrackingScene)
+        try:
+            _PoseConditionedIsaacTrackingScene.__init__(
+                scene,
+                self,
+                combined,
+            )
+            return scene
+        except Exception as error:
+            cleanup_error: str | None = None
+            lifecycle_finalized = (
+                getattr(scene, "lifecycle_record", None) is not None
+            )
+            try:
+                scene.close()
+            except Exception as close_error:
+                cleanup_error = (
+                    f"{type(close_error).__name__}: {close_error}"
+                )
+            if not lifecycle_finalized:
+                try:
+                    self.lifecycle_close_records.append(
+                        self.lifecycle_authority.abandon_scene(
+                            allocation,
+                            reason=f"{type(error).__name__}: {error}",
+                        )
+                    )
+                except Exception as abandon_error:
+                    cleanup_error = (
+                        f"{cleanup_error}; " if cleanup_error else ""
+                    ) + f"{type(abandon_error).__name__}: {abandon_error}"
+            self.scene_creation_failures.append(
+                {
+                    "trial_id": str(combined.get("trial_id", "")),
+                    "stage_lifecycle_token": allocation[
+                        "stage_lifecycle_token"
+                    ],
+                    "failure_code": getattr(error, "code", None),
+                    "failure_type": type(error).__name__,
+                    "failure_message": str(error),
+                    "cleanup_error": cleanup_error,
+                    "lifecycle_finalized": lifecycle_finalized,
+                }
+            )
+            raise
+
+    def finalize_lifecycle_audit(self) -> dict[str, Any]:
+        if getattr(self, "lifecycle_audit", None) is None:
+            if not hasattr(self, "lifecycle_authority"):
+                raise G1ValidationError(
+                    "G1_C1_FRESH_SCENE_UNPROVEN",
+                    "Option D factory lacks lifecycle authority",
+                )
+            self.lifecycle_audit = (
+                self.lifecycle_authority.close_factory()
+            )
+        return dict(self.lifecycle_audit)
 
     def close(self, *, exit_code: int) -> None:
+        if (
+            hasattr(self, "lifecycle_authority")
+            and getattr(self, "lifecycle_audit", None) is None
+        ):
+            self.finalize_lifecycle_audit()
         self.simulation_app.close(exit_code=int(exit_code))
 
 
@@ -3252,6 +3851,33 @@ def build_g1_current_pose_conditioned_route_bundle(
             validation.code or "G1_C1_CONTACT_EXCLUSION_ROUTE_INVALID",
             validation.message or "all 30 command-bound TCP routes must qualify",
         )
+    tcp_v1_bundle_sha256 = str(bundle["bundle_sha256"])
+    bundle.update(
+        {
+            "schema_version": (
+                "g1.pose_conditioned.command_bound_routes.v2"
+            ),
+            "tcp_route_schema_version": (
+                "g1.pose_conditioned.command_bound_routes.v1"
+            ),
+            "tcp_route_bundle_sha256_v1": tcp_v1_bundle_sha256,
+            "full_robot_sweep_schema_version": (
+                "g1.full_robot.swept_clearance.v1"
+            ),
+            "full_robot_sweep_authority": (
+                "fresh_scene_pre_send_per_public_action"
+            ),
+            "full_robot_receipts_deferred_to_runtime": True,
+            "runtime_contact_remains_independent_truth": True,
+        }
+    )
+    bundle["bundle_sha256"] = _canonical_sha256(
+        {
+            key: value
+            for key, value in bundle.items()
+            if key != "bundle_sha256"
+        }
+    )
     return bundle, validation
 
 
@@ -3293,14 +3919,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     try:
         c2a_evidence = load_g1_c2a_selected_pose_evidence(args.c2a_evidence)
-        if (
-            isinstance(c2a_evidence, C2ASelectedPoseEvidence)
-            and c2a_evidence.report.get("schema_version")
-            != "g1.c2a.static.v2"
+        if isinstance(c2a_evidence, C2ASelectedPoseEvidence) and (
+            c2a_evidence.report.get("schema_version")
+            not in {"g1.c2a.static.v2", "g1.c2a.static.v3"}
+            or (
+                c2a_evidence.report.get("schema_version")
+                == "g1.c2a.static.v3"
+                and c2a_evidence.report.get("final_pose_approved") is not True
+            )
         ):
             raise G1ValidationError(
                 "G1_C1_C2A_EVIDENCE_REQUIRED",
-                "pose-conditioned C1 requires fresh g1.c2a.static.v2 evidence",
+                "pose-conditioned C1 requires fresh approved C2a evidence; "
+                "preliminary Option D v3 poses are no-claim",
             )
         validate_g1_c2a_current_input_provenance(
             c2a_evidence, current_input_digests
@@ -3360,6 +3991,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             c2a_evidence=c2a_evidence,
             current_input_digests=current_input_digests,
             headless=bool(args.headless),
+            run_id=Path(args.output).name,
         ),
     )
     report = outcome["report"]

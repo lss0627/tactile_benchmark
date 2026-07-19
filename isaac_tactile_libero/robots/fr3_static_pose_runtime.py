@@ -13,6 +13,7 @@ import math
 from pathlib import Path
 import platform
 import subprocess
+import time
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -117,6 +118,1256 @@ def _observed_driver() -> str:
         return "unavailable"
 
 
+def _gf_matrix_to_column_major_list(matrix: Any) -> list[list[float]]:
+    """Convert USD's row-vector Gf matrix convention to column-vector JSON."""
+
+    return [
+        [float(matrix[column][row]) for column in range(4)]
+        for row in range(4)
+    ]
+
+
+def _matrix_without_scale(matrix: Sequence[Sequence[float]]) -> tuple[list[list[float]], list[float]]:
+    """Separate an affine matrix and project Quatf roundoff to a rigid rotation."""
+
+    value = np.asarray(matrix, dtype=np.float64)
+    if value.shape != (4, 4) or not np.all(np.isfinite(value)):
+        _fail("G1_FULL_ROBOT_TRANSFORM_UNRESOLVED", "collider transform is invalid")
+    linear = value[:3, :3]
+    scale = np.linalg.norm(linear, axis=0)
+    if np.any(scale <= 0.0):
+        _fail("G1_FULL_ROBOT_GEOMETRY_UNRESOLVED", "collider scale is singular")
+    approximate_rotation = linear / scale
+    if float(np.linalg.det(approximate_rotation)) < 0.0:
+        axis = int(np.argmax(scale))
+        scale[axis] *= -1.0
+        approximate_rotation[:, axis] *= -1.0
+    left, _singular, right = np.linalg.svd(approximate_rotation)
+    rotation = left @ right
+    if float(np.linalg.det(rotation)) <= 0.0:
+        _fail(
+            "G1_FULL_ROBOT_TRANSFORM_UNRESOLVED",
+            "collider transform cannot be projected to a proper rotation",
+        )
+    rigid = np.eye(4, dtype=np.float64)
+    rigid[:3, :3] = rotation
+    rigid[:3, 3] = value[:3, 3]
+    return rigid.tolist(), scale.tolist()
+
+
+def _physics_frame_matrix(position: Any, rotation: Any) -> list[list[float]]:
+    """Build one column-vector body-to-joint transform from USD attributes."""
+
+    from pxr import Gf  # type: ignore
+
+    components = np.asarray(
+        [
+            float(rotation.GetReal()),
+            *(float(item) for item in rotation.GetImaginary()),
+        ],
+        dtype=np.float64,
+    )
+    norm = float(np.linalg.norm(components))
+    if not math.isfinite(norm) or norm <= 0.0:
+        _fail(
+            "G1_FULL_ROBOT_TRANSFORM_UNRESOLVED",
+            "USD physics-frame quaternion is invalid",
+        )
+    components /= norm
+    quaternion = Gf.Quatd(
+        float(components[0]),
+        Gf.Vec3d(*(float(item) for item in components[1:])),
+    )
+    result = np.eye(4, dtype=np.float64)
+    result[:3, :3] = np.asarray(Gf.Matrix3d(quaternion), dtype=np.float64).T
+    result[:3, 3] = np.asarray(position, dtype=np.float64)
+    return result.tolist()
+
+
+def _collider_body_path(prim: Any) -> str:
+    from pxr import Sdf, UsdPhysics  # type: ignore
+
+    cursor = prim
+    while cursor and cursor.IsValid() and cursor.GetPath() != Sdf.Path.absoluteRootPath:
+        if cursor.HasAPI(UsdPhysics.RigidBodyAPI):
+            return str(cursor.GetPath())
+        cursor = cursor.GetParent()
+    _fail(
+        "G1_FULL_ROBOT_BODY_UNRESOLVED",
+        f"collision shape has no rigid-body ancestor: {prim.GetPath()}",
+    )
+
+
+def _collider_shape_record(prim: Any, meters_per_unit: float) -> tuple[str, str, dict[str, Any]]:
+    from pxr import UsdGeom, UsdPhysics  # type: ignore
+
+    if prim.IsA(UsdGeom.Cube):
+        shape = UsdGeom.Cube(prim)
+        return (
+            "cube",
+            "analytic",
+            {"size_m": float(shape.GetSizeAttr().Get()) * meters_per_unit},
+        )
+    if prim.IsA(UsdGeom.Sphere):
+        shape = UsdGeom.Sphere(prim)
+        return (
+            "sphere",
+            "analytic",
+            {"radius_m": float(shape.GetRadiusAttr().Get()) * meters_per_unit},
+        )
+    if prim.IsA(UsdGeom.Cylinder):
+        shape = UsdGeom.Cylinder(prim)
+        return (
+            "cylinder",
+            "analytic",
+            {
+                "radius_m": float(shape.GetRadiusAttr().Get()) * meters_per_unit,
+                "height_m": float(shape.GetHeightAttr().Get()) * meters_per_unit,
+                "axis": str(shape.GetAxisAttr().Get()),
+            },
+        )
+    if prim.IsA(UsdGeom.Capsule):
+        shape = UsdGeom.Capsule(prim)
+        return (
+            "capsule",
+            "analytic",
+            {
+                "radius_m": float(shape.GetRadiusAttr().Get()) * meters_per_unit,
+                "height_m": float(shape.GetHeightAttr().Get()) * meters_per_unit,
+                "axis": str(shape.GetAxisAttr().Get()),
+            },
+        )
+    if prim.IsA(UsdGeom.Mesh):
+        shape = UsdGeom.Mesh(prim)
+        approximation = str(
+            UsdPhysics.MeshCollisionAPI(prim).GetApproximationAttr().Get()
+        )
+        if approximation == "convexHull":
+            normalized_approximation = "convexHull"
+        else:
+            _fail(
+                "G1_FULL_ROBOT_APPROXIMATION_UNKNOWN",
+                f"unsupported real-stage mesh approximation {approximation!r}: {prim.GetPath()}",
+            )
+        points = [
+            [float(component) * meters_per_unit for component in point]
+            for point in shape.GetPointsAttr().Get()
+        ]
+        indices = [int(index) for index in shape.GetFaceVertexIndicesAttr().Get()]
+        return (
+            "mesh",
+            normalized_approximation,
+            {"points": points, "face_vertex_indices": indices},
+        )
+    _fail(
+        "G1_FULL_ROBOT_COLLIDER_UNKNOWN",
+        f"unsupported real-stage collider type {prim.GetTypeName()!r}: {prim.GetPath()}",
+    )
+
+
+def _authored_collision_offset(prim: Any, attribute_name: str) -> float | str | None:
+    """Read authored PhysX offset without treating the `-inf` sentinel as authority."""
+
+    attribute = prim.GetAttribute(attribute_name)
+    if not attribute or not attribute.HasAuthoredValueOpinion():
+        return None
+    value = float(attribute.Get())
+    if not math.isfinite(value):
+        return "-inf"
+    return value
+
+
+class UsdSceneLifecycleStageAdapter:
+    """Author and read the factory-owned token in both USD authorities."""
+
+    session_key = "g1_stage_lifecycle_token"
+    world_key = "g1:stage_lifecycle_token"
+
+    def __init__(self, stage: Any) -> None:
+        self.stage = stage
+
+    def write_stage_lifecycle_token(self, token: str) -> None:
+        value = str(token)
+        session = self.stage.GetSessionLayer()
+        custom = dict(session.customLayerData)
+        custom[self.session_key] = value
+        session.customLayerData = custom
+        world = self.stage.GetPrimAtPath("/World")
+        if world is None or not world.IsValid():
+            world = self.stage.DefinePrim("/World", "Xform")
+        world.SetCustomDataByKey(self.world_key, value)
+
+    def read_stage_lifecycle_token(self) -> tuple[str | None, str | None]:
+        session_value = self.stage.GetSessionLayer().customLayerData.get(
+            self.session_key
+        )
+        world = self.stage.GetPrimAtPath("/World")
+        world_value = (
+            world.GetCustomDataByKey(self.world_key)
+            if world is not None and world.IsValid()
+            else None
+        )
+        return (
+            None if session_value is None else str(session_value),
+            None if world_value is None else str(world_value),
+        )
+
+
+def preplay_authored_map_sha256(stage: Any) -> str:
+    """Digest the sorted composed authored map before Play."""
+
+    records: list[dict[str, Any]] = []
+    for prim in stage.Traverse():
+        attributes = []
+        for attribute in prim.GetAttributes():
+            if not attribute.HasAuthoredValueOpinion():
+                continue
+            attributes.append(
+                {
+                    "name": str(attribute.GetName()),
+                    "type_name": str(attribute.GetTypeName()),
+                    "value": str(attribute.Get()),
+                }
+            )
+        relationships = []
+        for relationship in prim.GetRelationships():
+            if not relationship.HasAuthoredTargets():
+                continue
+            relationships.append(
+                {
+                    "name": str(relationship.GetName()),
+                    "targets": sorted(str(path) for path in relationship.GetTargets()),
+                }
+            )
+        records.append(
+            {
+                "prim_path": str(prim.GetPath()),
+                "type_name": str(prim.GetTypeName()),
+                "applied_schemas": sorted(str(item) for item in prim.GetAppliedSchemas()),
+                "attributes": sorted(attributes, key=lambda item: item["name"]),
+                "relationships": sorted(
+                    relationships, key=lambda item: item["name"]
+                ),
+            }
+        )
+    return _sha256_json(sorted(records, key=lambda item: item["prim_path"]))
+
+
+def discover_full_robot_collider_body_paths(
+    stage: Any,
+    *,
+    subject_root: str = "/World/FR3",
+    obstacle_roots: Sequence[str] = (
+        "/World/PressButton/Button",
+        "/World/PressButton/Housing",
+    ),
+) -> dict[str, str]:
+    """Enumerate every enabled collider under the approved stage roots."""
+
+    from pxr import UsdPhysics  # type: ignore
+
+    roots = (str(subject_root), *(str(path) for path in obstacle_roots))
+    result: dict[str, str] = {}
+    for prim in stage.Traverse():
+        if not prim.HasAPI(UsdPhysics.CollisionAPI):
+            continue
+        enabled = UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Get()
+        if enabled is not True:
+            continue
+        path = str(prim.GetPath())
+        if not any(path == root or path.startswith(f"{root}/") for root in roots):
+            continue
+        if path in result:
+            _fail(
+                "G1_FULL_ROBOT_INVENTORY_DUPLICATE",
+                f"duplicate collider path: {path}",
+            )
+        result[path] = _collider_body_path(prim)
+    if not result:
+        _fail("G1_FULL_ROBOT_INVENTORY_MISMATCH", "stage has no approved colliders")
+    return dict(sorted(result.items()))
+
+
+def _host_array(value: Any) -> np.ndarray:
+    """Return a detached NumPy view of an Isaac tensor result."""
+
+    if hasattr(value, "numpy") and callable(value.numpy):
+        value = value.numpy()
+    return np.asarray(value, dtype=np.float64)
+
+
+class PhysxResolvedOffsetAdapter:
+    """Read effective shape offsets and bind tensor slots to queried USD paths."""
+
+    authority_source = "physx_property_query_path_plus_rigid_body_tensor_slot"
+
+    def __init__(
+        self,
+        *,
+        simulation_app: Any,
+        timeout_s: float = 10.0,
+    ) -> None:
+        self.simulation_app = simulation_app
+        self.timeout_s = float(timeout_s)
+        if not math.isfinite(self.timeout_s) or self.timeout_s <= 0.0:
+            _fail("G1_FULL_ROBOT_OFFSET_UNRESOLVED", "offset-query timeout is invalid")
+
+    def _query_colliders(
+        self, stage: Any, body_path: str
+    ) -> list[dict[str, Any]]:
+        import omni.physx  # type: ignore
+        from omni.physx.bindings._physx import (  # type: ignore
+            PhysxPropertyQueryMode,
+            PhysxPropertyQueryResult,
+        )
+        from pxr import PhysicsSchemaTools, UsdUtils  # type: ignore
+
+        stage_id = UsdUtils.StageCache().Get().GetId(stage).ToLongInt()
+        prim_id = PhysicsSchemaTools.sdfPathToInt(body_path)
+        colliders: list[dict[str, Any]] = []
+        failures: list[str] = []
+        state = {"finished": False, "body_valid": False}
+
+        def rigid_body_fn(response: Any) -> None:
+            if response.result != PhysxPropertyQueryResult.VALID:
+                failures.append(f"body result={response.result}")
+                return
+            state["body_valid"] = True
+
+        def collider_fn(response: Any) -> None:
+            if response.result != PhysxPropertyQueryResult.VALID:
+                failures.append(f"collider result={response.result}")
+                return
+            colliders.append(
+                {
+                    "collider_prim_path": str(
+                        PhysicsSchemaTools.intToSdfPath(int(response.path_id))
+                    ),
+                    "property_query_ordinal": len(colliders),
+                    "property_query_local_aabb_min": [
+                        float(value) for value in response.aabb_local_min
+                    ],
+                    "property_query_local_aabb_max": [
+                        float(value) for value in response.aabb_local_max
+                    ],
+                    "property_query_local_position": [
+                        float(value) for value in response.local_pos
+                    ],
+                    "property_query_local_rotation_xyzw": [
+                        float(value) for value in response.local_rot
+                    ],
+                    "property_query_volume": float(response.volume),
+                }
+            )
+
+        def finished_fn() -> None:
+            state["finished"] = True
+
+        omni.physx.get_physx_property_query_interface().query_prim(
+            stage_id=stage_id,
+            prim_id=prim_id,
+            query_mode=PhysxPropertyQueryMode.QUERY_RIGID_BODY_WITH_COLLIDERS,
+            timeout_ms=int(self.timeout_s * 1000.0),
+            finished_fn=finished_fn,
+            rigid_body_fn=rigid_body_fn,
+            collider_fn=collider_fn,
+        )
+        deadline = time.monotonic() + self.timeout_s
+        while not state["finished"] and time.monotonic() < deadline:
+            self.simulation_app.update()
+        if (
+            not state["finished"]
+            or not state["body_valid"]
+            or failures
+            or not colliders
+            or len(colliders)
+            != len(
+                {
+                    item["collider_prim_path"]
+                    for item in colliders
+                }
+            )
+        ):
+            _fail(
+                "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+                f"PhysX property query failed for {body_path}: {failures}",
+            )
+        return colliders
+
+    def resolve(
+        self,
+        *,
+        stage: Any,
+        collider_body_paths: Mapping[str, str],
+        stage_lifecycle_token: str,
+        physics_policy: Mapping[str, Any],
+    ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+        """Return path-keyed resolved offsets plus independently hashed receipts."""
+
+        import omni.physics.tensors as tensors  # type: ignore
+        from pxr import Usd, UsdGeom  # type: ignore
+
+        from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
+            bind_backend_shape_offsets_without_slot_guessing,
+            canonical_sha256,
+            validate_collision_offset_authority_record,
+            validate_property_query_geometry_binding,
+        )
+
+        lifecycle_token = str(stage_lifecycle_token)
+        if len(lifecycle_token) != 64:
+            _fail(
+                "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+                "offset authority lacks a stage lifecycle token",
+            )
+        if (
+            str(physics_policy.get("physics_device", "")) != "cpu"
+            or str(physics_policy.get("broadphase_type", "")) != "MBP"
+            or physics_policy.get("gpu_dynamics_enabled") is not False
+        ):
+            _fail(
+                "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+                "offset authority physics policy is not CPU/MBP/GPU-off",
+            )
+
+        by_body: dict[str, list[str]] = {}
+        for collider_path, body_path in collider_body_paths.items():
+            by_body.setdefault(str(body_path), []).append(str(collider_path))
+        simulation_view = tensors.create_simulation_view("numpy")
+        simulation_view.set_subspace_roots("/")
+        resolved: dict[str, dict[str, Any]] = {}
+        authority_records: list[dict[str, Any]] = []
+        for body_path in sorted(by_body):
+            queried = self._query_colliders(stage, body_path)
+            repeated = self._query_colliders(stage, body_path)
+            if queried != repeated:
+                _fail(
+                    "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+                    f"property-query collider enumeration is unstable for {body_path}",
+                )
+            queried_paths = [
+                item["collider_prim_path"] for item in queried
+            ]
+            expected_paths = sorted(by_body[body_path])
+            if sorted(queried_paths) != expected_paths:
+                _fail(
+                    "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+                    f"property-query collider set differs from stage for {body_path}",
+                )
+            view = simulation_view.create_rigid_body_view(body_path)
+            if (
+                int(view.count) != 1
+                or list(view.prim_paths) != [body_path]
+                or int(view.max_shapes) != len(queried_paths)
+            ):
+                _fail(
+                    "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+                    f"rigid-body shape view cannot bind one-to-one for {body_path}",
+                )
+            contact = _host_array(view.get_contact_offsets()).reshape(
+                int(view.count), int(view.max_shapes)
+            )
+            rest = _host_array(view.get_rest_offsets()).reshape(
+                int(view.count), int(view.max_shapes)
+            )
+            offset_bindings = bind_backend_shape_offsets_without_slot_guessing(
+                property_query_records=queried,
+                contact_offsets=contact[0].tolist(),
+                rest_offsets=rest[0].tolist(),
+            )
+            query_order_sha256 = canonical_sha256(
+                {
+                    "body_prim_path": body_path,
+                    "stage_lifecycle_token": lifecycle_token,
+                    "property_query_colliders": queried,
+                }
+            )
+            world_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+            body_prim = stage.GetPrimAtPath(body_path)
+            if body_prim is None or not body_prim.IsValid():
+                _fail(
+                    "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+                    f"offset body prim is invalid: {body_path}",
+                )
+            body_world = np.asarray(
+                _gf_matrix_to_column_major_list(
+                    world_cache.GetLocalToWorldTransform(body_prim)
+                ),
+                dtype=np.float64,
+            )
+            for query, offset_binding in zip(queried, offset_bindings):
+                collider_path = str(query["collider_prim_path"])
+                collider_prim = stage.GetPrimAtPath(collider_path)
+                if collider_prim is None or not collider_prim.IsValid():
+                    _fail(
+                        "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+                        f"property query returned an invalid USD path: {collider_path}",
+                    )
+                collider_world = np.asarray(
+                    _gf_matrix_to_column_major_list(
+                        world_cache.GetLocalToWorldTransform(collider_prim)
+                    ),
+                    dtype=np.float64,
+                )
+                relative = np.linalg.inv(body_world) @ collider_world
+                local_transform, local_scale = _matrix_without_scale(
+                    relative.tolist()
+                )
+                collider_type, approximation, shape_parameters = (
+                    _collider_shape_record(collider_prim, 1.0)
+                )
+                usd_geometry = {
+                    "body_prim_path": body_path,
+                    "collider_prim_path": collider_path,
+                    "local_transform": local_transform,
+                    "scale": local_scale,
+                    "collider_type": collider_type,
+                    "approximation": approximation,
+                    "shape_parameters": shape_parameters,
+                }
+                usd_geometry_binding_sha256 = canonical_sha256(
+                    usd_geometry
+                )
+                geometry_agreement = (
+                    validate_property_query_geometry_binding(
+                        property_query_record=query,
+                        usd_geometry=usd_geometry,
+                    )
+                )
+                contact_value = float(
+                    offset_binding["contact_offset_resolved"]
+                )
+                rest_value = float(
+                    offset_binding["rest_offset_resolved"]
+                )
+                record = {
+                    "schema_version": "g1.physx.collision_offset_authority.v1",
+                    "stage_lifecycle_token": lifecycle_token,
+                    "body_prim_path": body_path,
+                    "collider_prim_path": collider_path,
+                    "backend_shape_slot": offset_binding[
+                        "backend_shape_slot"
+                    ],
+                    "shape_slot_binding_mode": offset_binding[
+                        "shape_slot_binding_mode"
+                    ],
+                    "body_shape_offset_multiset_sha256": offset_binding[
+                        "body_shape_offset_multiset_sha256"
+                    ],
+                    **dict(query),
+                    "property_query_order_sha256": query_order_sha256,
+                    "usd_geometry_binding_sha256": (
+                        usd_geometry_binding_sha256
+                    ),
+                    "property_query_geometry_agreement_sha256": (
+                        geometry_agreement[
+                            "property_query_geometry_agreement_sha256"
+                        ]
+                    ),
+                    "aabb_authority_model": geometry_agreement[
+                        "aabb_authority_model"
+                    ],
+                    "mesh_sweep_local_aabb_min": geometry_agreement[
+                        "mesh_sweep_local_aabb_min"
+                    ],
+                    "mesh_sweep_local_aabb_max": geometry_agreement[
+                        "mesh_sweep_local_aabb_max"
+                    ],
+                    "local_pose_sweep_inflation_m": geometry_agreement[
+                        "local_pose_sweep_inflation_m"
+                    ],
+                    "geometry_agreement_valid": geometry_agreement[
+                        "geometry_agreement_valid"
+                    ],
+                    "property_query_collider_count": len(queried_paths),
+                    "rigid_body_view_count": int(view.count),
+                    "rigid_body_view_max_shapes": int(view.max_shapes),
+                    "contact_offset_resolved": contact_value,
+                    "rest_offset_resolved": rest_value,
+                    "offset_authority_source": self.authority_source,
+                    "physics_device": "cpu",
+                    "broadphase_type": "MBP",
+                    "gpu_dynamics_enabled": False,
+                    "setters_called": False,
+                }
+
+                record["offset_authority_sha256"] = canonical_sha256(record)
+                authority_records.append(
+                    validate_collision_offset_authority_record(record)
+                )
+                resolved[collider_path] = {
+                    "contact_offset_resolved": contact_value,
+                    "rest_offset_resolved": rest_value,
+                    "offset_authority_source": self.authority_source,
+                    "offset_authority_sha256": record[
+                        "offset_authority_sha256"
+                    ],
+                    "property_query_geometry_agreement_sha256": record[
+                        "property_query_geometry_agreement_sha256"
+                    ],
+                    "aabb_authority_model": record[
+                        "aabb_authority_model"
+                    ],
+                    "mesh_sweep_local_aabb_min": record[
+                        "mesh_sweep_local_aabb_min"
+                    ],
+                    "mesh_sweep_local_aabb_max": record[
+                        "mesh_sweep_local_aabb_max"
+                    ],
+                    "local_pose_sweep_inflation_m": record[
+                        "local_pose_sweep_inflation_m"
+                    ],
+                }
+        if set(resolved) != set(collider_body_paths):
+            _fail(
+                "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+                "resolved offset inventory is incomplete",
+            )
+        return resolved, authority_records
+
+
+def extract_full_robot_collision_snapshot(
+    *,
+    stage: Any,
+    subject_root: str,
+    obstacle_roots: Sequence[str],
+    articulation_joint_names: Sequence[str],
+    articulation_joint_positions: Sequence[float],
+    resolved_offsets: Mapping[str, Mapping[str, Any]] | None,
+    metadata: Mapping[str, Any],
+    physics_policy: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Lazily extract and seal the exhaustive composed-stage collision authority.
+
+    `resolved_offsets` is deliberately separate from USD authoring: each entry
+    must be produced by the post-Play PhysX path/shape-slot adapter. USD default
+    or sentinel values cannot stand in for effective runtime offsets.
+    """
+
+    from pxr import Usd, UsdGeom, UsdPhysics  # type: ignore
+
+    from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
+        COLLISION_SNAPSHOT_SCHEMA_VERSION,
+        stage_world_transform_readback_contract,
+        validate_collision_snapshot,
+    )
+
+    subject = str(subject_root)
+    obstacles = [str(path) for path in obstacle_roots]
+    if subject != "/World/FR3" or obstacles != [
+        "/World/PressButton/Button",
+        "/World/PressButton/Housing",
+    ]:
+        _fail("G1_FULL_ROBOT_ROOT_INVALID", "Option D stage roots are not approved")
+    metres = float(UsdGeom.GetStageMetersPerUnit(stage))
+    if metres != 1.0 or str(UsdGeom.GetStageUpAxis(stage)) != "Z":
+        _fail("G1_FULL_ROBOT_STAGE_UNITS", "Option D requires metres and Z-up")
+    if resolved_offsets is None:
+        _fail(
+            "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+            "post-Play PhysX effective offsets are required",
+        )
+
+    subject_prims: list[Any] = []
+    obstacle_prims: list[Any] = []
+    for prim in stage.Traverse():
+        if not prim.HasAPI(UsdPhysics.CollisionAPI):
+            continue
+        enabled = UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Get()
+        if enabled is not True:
+            continue
+        path = str(prim.GetPath())
+        if path == subject or path.startswith(f"{subject}/"):
+            subject_prims.append(prim)
+        elif any(path == root or path.startswith(f"{root}/") for root in obstacles):
+            obstacle_prims.append(prim)
+
+    all_prims = subject_prims + obstacle_prims
+    stage_paths = [str(prim.GetPath()) for prim in all_prims]
+    if len(stage_paths) != len(set(stage_paths)):
+        _fail("G1_FULL_ROBOT_INVENTORY_DUPLICATE", "stage collider path is duplicated")
+    if set(resolved_offsets) != set(stage_paths):
+        _fail(
+            "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+            "PhysX offset path inventory differs from the composed stage",
+        )
+
+    world_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    body_paths = {_collider_body_path(prim) for prim in all_prims}
+    body_world = {
+        path: np.asarray(
+            _gf_matrix_to_column_major_list(
+                world_cache.GetLocalToWorldTransform(stage.GetPrimAtPath(path))
+            ),
+            dtype=np.float64,
+        )
+        for path in body_paths
+    }
+
+    def collider_record(prim: Any) -> dict[str, Any]:
+        path = str(prim.GetPath())
+        body_path = _collider_body_path(prim)
+        collider_world = np.asarray(
+            _gf_matrix_to_column_major_list(world_cache.GetLocalToWorldTransform(prim)),
+            dtype=np.float64,
+        )
+        relative = np.linalg.inv(body_world[body_path]) @ collider_world
+        local_transform, scale = _matrix_without_scale(relative.tolist())
+        stage_world_transform, _world_scale = _matrix_without_scale(
+            collider_world.tolist()
+        )
+        canonical_world = (
+            np.asarray(canonical_body_world[body_path], dtype=np.float64)
+            @ np.asarray(local_transform, dtype=np.float64)
+        )
+        stage_world = np.asarray(
+            stage_world_transform,
+            dtype=np.float64,
+        )
+        readback_contract = stage_world_transform_readback_contract(
+            canonical_world_transform=canonical_world.tolist(),
+            stage_world_transform=stage_world_transform,
+            joint_graph=joint_graph,
+            body_prim_path=body_path,
+        )
+        collider_type, approximation, parameters = _collider_shape_record(
+            prim, metres
+        )
+        offsets = resolved_offsets[path]
+        if set(offsets) != {
+            "contact_offset_resolved",
+            "rest_offset_resolved",
+            "offset_authority_source",
+            "offset_authority_sha256",
+            "property_query_geometry_agreement_sha256",
+            "aabb_authority_model",
+            "mesh_sweep_local_aabb_min",
+            "mesh_sweep_local_aabb_max",
+            "local_pose_sweep_inflation_m",
+        }:
+            _fail(
+                "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+                f"effective-offset record is incomplete: {path}",
+            )
+        return {
+            "body_prim_path": body_path,
+            "collider_prim_path": path,
+            "collider_type": collider_type,
+            "approximation": approximation,
+            "local_transform": local_transform,
+            "scale": scale,
+            "shape_parameters": parameters,
+            "world_transform": canonical_world.tolist(),
+            "stage_world_transform_diagnostic": stage_world_transform,
+            **readback_contract,
+            "world_transform_authority": (
+                "normalized_usd_joint_graph_with_stage_readback"
+            ),
+            "collision_enabled": True,
+            "contact_offset_authored": _authored_collision_offset(
+                prim, "physxCollision:contactOffset"
+            ),
+            "rest_offset_authored": _authored_collision_offset(
+                prim, "physxCollision:restOffset"
+            ),
+            **dict(offsets),
+        }
+
+    joint_names = [str(name) for name in articulation_joint_names]
+    joint_index = {name: index for index, name in enumerate(joint_names)}
+    joint_graph: list[dict[str, Any]] = []
+    child_bodies: set[str] = set()
+    for prim in stage.Traverse():
+        if not prim.IsA(UsdPhysics.Joint):
+            continue
+        joint = UsdPhysics.Joint(prim)
+        body0 = [str(path) for path in joint.GetBody0Rel().GetTargets()]
+        body1 = [str(path) for path in joint.GetBody1Rel().GetTargets()]
+        if len(body1) != 1 or not body1[0].startswith(f"{subject}/"):
+            continue
+        if len(body0) != 1 or not body0[0].startswith(f"{subject}/"):
+            continue
+        name = str(prim.GetName())
+        if prim.IsA(UsdPhysics.RevoluteJoint):
+            joint_type = "revolute"
+            axis_token = str(UsdPhysics.RevoluteJoint(prim).GetAxisAttr().Get())
+        elif prim.IsA(UsdPhysics.PrismaticJoint):
+            joint_type = "prismatic"
+            axis_token = str(UsdPhysics.PrismaticJoint(prim).GetAxisAttr().Get())
+        elif prim.IsA(UsdPhysics.FixedJoint):
+            joint_type = "fixed"
+            axis_token = "X"
+        else:
+            _fail(
+                "G1_FULL_ROBOT_KINEMATICS_INVALID",
+                f"unsupported articulation joint type: {prim.GetTypeName()}",
+            )
+        if joint_type != "fixed" and name not in joint_index:
+            _fail(
+                "G1_FULL_ROBOT_KINEMATICS_INVALID",
+                f"moving joint is absent from articulation order: {name}",
+            )
+        axis = {
+            "X": [1.0, 0.0, 0.0],
+            "Y": [0.0, 1.0, 0.0],
+            "Z": [0.0, 0.0, 1.0],
+        }.get(axis_token)
+        if axis is None:
+            _fail("G1_FULL_ROBOT_KINEMATICS_INVALID", f"unknown joint axis: {axis_token}")
+        joint_graph.append(
+            {
+                "joint_name": name,
+                "joint_type": joint_type,
+                "joint_index": None if joint_type == "fixed" else joint_index[name],
+                "parent_body_prim_path": body0[0],
+                "child_body_prim_path": body1[0],
+                "axis": axis,
+                "parent_from_joint": _physics_frame_matrix(
+                    joint.GetLocalPos0Attr().Get(),
+                    joint.GetLocalRot0Attr().Get(),
+                ),
+                "child_from_joint": _physics_frame_matrix(
+                    joint.GetLocalPos1Attr().Get(),
+                    joint.GetLocalRot1Attr().Get(),
+                ),
+            }
+        )
+        child_bodies.add(body1[0])
+
+    subject_body_paths = {
+        _collider_body_path(prim) for prim in subject_prims
+    }
+    root_body_paths = sorted(subject_body_paths - child_bodies)
+    if len(root_body_paths) != 1:
+        _fail(
+            "G1_FULL_ROBOT_KINEMATICS_INVALID",
+            "subject articulation must have exactly one collision root body",
+        )
+    subject_root_transform, _subject_root_scale = _matrix_without_scale(
+        body_world[root_body_paths[0]].tolist()
+    )
+    body_root_transforms = {
+        root_body_paths[0]: subject_root_transform
+    }
+    for obstacle_path in sorted({_collider_body_path(prim) for prim in obstacle_prims}):
+        obstacle_transform, _obstacle_scale = _matrix_without_scale(
+            body_world[obstacle_path].tolist()
+        )
+        body_root_transforms[obstacle_path] = obstacle_transform
+
+    from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
+        resolve_articulated_body_transforms,
+    )
+
+    canonical_body_world = resolve_articulated_body_transforms(
+        snapshot={
+            "articulation_joint_names": joint_names,
+            "joint_graph": joint_graph,
+            "body_root_transforms": body_root_transforms,
+        },
+        joint_positions=articulation_joint_positions,
+    )
+
+    required_hashes = (
+        "asset_sha256",
+        "task_config_sha256",
+        "robot_config_sha256",
+        "task_card_sha256",
+        "geometry_sha256",
+    )
+    if any(field not in metadata for field in required_hashes):
+        _fail("G1_FULL_ROBOT_SNAPSHOT_INVALID", "snapshot input hashes are incomplete")
+    snapshot = {
+        "schema_version": COLLISION_SNAPSHOT_SCHEMA_VERSION,
+        **{field: str(metadata[field]) for field in required_hashes},
+        "meters_per_unit": metres,
+        "up_axis": "Z",
+        "physics_device": str(physics_policy.get("physics_device", "")),
+        "broadphase_type": str(physics_policy.get("broadphase_type", "")),
+        "gpu_dynamics_enabled": physics_policy.get("gpu_dynamics_enabled"),
+        "offset_authority_claim_eligible": True,
+        "subject_root": subject,
+        "obstacle_roots": obstacles,
+        "articulation_joint_names": joint_names,
+        "articulation_joint_positions": [
+            float(value) for value in articulation_joint_positions
+        ],
+        "joint_graph": sorted(
+            joint_graph,
+            key=lambda record: (
+                record["joint_index"] is None,
+                -1 if record["joint_index"] is None else record["joint_index"],
+                record["joint_name"],
+            ),
+        ),
+        "body_root_transforms": body_root_transforms,
+        "subject_inventory": [collider_record(prim) for prim in subject_prims],
+        "obstacle_inventory": [collider_record(prim) for prim in obstacle_prims],
+    }
+    return validate_collision_snapshot(
+        snapshot,
+        stage_subject_collider_paths=[str(prim.GetPath()) for prim in subject_prims],
+        stage_obstacle_collider_paths=[str(prim.GetPath()) for prim in obstacle_prims],
+    )
+
+
+def certify_option_d_preliminary_route_diagnostics(
+    *,
+    runtime: Any,
+    snapshot: Mapping[str, Any],
+    route_bundle: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+    robot_config_path: Path,
+    physics_dt_s: float,
+    scene_id: str,
+    trial_id: str,
+    lifecycle_record_sha256: str,
+) -> dict[str, Any]:
+    """Evaluate all unchanged command routes without sending controller targets."""
+
+    from isaac_tactile_libero.robots.fr3_differential_ik import (
+        DifferentialIKConfig,
+    )
+    from isaac_tactile_libero.robots.fr3_runtime_safety import (
+        load_fr3_runtime_safety,
+    )
+    from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
+        G1_TRAJECTORY_CLASS_IDS,
+        G1FullRobotClearanceError,
+        canonical_sha256,
+        certify_articulated_sweep,
+    )
+
+    if route_bundle.get("schema_version") != (
+        "g1.pose_conditioned.command_bound_routes.v1"
+    ):
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "preliminary route input must be the independently validated v1 TCP bundle",
+        )
+    if (
+        route_bundle.get("selected_pose_id") != candidate.get("candidate_id")
+        or route_bundle.get("selected_pose_sha256")
+        != _sha256_json(candidate)
+        or tuple(route_bundle.get("class_ids", ()))
+        != G1_TRAJECTORY_CLASS_IDS
+    ):
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "preliminary route identity differs from the candidate",
+        )
+    commands = list(route_bundle.get("command_matrix_decimal", ()))
+    if commands != ["0", "0.00025", "0.00035", "0.00040", "0.00045"]:
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "preliminary route diagnostics must retain the approved command matrix",
+        )
+    q_initial = np.asarray(
+        candidate.get("articulation_joint_values"),
+        dtype=np.float64,
+    )
+    joint_names = tuple(snapshot["articulation_joint_names"])
+    if (
+        q_initial.shape != (len(joint_names),)
+        or not np.all(np.isfinite(q_initial))
+        or tuple(candidate.get("articulation_joint_names", ())) != joint_names
+    ):
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "candidate joint state differs from collision snapshot authority",
+        )
+    limits = load_fr3_runtime_safety(robot_config_path)
+    zero_qd = np.zeros_like(q_initial)
+    config = DifferentialIKConfig(max_abs_dq=0.02)
+    class_records: list[dict[str, Any]] = []
+    command_completion: dict[str, list[bool]] = {
+        command: [] for command in commands
+    }
+    command_minimum_solid: dict[str, float] = {
+        command: math.inf for command in commands
+    }
+    command_minimum_effective: dict[str, float] = {
+        command: math.inf for command in commands
+    }
+    for class_route in route_bundle["class_routes"]:
+        class_id = str(class_route["class_id"])
+        if class_id not in G1_TRAJECTORY_CLASS_IDS:
+            _fail(
+                "G1_C2A_OPTION_D_INVALID",
+                f"undeclared trajectory class: {class_id}",
+            )
+        per_command: list[dict[str, Any]] = []
+        for command_route in class_route["command_routes"]:
+            command_decimal = str(command_route["command_decimal"])
+            materialization = command_route["float64_materialization"]
+            if len(materialization) != 256:
+                _fail(
+                    "G1_C2A_OPTION_D_INVALID",
+                    "preliminary route must contain exactly 256 public actions",
+                )
+            predicted_q = q_initial.copy()
+            action_records: list[dict[str, Any]] = []
+            limiting_receipt: dict[str, Any] | None = None
+            minimum_solid = math.inf
+            minimum_effective = math.inf
+            closest_key: tuple[float, int] | None = None
+            failure_code: str | None = None
+            failure_message: str | None = None
+            for action_index, requested_vector in enumerate(materialization):
+                requested = np.asarray(requested_vector, dtype=np.float64)
+                governed_target: np.ndarray | None = None
+                kernel_summary: dict[str, Any] | None = None
+                if requested.shape != (3,) or not np.all(np.isfinite(requested)):
+                    _fail(
+                        "G1_C2A_OPTION_D_INVALID",
+                        "preliminary route action is not a finite 3D vector",
+                    )
+                try:
+                    if np.array_equal(requested, np.zeros(3, dtype=np.float64)):
+                        governed_target = predicted_q.copy()
+                        kernel_summary = {
+                            "controller_qualification": "zero_hold",
+                            "jacobian_provider": None,
+                            "governor_state": "ALLOW_UNMODIFIED",
+                            "condition_number": None,
+                            "manipulability": None,
+                        }
+                    else:
+                        kernel = runtime.compute_governed_translation_target(
+                            requested_action_7d=[
+                                *requested.tolist(),
+                                0.0,
+                                0.0,
+                                0.0,
+                                0.0,
+                            ],
+                            current_observed_q=predicted_q.tolist(),
+                            current_observed_qd=zero_qd.tolist(),
+                            previous_accepted_target=predicted_q.tolist(),
+                            articulation_joint_names=joint_names,
+                            safety_limits=limits,
+                            already_aborted=False,
+                            action_name=(
+                                f"c2a_v3_{class_id}_{command_decimal}_"
+                                f"{action_index}"
+                            ),
+                            config=config,
+                        )
+                        if (
+                            kernel.get("send_allowed") is not True
+                            or kernel.get("governor_state")
+                            != "ALLOW_UNMODIFIED"
+                        ):
+                            raise ValueError(
+                                "preliminary governed target was not allowed unmodified"
+                            )
+                        governed_target = np.asarray(
+                            kernel["governed_target"],
+                            dtype=np.float64,
+                        )
+                        kernel_summary = {
+                            "controller_qualification": kernel.get(
+                                "controller_qualification"
+                            ),
+                            "jacobian_provider": kernel.get(
+                                "jacobian_provider"
+                            ),
+                            "governor_state": kernel.get("governor_state"),
+                            "condition_number": kernel.get(
+                                "condition_number"
+                            ),
+                            "manipulability": kernel.get("manipulability"),
+                            "requested_action_7d": kernel.get(
+                                "requested_action_7d"
+                            ),
+                            "raw_dq": kernel.get("raw_dq"),
+                            "clipped_dq": kernel.get("clipped_dq"),
+                        }
+                    receipt = certify_articulated_sweep(
+                        snapshot=snapshot,
+                        action={
+                            "command_decimal": command_decimal,
+                            "class_id": class_id,
+                            "scene_id": scene_id,
+                            "trial_id": trial_id,
+                            "action_index": action_index,
+                            "observed_q": predicted_q.tolist(),
+                            "observed_qd": zero_qd.tolist(),
+                            "governed_target": governed_target.tolist(),
+                            "joint_velocity_limits": list(
+                                limits.joint_velocity_abs
+                            ),
+                            "physics_substeps": 3,
+                            "physics_dt_s": float(physics_dt_s),
+                            "tcp_declared_solid_clearance_m": 0.005,
+                            "phase": "preliminary_diagnostic",
+                            "lifecycle_record_sha256": str(
+                                lifecycle_record_sha256
+                            ),
+                        },
+                        phase_policy="c2a_no_contact",
+                    )
+                except G1FullRobotClearanceError as error:
+                    receipt = dict(error.receipt or {})
+                    failure_code = error.code
+                    failure_message = error.message
+                except Exception as error:
+                    receipt = {}
+                    failure_code = str(
+                        getattr(
+                            error,
+                            "code",
+                            "G1_C2A_OPTION_D_KERNEL_INVALID",
+                        )
+                    )
+                    failure_message = str(error)
+                if receipt:
+                    solid = float(
+                        receipt["minimum_solid_separation_m"]
+                    )
+                    effective = float(
+                        receipt[
+                            "minimum_effective_contact_separation_m"
+                        ]
+                    )
+                    key = (effective, action_index)
+                    if closest_key is None or key < closest_key:
+                        closest_key = key
+                        limiting_receipt = json.loads(
+                            json.dumps(receipt, sort_keys=True)
+                        )
+                    minimum_solid = min(minimum_solid, solid)
+                    minimum_effective = min(minimum_effective, effective)
+                    receipt_sha256 = receipt.get("record_sha256")
+                    if receipt_sha256 is None:
+                        receipt_sha256 = canonical_sha256(receipt)
+                else:
+                    solid = None
+                    effective = None
+                    receipt_sha256 = None
+                action_record = {
+                    "action_index": action_index,
+                    "requested_vector_m": requested.tolist(),
+                    "observed_q": predicted_q.tolist(),
+                    "observed_qd": zero_qd.tolist(),
+                    "governed_target": (
+                        governed_target.tolist()
+                        if governed_target is not None
+                        else None
+                    ),
+                    "kernel": kernel_summary,
+                    "sweep_safe": receipt.get("safe") is True,
+                    "sweep_record_sha256": receipt_sha256,
+                    "minimum_solid_separation_m": solid,
+                    "minimum_effective_contact_separation_m": effective,
+                    "closest_pair": receipt.get("closest_pair"),
+                    "closest_segment": receipt.get("closest_segment"),
+                    "closest_time_fraction": receipt.get(
+                        "closest_time_fraction"
+                    ),
+                    "failure_code": failure_code,
+                    "failure_message": failure_message,
+                }
+                action_record["action_record_sha256"] = canonical_sha256(
+                    action_record
+                )
+                action_records.append(action_record)
+                if failure_code is not None:
+                    break
+                assert governed_target is not None
+                predicted_q = governed_target.copy()
+            complete = (
+                failure_code is None
+                and len(action_records) == 256
+                and all(item["sweep_safe"] is True for item in action_records)
+            )
+            command_completion[command_decimal].append(complete)
+            command_minimum_solid[command_decimal] = min(
+                command_minimum_solid[command_decimal],
+                minimum_solid,
+            )
+            command_minimum_effective[command_decimal] = min(
+                command_minimum_effective[command_decimal],
+                minimum_effective,
+            )
+            command_record = {
+                "command_decimal": command_decimal,
+                "class_id": class_id,
+                "actions_required": 256,
+                "actions_certified": len(action_records),
+                "complete": complete,
+                "failure_code": failure_code,
+                "failure_message": failure_message,
+                "minimum_solid_separation_m": (
+                    minimum_solid
+                    if math.isfinite(minimum_solid)
+                    else None
+                ),
+                "minimum_effective_contact_separation_m": (
+                    minimum_effective
+                    if math.isfinite(minimum_effective)
+                    else None
+                ),
+                "limiting_receipt": limiting_receipt,
+                "action_records": action_records,
+            }
+            command_record["command_route_sha256"] = canonical_sha256(
+                command_record
+            )
+            per_command.append(command_record)
+        class_record = {
+            "class_id": class_id,
+            "command_routes": per_command,
+        }
+        class_record["class_diagnostic_sha256"] = canonical_sha256(
+            class_record
+        )
+        class_records.append(class_record)
+    safe_commands = [
+        command
+        for command in commands
+        if len(command_completion[command]) == len(G1_TRAJECTORY_CLASS_IDS)
+        and all(command_completion[command])
+    ]
+    result = {
+        "schema_version": "g1.c2a.option_d.route_diagnostics.v1",
+        "route_input_schema_version": route_bundle["schema_version"],
+        "route_output_schema_version": (
+            "g1.pose_conditioned.command_bound_routes.v2"
+        ),
+        "selected_pose_id": candidate["candidate_id"],
+        "selected_pose_sha256": _sha256_json(candidate),
+        "scene_id": scene_id,
+        "trial_id": trial_id,
+        "command_matrix_decimal": commands,
+        "class_ids": list(G1_TRAJECTORY_CLASS_IDS),
+        "actions_per_class": 256,
+        "scene_count_per_class_command": 3,
+        "phase_policy": "c2a_no_contact",
+        "controller_targets_sent": 0,
+        "runtime_contact_truth_replaced": False,
+        "class_diagnostics": class_records,
+        "complete_safe_commands": safe_commands,
+        "geometric_upper_bound_command_decimal": (
+            safe_commands[-1] if safe_commands else None
+        ),
+        "per_command_minimum_solid_separation_m": {
+            command: (
+                value if math.isfinite(value) else None
+            )
+            for command, value in command_minimum_solid.items()
+        },
+        "per_command_minimum_effective_contact_separation_m": {
+            command: (
+                value if math.isfinite(value) else None
+            )
+            for command, value in command_minimum_effective.items()
+        },
+    }
+    result["route_diagnostic_sha256"] = canonical_sha256(result)
+    return result
+
+
 class C2ARealSceneFactory:
     """Own one SimulationApp and create fresh reference/static stages on demand."""
 
@@ -128,6 +1379,7 @@ class C2ARealSceneFactory:
         task_card_path: Path,
         headless: bool,
         seed: int,
+        run_id: str = "c2a-option-d-preliminary",
     ) -> None:
         self.root = Path(__file__).resolve().parents[2]
         self.config_path = Path(config_path).resolve()
@@ -153,6 +1405,16 @@ class C2ARealSceneFactory:
             _fail("GPU_CONTACT_NATIVE_INSTABILITY", "C2a requires CPU physics Contact")
         self.seed = int(seed)
         self.headless = bool(headless)
+        from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
+            SceneLifecycleAuthority,
+        )
+
+        self.lifecycle_authority = SceneLifecycleAuthority(run_id=str(run_id))
+        self.lifecycle_records: list[dict[str, Any]] = []
+        self.lifecycle_close_records: list[dict[str, Any]] = []
+        self.scene_creation_failures: list[dict[str, Any]] = []
+        self.lifecycle_audit: dict[str, Any] | None = None
+        self.option_d_route_bundles: dict[str, dict[str, Any]] = {}
         articulation_path = _resolve(
             self.root, self.robot_safe["articulation_config_path"]
         )
@@ -177,6 +1439,8 @@ class C2ARealSceneFactory:
         self._closed = False
         self._reference_runtime: Any | None = None
         self._reference_record: dict[str, Any] | None = None
+        self._reference_lifecycle_record: dict[str, Any] | None = None
+        self._reference_latch: FR3PositionTargetLatch | None = None
         self.runtime_metadata = {
             "simulator": "6.0.1",
             "python": platform.python_version(),
@@ -196,6 +1460,29 @@ class C2ARealSceneFactory:
             "dependency_lock_sha256": sha256_file(dependency_path),
         }
 
+    def configure_option_d_route_bundles(
+        self,
+        bundles: Mapping[str, Mapping[str, Any]],
+    ) -> None:
+        """Bind current-matrix TCP-qualified route inputs before scene creation."""
+
+        expected = {
+            candidate_id
+            for candidate_id, _position in C2A_CANDIDATES
+        }
+        supplied = {str(key) for key in bundles}
+        if not supplied or not supplied <= expected:
+            _fail(
+                "G1_C2A_OPTION_D_INVALID",
+                "Option D route bundles contain an undeclared candidate",
+            )
+        self.option_d_route_bundles = {
+            str(key): json.loads(
+                json.dumps(dict(value), sort_keys=True)
+            )
+            for key, value in bundles.items()
+        }
+
     def _stop_timeline(self) -> Any:
         import omni.timeline  # type: ignore
 
@@ -209,6 +1496,7 @@ class C2ARealSceneFactory:
         *,
         candidate: Mapping[str, Any] | None,
         authoring_record: dict[str, Any] | None,
+        lifecycle_allocation: Mapping[str, Any] | None = None,
     ) -> tuple[Any, PressButtonMechanism, dict[str, Any]]:
         from isaac_tactile_libero.robots.fr3_differential_ik import FR3DifferentialIKRuntime
         from isaacsim.core.simulation_manager import SimulationManager  # type: ignore
@@ -221,7 +1509,12 @@ class C2ARealSceneFactory:
 
         timeline = self._stop_timeline()
         mechanism = PressButtonMechanism(self.mechanism_config)
-        capture: dict[str, Any] = {"scene_api": None, "policy": {}}
+        capture: dict[str, Any] = {
+            "scene_api": None,
+            "policy": {},
+            "stage_lifecycle_token": None,
+            "preplay_authored_map_sha256": None,
+        }
 
         def stage_builder(stage: Any) -> None:
             physics_scene = UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
@@ -255,6 +1548,17 @@ class C2ARealSceneFactory:
                         authoring_adapter=UsdPhysxC2APrePlayAdapter(),
                         play_after_author=False,
                     )
+                )
+            if lifecycle_allocation is not None:
+                adapter = UsdSceneLifecycleStageAdapter(stage)
+                capture["stage_lifecycle_token"] = (
+                    self.lifecycle_authority.bind_stage(
+                        lifecycle_allocation,
+                        adapter,
+                    )
+                )
+                capture["preplay_authored_map_sha256"] = (
+                    preplay_authored_map_sha256(stage)
                 )
 
         runtime = FR3DifferentialIKRuntime(
@@ -291,8 +1595,14 @@ class C2ARealSceneFactory:
     def build_reference_scene(self, *, seed: int) -> dict[str, Any]:
         if int(seed) != self.seed:
             _fail("G1_C2A_REFERENCE_PROVENANCE", "C2a reference seed changed")
+        allocation = self.lifecycle_authority.allocate(
+            trial_id="c2a-reference-orientation",
+            planned_fresh_scene_token=f"c2a-reference-{self.seed}",
+        )
         runtime, _mechanism, capture = self._build_runtime(
-            candidate=None, authoring_record=None
+            candidate=None,
+            authoring_record=None,
+            lifecycle_allocation=allocation,
         )
         state = runtime.read_joint_state()
         if tuple(state.joint_names) != C2A_ARTICULATION_JOINT_NAMES:
@@ -314,6 +1624,49 @@ class C2ARealSceneFactory:
         transform_sha256 = _sha256_json(
             {"world_from_base": world_from_base, "base_from_world": base_from_world}
         )
+        articulation = runtime.ik_runtime.ee_controller.controller.articulation
+        target_reader = getattr(
+            articulation,
+            "get_dof_position_targets",
+            None,
+        )
+        if not callable(target_reader):
+            _fail(
+                "G1_C2A_REFERENCE_PROVENANCE",
+                "reference scene target reader is unavailable",
+            )
+        reference_latch = FR3PositionTargetLatch(
+            dof_names=state.joint_names,
+            scene_token=str(allocation["planned_fresh_scene_token"]),
+            prim_path=runtime.articulation_root_path,
+            articulation_object_id=id(articulation),
+            stage_lifecycle_token=str(
+                capture["stage_lifecycle_token"]
+            ),
+        )
+        reference_latch.seed(
+            target_reader(),
+            dof_names=state.joint_names,
+            scene_token=str(allocation["planned_fresh_scene_token"]),
+            source="reference_get_dof_position_targets",
+            prim_path=runtime.articulation_root_path,
+            articulation_object_id=id(articulation),
+        )
+        lifecycle_record = self.lifecycle_authority.finalize(
+            allocation,
+            stage_lifecycle_token=str(
+                capture["stage_lifecycle_token"]
+            ),
+            articulation_root_path=runtime.articulation_root_path,
+            articulation_joint_names=state.joint_names,
+            preplay_authored_map_sha256=str(
+                capture["preplay_authored_map_sha256"]
+            ),
+            latch_generation=int(
+                reference_latch.provenance["latch_generation"]
+            ),
+        )
+        self.lifecycle_records.append(dict(lifecycle_record))
         w, x, y, z = [float(value) for value in ee.quat]
         reference = {
             "schema_version": "g1.c2a.reference.v1",
@@ -331,14 +1684,22 @@ class C2ARealSceneFactory:
             "task_card_sha256": self.runtime_metadata["task_card_sha256"],
             "geometry_sha256": self.runtime_metadata["geometry_sha256"],
             "dependency_lock_sha256": self.runtime_metadata["dependency_lock_sha256"],
-            "reference_scene_token": f"c2a-reference-{self.seed}-{id(stage)}",
+            "reference_scene_token": str(
+                allocation["planned_fresh_scene_token"]
+            ),
             "transform_sha256": transform_sha256,
+            "lifecycle_record": dict(lifecycle_record),
+            "lifecycle_record_sha256": lifecycle_record[
+                "lifecycle_record_sha256"
+            ],
             "physics_policy": dict(capture["policy"]),
             "real_runtime_truth": True,
             "synthetic_test_double": False,
         }
         self._reference_runtime = runtime
         self._reference_record = reference
+        self._reference_lifecycle_record = lifecycle_record
+        self._reference_latch = reference_latch
         return dict(reference)
 
     def build_offline_candidates(
@@ -477,21 +1838,175 @@ class C2ARealSceneFactory:
                     }
                 records.append(record)
         finally:
+            if (
+                getattr(self, "_reference_lifecycle_record", None)
+                is not None
+                and getattr(self, "_reference_latch", None) is not None
+            ):
+                self.lifecycle_close_records.append(
+                    self.lifecycle_authority.close_scene(
+                        self._reference_lifecycle_record,
+                        stage_lifecycle_token=str(
+                            self._reference_lifecycle_record[
+                                "stage_lifecycle_token"
+                            ]
+                        ),
+                        latch_invalidator=lambda: self._reference_latch.invalidate(
+                            "reference scene closed"
+                        ),
+                    )
+                )
             runtime.close()
             self._reference_runtime = None
+            self._reference_lifecycle_record = None
+            self._reference_latch = None
             self._stop_timeline()
         return records
 
     def create_static_scene(self, **spec: Any) -> "C2ARealStaticScene":
-        return C2ARealStaticScene(owner=self, spec=dict(spec))
+        scene_spec = dict(spec)
+        allocation = self.lifecycle_authority.allocate(
+            trial_id=str(scene_spec["scene_id"]),
+            planned_fresh_scene_token=str(scene_spec["fresh_scene_token"]),
+        )
+        scene_spec["lifecycle_allocation"] = allocation
+        scene = object.__new__(C2ARealStaticScene)
+        try:
+            C2ARealStaticScene.__init__(
+                scene,
+                owner=self,
+                spec=scene_spec,
+            )
+            return scene
+        except Exception as error:
+            cleanup_errors: list[dict[str, str]] = []
+            if (
+                getattr(scene, "lifecycle_record", None) is not None
+                and getattr(scene, "latch", None) is not None
+                and getattr(scene, "runtime", None) is not None
+            ):
+                try:
+                    scene.close()
+                except Exception as cleanup_error:
+                    cleanup_errors.append(
+                        {
+                            "operation": "scene.close",
+                            "error_type": type(cleanup_error).__name__,
+                            "message": str(cleanup_error),
+                        }
+                    )
+            else:
+                self.lifecycle_close_records.append(
+                    self.lifecycle_authority.abandon_scene(
+                        allocation,
+                        reason=f"{type(error).__name__}: {error}",
+                    )
+                )
+                partial_runtime = getattr(scene, "runtime", None)
+                if partial_runtime is not None:
+                    try:
+                        partial_runtime.close()
+                    except Exception as cleanup_error:
+                        cleanup_errors.append(
+                            {
+                                "operation": "partial_runtime.close",
+                                "error_type": type(cleanup_error).__name__,
+                                "message": str(cleanup_error),
+                            }
+                        )
+            self.scene_creation_failures.append(
+                {
+                    "schema_version": (
+                        "g1.c2a.static.v3.creation_failure"
+                    ),
+                    "candidate_id": scene_spec["candidate_id"],
+                    "scene_id": scene_spec["scene_id"],
+                    "fresh_scene_token": scene_spec[
+                        "fresh_scene_token"
+                    ],
+                    "scene_index": int(scene_spec["scene_index"]),
+                    "lifecycle_allocation": dict(allocation),
+                    "lifecycle_record": getattr(
+                        scene,
+                        "lifecycle_record",
+                        None,
+                    ),
+                    "collision_snapshot": getattr(
+                        scene,
+                        "collision_snapshot",
+                        None,
+                    ),
+                    "offset_authority_records": getattr(
+                        scene,
+                        "offset_authority_records",
+                        [],
+                    ),
+                    "initial_swept_clearance": getattr(
+                        scene,
+                        "initial_swept_clearance",
+                        None,
+                    ),
+                    "command_bound_route_diagnostics": getattr(
+                        scene,
+                        "command_bound_route_diagnostics",
+                        None,
+                    ),
+                    "failure_code": str(
+                        getattr(
+                            error,
+                            "code",
+                            "G1_C2A_RUNTIME_ERROR",
+                        )
+                    ),
+                    "failure_message": str(error),
+                    "cleanup_errors": cleanup_errors,
+                    "claim_eligible": False,
+                    "post_abort_actuation_count": 0,
+                }
+            )
+            for cleanup_error in cleanup_errors:
+                error.add_note(
+                    "Option D cleanup failure: "
+                    f"{cleanup_error['operation']}: "
+                    f"{cleanup_error['error_type']}: "
+                    f"{cleanup_error['message']}"
+                )
+            raise
+
+    def finalize_lifecycle_audit(self) -> dict[str, Any]:
+        if self.lifecycle_audit is not None:
+            return dict(self.lifecycle_audit)
+        if self._reference_runtime is not None:
+            if (
+                getattr(self, "_reference_lifecycle_record", None)
+                is not None
+                and getattr(self, "_reference_latch", None) is not None
+            ):
+                self.lifecycle_close_records.append(
+                    self.lifecycle_authority.close_scene(
+                        self._reference_lifecycle_record,
+                        stage_lifecycle_token=str(
+                            self._reference_lifecycle_record[
+                                "stage_lifecycle_token"
+                            ]
+                        ),
+                        latch_invalidator=lambda: self._reference_latch.invalidate(
+                            "reference scene closed by factory"
+                        ),
+                    )
+                )
+            self._reference_runtime.close()
+            self._reference_runtime = None
+            self._reference_lifecycle_record = None
+            self._reference_latch = None
+        self.lifecycle_audit = self.lifecycle_authority.close_factory()
+        return dict(self.lifecycle_audit)
 
     def close(self, *, exit_code: int) -> None:
         if self._closed:
             return
         self._closed = True
-        if self._reference_runtime is not None:
-            self._reference_runtime.close()
-            self._reference_runtime = None
+        self.finalize_lifecycle_audit()
         self.simulation_app.close(exit_code=int(exit_code))
 
 
@@ -503,9 +2018,11 @@ class C2ARealStaticScene:
         self.spec = dict(spec)
         self.candidate = dict(self.spec["candidate_record"])
         self.authoring_record: dict[str, Any] = {}
+        self.lifecycle_allocation = dict(self.spec["lifecycle_allocation"])
         self.runtime, self.mechanism, capture = owner._build_runtime(
             candidate=self.candidate,
             authoring_record=self.authoring_record,
+            lifecycle_allocation=self.lifecycle_allocation,
         )
         self._closed = False
         self._aborted = False
@@ -526,6 +2043,7 @@ class C2ARealStaticScene:
             scene_token=str(self.spec["fresh_scene_token"]),
             prim_path=self.runtime.articulation_root_path,
             articulation_object_id=id(articulation),
+            stage_lifecycle_token=str(capture["stage_lifecycle_token"]),
         )
         self.latch.seed(
             self.target,
@@ -535,6 +2053,17 @@ class C2ARealStaticScene:
             prim_path=self.runtime.articulation_root_path,
             articulation_object_id=id(articulation),
         )
+        self.lifecycle_record = owner.lifecycle_authority.finalize(
+            self.lifecycle_allocation,
+            stage_lifecycle_token=str(capture["stage_lifecycle_token"]),
+            articulation_root_path=self.runtime.articulation_root_path,
+            articulation_joint_names=joint.joint_names,
+            preplay_authored_map_sha256=str(
+                capture["preplay_authored_map_sha256"]
+            ),
+            latch_generation=int(self.latch.provenance["latch_generation"]),
+        )
+        owner.lifecycle_records.append(dict(self.lifecycle_record))
         from isaacsim.sensors.experimental.physics import Contact  # type: ignore
 
         Contact.create(
@@ -580,9 +2109,149 @@ class C2ARealStaticScene:
         self.collision_monitor = PhysXCollisionMonitor(
             interface=omni.physx.get_physx_simulation_interface(),
             path_decoder=PhysicsSchemaTools.intToSdfPath,
-            allowed_contact_pairs=owner.robot_safe["collision"]["allowed_contact_pairs"],
+            allowed_contact_pairs=(),
         )
         stage = self.runtime.ik_runtime.ee_controller.controller.stage
+        collider_body_paths = discover_full_robot_collider_body_paths(stage)
+        offset_adapter = PhysxResolvedOffsetAdapter(
+            simulation_app=owner.simulation_app
+        )
+        resolved_offsets, self.offset_authority_records = offset_adapter.resolve(
+            stage=stage,
+            collider_body_paths=collider_body_paths,
+            stage_lifecycle_token=self.lifecycle_record[
+                "stage_lifecycle_token"
+            ],
+            physics_policy={
+                "physics_device": "cpu",
+                "broadphase_type": "MBP",
+                "gpu_dynamics_enabled": False,
+            },
+        )
+        self.collision_snapshot = extract_full_robot_collision_snapshot(
+            stage=stage,
+            subject_root="/World/FR3",
+            obstacle_roots=(
+                self.mechanism.config.button_prim_path,
+                self.mechanism.config.housing_prim_path,
+            ),
+            articulation_joint_names=joint.joint_names,
+            articulation_joint_positions=joint.joint_positions,
+            resolved_offsets=resolved_offsets,
+            metadata={
+                "asset_sha256": owner.runtime_metadata["asset_sha256"],
+                "task_config_sha256": owner.runtime_metadata["task_config_sha256"],
+                "robot_config_sha256": owner.runtime_metadata["robot_config_sha256"],
+                "task_card_sha256": owner.runtime_metadata["task_card_sha256"],
+                "geometry_sha256": owner.runtime_metadata["geometry_sha256"],
+            },
+            physics_policy={
+                "physics_device": "cpu",
+                "broadphase_type": "MBP",
+                "gpu_dynamics_enabled": False,
+            },
+        )
+        from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
+            G1FullRobotClearanceError,
+            certify_articulated_sweep,
+        )
+
+        sweep_state = self.runtime.read_joint_state()
+        sweep_action = {
+            "command_decimal": "0",
+            "class_id": "C1_LOCAL_APPROACH_AXIS_RT_V1",
+            "scene_id": str(self.spec["scene_id"]),
+            "trial_id": str(self.lifecycle_record["trial_id"]),
+            "action_index": 0,
+            "observed_q": list(sweep_state.joint_positions),
+            "observed_qd": list(sweep_state.joint_velocities),
+            "governed_target": self.target.tolist(),
+            "joint_velocity_limits": list(
+                owner.robot_safe["joint_limits"]["max_abs_velocity_rad_s"]
+            ),
+            "physics_substeps": 3,
+            "physics_dt_s": float(owner.config["runtime"]["physics_dt_s"]),
+            "tcp_declared_solid_clearance_m": 0.005,
+            "phase": "preliminary_diagnostic",
+            "lifecycle_record_sha256": self.lifecycle_record[
+                "lifecycle_record_sha256"
+            ],
+        }
+        try:
+            self.initial_swept_clearance = certify_articulated_sweep(
+                snapshot=self.collision_snapshot,
+                action=sweep_action,
+                phase_policy="c2a_no_contact",
+            )
+            self.initial_sweep_failure_code = None
+            self.initial_sweep_failure_message = None
+        except G1FullRobotClearanceError as error:
+            self.initial_swept_clearance = dict(error.receipt or {})
+            self.initial_sweep_failure_code = error.code
+            self.initial_sweep_failure_message = error.message
+        route_bundle = owner.option_d_route_bundles.get(
+            str(self.candidate["candidate_id"])
+        )
+        if route_bundle is None:
+            _fail(
+                "G1_C2A_OPTION_D_INVALID",
+                "C2a v3 scene lacks its command-bound route authority",
+            )
+        if self.initial_sweep_failure_code is None:
+            self.command_bound_route_diagnostics = (
+                certify_option_d_preliminary_route_diagnostics(
+                    runtime=self.runtime,
+                    snapshot=self.collision_snapshot,
+                    route_bundle=route_bundle,
+                    candidate=self.candidate,
+                    robot_config_path=owner.robot_config_path,
+                    physics_dt_s=float(
+                        owner.config["runtime"]["physics_dt_s"]
+                    ),
+                    scene_id=str(self.spec["scene_id"]),
+                    trial_id=str(self.lifecycle_record["trial_id"]),
+                    lifecycle_record_sha256=self.lifecycle_record[
+                        "lifecycle_record_sha256"
+                    ],
+                )
+            )
+        else:
+            self.command_bound_route_diagnostics = {
+                "schema_version": (
+                    "g1.c2a.option_d.route_diagnostics.v1"
+                ),
+                "selected_pose_id": self.candidate["candidate_id"],
+                "selected_pose_sha256": _sha256_json(self.candidate),
+                "scene_id": str(self.spec["scene_id"]),
+                "trial_id": str(self.lifecycle_record["trial_id"]),
+                "command_matrix_decimal": [
+                    "0",
+                    "0.00025",
+                    "0.00035",
+                    "0.00040",
+                    "0.00045",
+                ],
+                "class_ids": [
+                    "C1_LOCAL_APPROACH_AXIS_RT_V1",
+                    "C1_LOCAL_PRESS_AXIS_RT_V1",
+                    "C1_LOCAL_RETRACT_AXIS_RT_V1",
+                    "C1_CONTINUOUS_APPROACH_LEG_V1",
+                    "C1_CONTINUOUS_PRESS_RELEASE_LEG_V1",
+                    "C1_CONTINUOUS_RETRACT_LEG_V1",
+                ],
+                "controller_targets_sent": 0,
+                "blocked_by_initial_sweep": True,
+                "failure_code": self.initial_sweep_failure_code,
+                "failure_message": self.initial_sweep_failure_message,
+                "geometric_upper_bound_command_decimal": None,
+            }
+            from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
+                canonical_sha256,
+            )
+
+            self.command_bound_route_diagnostics[
+                "route_diagnostic_sha256"
+            ] = canonical_sha256(self.command_bound_route_diagnostics)
         self.provenance = {
             "stage_object_id": id(stage),
             "articulation_object_id": id(articulation),
@@ -592,6 +2261,11 @@ class C2ARealStaticScene:
             "gpu_dynamics_enabled": False,
             "physics_policy": dict(capture["policy"]),
             "real_runtime_truth": True,
+            "lifecycle_record": dict(self.lifecycle_record),
+            "collision_snapshot_sha256": self.collision_snapshot[
+                "snapshot_sha256"
+            ],
+            "initial_sweep_valid": self.initial_sweep_failure_code is None,
         }
 
     def run_zero_readiness_action(
@@ -618,11 +2292,52 @@ class C2ARealStaticScene:
         previous_observed_physics_step = (
             self.contact_previous_observed_physics_step
         )
-        sent = self.runtime.send_joint_position_targets(target_before)
-        if not sent:
+        if self.initial_sweep_failure_code is not None:
+            sent = False
             self._aborted = True
-            self.latch.abort("C2a zero target send failed")
-        self.runtime.update(3)
+            self.latch.abort("C2a initial full-robot sweep failed")
+        else:
+            sent = self.runtime.send_joint_position_targets(target_before)
+            if not sent:
+                self._aborted = True
+                self.latch.abort("C2a zero target send failed")
+        substep_safety: list[dict[str, Any]] = []
+        if not self._aborted:
+            for substep_index in range(3):
+                self.runtime.update(1)
+                substep_contact = self.contact_sensor.read(
+                    int(action_index) * 3 + substep_index
+                )
+                substep_collision = self.collision_monitor.read()
+                substep_record = {
+                    "substep_index": substep_index,
+                    "contact_valid": bool(substep_contact.is_valid),
+                    "contact": bool(substep_contact.in_contact),
+                    "raw_contact_count": len(substep_contact.raw_contacts),
+                    "collision_report_valid": (
+                        substep_collision.get("valid") is True
+                    ),
+                    "collision": bool(
+                        substep_collision.get("unsafe_collision", False)
+                    ),
+                    "penetration_m": float(
+                        substep_collision.get("max_penetration_m", 0.0)
+                    ),
+                }
+                substep_safety.append(substep_record)
+                if (
+                    substep_record["contact_valid"] is not True
+                    or substep_record["contact"]
+                    or substep_record["raw_contact_count"] > 0
+                    or substep_record["collision_report_valid"] is not True
+                    or substep_record["collision"]
+                    or substep_record["penetration_m"] > 0.0
+                ):
+                    self._aborted = True
+                    self.latch.abort(
+                        "C2a per-substep Contact/collision failure"
+                    )
+                    break
         post_joint = self.runtime.read_joint_state()
         post_ee = self.runtime.read_current_ee_transform()
         articulation = self.runtime.ik_runtime.ee_controller.controller.articulation
@@ -680,7 +2395,7 @@ class C2ARealStaticScene:
         )
         self._next_action_index += 1
         return {
-            "schema_version": "g1.c2a.static.v2",
+            "schema_version": "g1.c2a.static.v3",
             "candidate_id": self.candidate["candidate_id"],
             "seed": self.owner.seed,
             "readiness_action_index": int(action_index),
@@ -727,14 +2442,45 @@ class C2ARealStaticScene:
             "post_abort_actuation_count": 0,
             "synthetic_test_double": False,
             "real_runtime_truth": True,
+            "lifecycle_record": dict(self.lifecycle_record),
+            "collision_snapshot_sha256": self.collision_snapshot[
+                "snapshot_sha256"
+            ],
+            "offset_authority_sha256s": [
+                record["offset_authority_sha256"]
+                for record in self.offset_authority_records
+            ],
+            "full_robot_sweep_valid": self.initial_sweep_failure_code is None,
+            "full_robot_sweep_failure_code": self.initial_sweep_failure_code,
+            "full_robot_sweep_failure_message": self.initial_sweep_failure_message,
+            "initial_swept_clearance_sha256": self.initial_swept_clearance.get(
+                "record_sha256"
+            ),
+            "substep_safety": substep_safety,
         }
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
+        close_record = self.owner.lifecycle_authority.close_scene(
+            self.lifecycle_record,
+            stage_lifecycle_token=str(
+                self.lifecycle_record["stage_lifecycle_token"]
+            ),
+            latch_invalidator=lambda: self.latch.invalidate("scene closed"),
+        )
+        self.owner.lifecycle_close_records.append(close_record)
         self.runtime.close()
         self.owner._stop_timeline()
 
 
-__all__ = ["C2ARealSceneFactory", "C2ARealStaticScene"]
+__all__ = [
+    "C2ARealSceneFactory",
+    "C2ARealStaticScene",
+    "PhysxResolvedOffsetAdapter",
+    "UsdSceneLifecycleStageAdapter",
+    "discover_full_robot_collider_body_paths",
+    "extract_full_robot_collision_snapshot",
+    "preplay_authored_map_sha256",
+]

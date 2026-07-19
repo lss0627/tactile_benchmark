@@ -52,6 +52,23 @@ mechanism:
     distance_metric: conservative_closed_solid_clearance_v1
     route_validation: continuous_line_segment
     boundary_policy: equality_allowed
+  option_d_full_robot_clearance:
+    schema_version: "g1.option_d.full_robot_clearance.v1"
+    subject_root: /World/FR3
+    obstacle_roots:
+      - /World/PressButton/Button
+      - /World/PressButton/Housing
+    phase_policy: c2a_c1_no_contact
+    collision_snapshot_schema: g1.full_robot.collision_snapshot.v1
+    swept_clearance_schema: g1.full_robot.swept_clearance.v1
+    collision_offset_authority_schema: g1.physx.collision_offset_authority.v1
+    lifecycle_schema: g1.scene.lifecycle.v1
+    command_bound_routes_schema: g1.pose_conditioned.command_bound_routes.v2
+    c2a_evidence_schema: g1.c2a.static.v3
+    c1_evidence_schema: g1.pose_conditioned.tracking_evidence.v3
+    offset_authority: physx_property_query_path_plus_rigid_body_tensor_slot
+    runtime_contact_remains_independent_truth: true
+    tcp_declared_solid_proof_remains_prerequisite_only: true
   rest_position_m: 0.0
   lower_limit_m: 0.0
   travel_limit_m: 0.012

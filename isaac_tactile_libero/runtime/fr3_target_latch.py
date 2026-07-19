@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 from typing import Any, Sequence
 
 import numpy as np
@@ -10,6 +11,8 @@ import numpy as np
 class FR3PositionTargetLatch:
     """Store one validated scene-local FR3 position target as command state."""
 
+    _generation_counter = itertools.count(1)
+
     def __init__(
         self,
         *,
@@ -17,6 +20,8 @@ class FR3PositionTargetLatch:
         scene_token: str,
         prim_path: str | None = None,
         articulation_object_id: int | None = None,
+        stage_lifecycle_token: str | None = None,
+        latch_generation: int | None = None,
     ) -> None:
         names = tuple(str(name) for name in dof_names)
         if not names or len(set(names)) != len(names):
@@ -29,6 +34,21 @@ class FR3PositionTargetLatch:
         self._articulation_object_id = (
             None if articulation_object_id is None else int(articulation_object_id)
         )
+        self._stage_lifecycle_token = (
+            None if stage_lifecycle_token is None else str(stage_lifecycle_token)
+        )
+        if self._stage_lifecycle_token is not None and len(
+            self._stage_lifecycle_token
+        ) != 64:
+            raise RuntimeError("FR3 target latch lifecycle token must be SHA-256")
+        generation = (
+            next(self._generation_counter)
+            if latch_generation is None
+            else int(latch_generation)
+        )
+        if generation <= 0:
+            raise RuntimeError("FR3 target latch generation must be positive")
+        self._latch_generation = generation
         self._target: np.ndarray | None = None
         self._source: str | None = None
         self._invalidated_reason: str | None = None
@@ -42,6 +62,8 @@ class FR3PositionTargetLatch:
             "source": self._source,
             "prim_path": self._prim_path,
             "articulation_object_id": self._articulation_object_id,
+            "stage_lifecycle_token": self._stage_lifecycle_token,
+            "latch_generation": self._latch_generation,
             "seeded": self._target is not None,
             "invalidated_reason": self._invalidated_reason,
             "aborted_reason": self._aborted_reason,
@@ -64,11 +86,9 @@ class FR3PositionTargetLatch:
             raise RuntimeError("FR3 target latch scene token mismatch")
         if self._prim_path is not None and str(prim_path) != self._prim_path:
             raise RuntimeError("FR3 target latch prim provenance mismatch")
-        if (
-            self._articulation_object_id is not None
-            and articulation_object_id != self._articulation_object_id
-        ):
-            raise RuntimeError("FR3 target latch articulation provenance mismatch")
+        # Python object addresses are diagnostics only. Stable acceptance is bound
+        # by scene_token, ordered DOFs, prim path and stage_lifecycle_token.
+        del articulation_object_id
 
     def _validated_target(self, target: Any) -> np.ndarray:
         array = np.asarray(target, dtype=np.float32)

@@ -19,6 +19,7 @@ import sys
 from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -463,7 +464,8 @@ def validate_real_c2a_readiness_sample(sample: Mapping[str, Any]) -> dict[str, A
 
     if (
         not isinstance(sample, Mapping)
-        or sample.get("schema_version") != "g1.c2a.static.v2"
+        or sample.get("schema_version")
+        not in {"g1.c2a.static.v2", "g1.c2a.static.v3"}
         or "contact_provenance" not in sample
     ):
         _fail(
@@ -486,6 +488,40 @@ def validate_real_c2a_readiness_sample(sample: Mapping[str, Any]) -> dict[str, A
         _fail("G1_C2A_RUNTIME_TRUTH_MISSING", "C2a real readiness sample is incomplete")
     if sample["synthetic_test_double"] is not False or sample["real_runtime_truth"] is not True:
         _fail("G1_C2A_SYNTHETIC_RUNTIME_FORBIDDEN", "synthetic readiness sample is forbidden")
+    if sample.get("schema_version") == "g1.c2a.static.v3":
+        from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
+            validate_scene_lifecycle_record,
+        )
+
+        validate_scene_lifecycle_record(sample.get("lifecycle_record"))
+        snapshot_sha256 = sample.get("collision_snapshot_sha256")
+        offset_digests = sample.get("offset_authority_sha256s")
+        if (
+            not isinstance(snapshot_sha256, str)
+            or len(snapshot_sha256) != 64
+            or not isinstance(offset_digests, Sequence)
+            or isinstance(offset_digests, (str, bytes))
+            or not offset_digests
+            or any(
+                not isinstance(item, str) or len(item) != 64
+                for item in offset_digests
+            )
+        ):
+            _fail(
+                "G1_C2A_FULL_ROBOT_PROVENANCE",
+                "C2a v3 sample lacks collision/offset authority",
+            )
+        if sample.get("full_robot_sweep_valid") is not True:
+            _fail(
+                str(
+                    sample.get("full_robot_sweep_failure_code")
+                    or "G1_C2A_FULL_ROBOT_CLEARANCE"
+                ),
+                str(
+                    sample.get("full_robot_sweep_failure_message")
+                    or "C2a initial full-robot sweep is unsafe"
+                ),
+            )
     try:
         contact_state = classify_g1_contact_provenance(
             sample["contact_provenance"],
@@ -607,14 +643,31 @@ def run_c2a_static_qualification(
         for scene_index in range(3):
             scene_id = f"{candidate['candidate_id']}-scene-{scene_index}"
             token = f"c2a-{candidate['candidate_id']}-{scene_index}-{C2A_SEED}"
-            scene = scene_factory(
-                candidate_id=candidate["candidate_id"],
-                candidate_record=dict(candidate),
-                scene_id=scene_id,
-                fresh_scene_token=token,
-                scene_index=scene_index,
-                seed=C2A_SEED,
-            )
+            try:
+                scene = scene_factory(
+                    candidate_id=candidate["candidate_id"],
+                    candidate_record=dict(candidate),
+                    scene_id=scene_id,
+                    fresh_scene_token=token,
+                    scene_index=scene_index,
+                    seed=C2A_SEED,
+                )
+            except Exception as error:
+                owner = getattr(scene_factory, "__self__", None)
+                retained = list(
+                    getattr(owner, "scene_creation_failures", ()) or ()
+                )
+                if retained:
+                    static_scenes.append(dict(retained[-1]))
+                failure_code = str(
+                    getattr(error, "code", "G1_C2A_RUNTIME_ERROR")
+                )
+                failure_message = str(
+                    getattr(error, "message", str(error))
+                )
+                systemic_failure_code = failure_code
+                systemic_failure_message = failure_message
+                break
             tokens.append(token)
             step = getattr(scene, "run_zero_readiness_action", None)
             samples: list[dict[str, Any]] = []
@@ -680,9 +733,17 @@ def run_c2a_static_qualification(
                     if systemic_failure_code is None:
                         systemic_failure_code = failure_code
                         systemic_failure_message = failure_message
+            scene_schema = (
+                "g1.c2a.static.v3"
+                if any(
+                    sample.get("schema_version") == "g1.c2a.static.v3"
+                    for sample in samples
+                )
+                else "g1.c2a.static.v2"
+            )
             static_scenes.append(
                 {
-                    "schema_version": "g1.c2a.static.v2",
+                    "schema_version": scene_schema,
                     "candidate_id": candidate["candidate_id"],
                     "scene_id": scene_id,
                     "fresh_scene_token": token,
@@ -705,6 +766,27 @@ def run_c2a_static_qualification(
                         and real_runtime_truth
                     ),
                     "claim_eligible": False,
+                    "lifecycle_record": _jsonable(
+                        getattr(scene, "lifecycle_record", None)
+                    ),
+                    "collision_snapshot": _jsonable(
+                        getattr(scene, "collision_snapshot", None)
+                    ),
+                    "offset_authority_records": _jsonable(
+                        getattr(scene, "offset_authority_records", ())
+                    ),
+                    "swept_clearance_receipts": _jsonable(
+                        [
+                            getattr(scene, "initial_swept_clearance", {})
+                        ]
+                    ),
+                    "command_bound_route_diagnostics": _jsonable(
+                        getattr(
+                            scene,
+                            "command_bound_route_diagnostics",
+                            None,
+                        )
+                    ),
                 }
             )
             if systemic_failure_code is not None:
@@ -715,7 +797,8 @@ def run_c2a_static_qualification(
         "static_scenes": static_scenes,
         "readiness_samples": readiness_samples,
         "readiness_sample_count": sum(
-            len(scene["readiness_samples"]) for scene in static_scenes
+            len(scene.get("readiness_samples", ()))
+            for scene in static_scenes
         ),
         "claim_eligible": False,
         "controlled_arrival": False,
@@ -745,6 +828,41 @@ def write_c2a_static_evidence(
 ) -> dict[str, Any]:
     """Write one immutable, preliminary, non-claim C2a directory."""
 
+    metadata = _jsonable(dict(runtime_metadata or {}))
+    option_d = (
+        isinstance(metadata.get("factory_lifecycle_audit"), Mapping)
+        or any(
+        str(item.get("schema_version", "")).startswith(
+            "g1.c2a.static.v3"
+        )
+        for item in static_scenes
+        )
+    )
+    if option_d:
+        if any(
+            item.get("schema_version")
+            not in {
+                "g1.c2a.static.v3",
+                "g1.c2a.static.v3.creation_failure",
+            }
+            for item in static_scenes
+        ):
+            _fail(
+                "G1_C2A_OPTION_D_INVALID",
+                "C2a evidence cannot mix v2 and v3 scene records",
+            )
+        from isaac_tactile_libero.runtime.g1_static_pose import (
+            validate_c2a_v3_scene_record,
+        )
+
+        static_scenes = tuple(
+            (
+                validate_c2a_v3_scene_record(item)
+                if item.get("schema_version") == "g1.c2a.static.v3"
+                else dict(item)
+            )
+            for item in static_scenes
+        )
     destination = Path(output)
     destination.mkdir(parents=True, exist_ok=False)
     command_path = destination / "command.log"
@@ -764,6 +882,126 @@ def write_c2a_static_evidence(
         "".join(json.dumps(_jsonable(item), sort_keys=True) + "\n" for item in readiness_samples),
         encoding="utf-8",
     )
+    option_d_paths: list[Path] = []
+    if option_d:
+        lifecycle_audit_path = destination / "lifecycle_audit.json"
+        lifecycle_audit_path.write_text(
+            json.dumps(
+                _jsonable(metadata["factory_lifecycle_audit"]),
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        lifecycle_close_path = destination / "lifecycle_close_records.jsonl"
+        lifecycle_close_path.write_text(
+            "".join(
+                json.dumps(_jsonable(item), sort_keys=True) + "\n"
+                for item in metadata.get(
+                    "factory_lifecycle_close_records",
+                    (),
+                )
+            ),
+            encoding="utf-8",
+        )
+        creation_failure_path = destination / "scene_creation_failures.jsonl"
+        creation_failure_path.write_text(
+            "".join(
+                json.dumps(_jsonable(item), sort_keys=True) + "\n"
+                for item in metadata.get(
+                    "factory_scene_creation_failures",
+                    (),
+                )
+            ),
+            encoding="utf-8",
+        )
+        collision_path = destination / "collision_snapshots.jsonl"
+        collision_path.write_text(
+            "".join(
+                json.dumps(_jsonable(item["collision_snapshot"]), sort_keys=True)
+                + "\n"
+                for item in static_scenes
+                if isinstance(item.get("collision_snapshot"), Mapping)
+            ),
+            encoding="utf-8",
+        )
+        lifecycle_path = destination / "lifecycle_records.jsonl"
+        factory_lifecycle_records = [
+            dict(item)
+            for item in metadata.get("factory_lifecycle_records", ())
+            if isinstance(item, Mapping)
+        ]
+        lifecycle_by_digest = {
+            str(item["lifecycle_record_sha256"]): item
+            for item in (
+                *factory_lifecycle_records,
+                *(
+                    dict(scene["lifecycle_record"])
+                    for scene in static_scenes
+                    if isinstance(
+                        scene.get("lifecycle_record"),
+                        Mapping,
+                    )
+                ),
+            )
+        }
+        lifecycle_path.write_text(
+            "".join(
+                json.dumps(_jsonable(item), sort_keys=True) + "\n"
+                for _digest, item in sorted(lifecycle_by_digest.items())
+            ),
+            encoding="utf-8",
+        )
+        offset_path = destination / "offset_authority_records.jsonl"
+        offset_path.write_text(
+            "".join(
+                json.dumps(_jsonable(record), sort_keys=True) + "\n"
+                for item in static_scenes
+                for record in item.get("offset_authority_records", ())
+            ),
+            encoding="utf-8",
+        )
+        sweep_path = destination / "swept_clearance_receipts.jsonl"
+        sweep_path.write_text(
+            "".join(
+                json.dumps(_jsonable(record), sort_keys=True) + "\n"
+                for item in static_scenes
+                for record in item.get("swept_clearance_receipts", ())
+                if record
+            ),
+            encoding="utf-8",
+        )
+        route_diagnostics_path = (
+            destination / "command_bound_route_diagnostics.jsonl"
+        )
+        route_diagnostics_path.write_text(
+            "".join(
+                json.dumps(
+                    _jsonable(item["command_bound_route_diagnostics"]),
+                    sort_keys=True,
+                )
+                + "\n"
+                for item in static_scenes
+                if isinstance(
+                    item.get("command_bound_route_diagnostics"),
+                    Mapping,
+                )
+            ),
+            encoding="utf-8",
+        )
+        option_d_paths.extend(
+            (
+                lifecycle_audit_path,
+                lifecycle_close_path,
+                creation_failure_path,
+                collision_path,
+                lifecycle_path,
+                offset_path,
+                sweep_path,
+                route_diagnostics_path,
+            )
+        )
     synthetic_sample_count = sum(
         item.get("synthetic_test_double") is True for item in readiness_samples
     )
@@ -772,7 +1010,6 @@ def write_c2a_static_evidence(
         and item.get("synthetic_test_double") is False
         for item in readiness_samples
     )
-    metadata = _jsonable(dict(runtime_metadata or {}))
     current_input_digests = {
         "task_config_sha256": metadata.get("task_config_sha256"),
         "robot_config_sha256": metadata.get("robot_config_sha256"),
@@ -801,8 +1038,12 @@ def write_c2a_static_evidence(
             "solver_identity": selected.get("solver_identity"),
         }
     report = {
-        "schema_version": "g1.c2a.static.v2",
-        "evidence_stage": "preliminary",
+        "schema_version": (
+            "g1.c2a.static.v3" if option_d else "g1.c2a.static.v2"
+        ),
+        "evidence_stage": (
+            "preliminary_option_d" if option_d else "preliminary"
+        ),
         "status": "BLOCKED",
         "repository": {"commit": str(repository_commit), "dirty": False},
         "offline_candidate_count": len(offline_candidates),
@@ -819,17 +1060,44 @@ def write_c2a_static_evidence(
         "current_input_digests": current_input_digests,
         "selected_candidate_provenance": selected_candidate_provenance,
         "claim_eligible": False,
+        "selected_pose_status": "preliminary" if option_d else None,
+        "final_pose_approved": False,
+        "matrix_approved": False,
         "controlled_arrival": False,
         "direct_reset_qualified": False,
         "reset_repeatability_qualified": False,
         "selected_command_cap_m": None,
+        "command_bound_route_diagnostic_count": sum(
+            isinstance(
+                item.get("command_bound_route_diagnostics"),
+                Mapping,
+            )
+            for item in static_scenes
+        ),
+        "preliminary_geometric_upper_bounds": {
+            str(item["candidate_id"]): item[
+                "command_bound_route_diagnostics"
+            ].get("geometric_upper_bound_command_decimal")
+            for item in static_scenes
+            if isinstance(
+                item.get("command_bound_route_diagnostics"),
+                Mapping,
+            )
+        },
         "c2_completed": False,
         "gate_status_updated": False,
         "t070_completed": False,
     }
     report_path = destination / "report.json"
     _write_json(report_path, report)
-    artifact_paths = (command_path, offline_path, scenes_path, readiness_path, report_path)
+    artifact_paths = (
+        command_path,
+        offline_path,
+        scenes_path,
+        readiness_path,
+        *option_d_paths,
+        report_path,
+    )
     manifest = {
         **report,
         "run_id": destination.name,
@@ -863,6 +1131,7 @@ def build_real_c2a_scene_factory(
     task_card_path: str | Path,
     headless: bool,
     seed: int,
+    run_id: str = "c2a-option-d-preliminary",
 ) -> Any:
     """Construct the lazy Isaac factory only after CLI safety checks pass."""
 
@@ -874,6 +1143,7 @@ def build_real_c2a_scene_factory(
         task_card_path=Path(task_card_path),
         headless=bool(headless),
         seed=int(seed),
+        run_id=str(run_id),
     )
 
 
@@ -883,6 +1153,8 @@ def _base_preliminary_report() -> dict[str, Any]:
         "evidence_stage": "preliminary",
         "status": "BLOCKED",
         "claim_eligible": False,
+        "final_pose_approved": False,
+        "matrix_approved": False,
         "controlled_arrival": False,
         "direct_reset_qualified": False,
         "reset_repeatability_qualified": False,
@@ -891,6 +1163,86 @@ def _base_preliminary_report() -> dict[str, Any]:
         "gate_status_updated": False,
         "t070_completed": False,
     }
+
+
+def build_c2a_option_d_route_bundles(
+    *,
+    candidates: Sequence[Mapping[str, Any]],
+    config_path: Path,
+    robot_config_path: Path,
+    runtime_metadata: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Derive the unchanged command matrix for preliminary full-link diagnostics."""
+
+    from isaac_tactile_libero.runtime.g1_contact_exclusion import (
+        derive_g1_pose_conditioned_routes,
+        validate_g1_pose_conditioned_routes,
+    )
+    from isaac_tactile_libero.runtime.g1_tracking import (
+        G1_TRACKING_COMMANDS_M,
+        g1_press_button_task_route_geometry,
+        g1_trajectory_class_definitions,
+    )
+    from isaac_tactile_libero.tasks.press_button_mechanism import (
+        load_press_button_mechanism_config,
+    )
+
+    mechanism = load_press_button_mechanism_config(config_path)
+    geometry = mechanism.geometry_contract
+    if geometry is None or mechanism.route_validation_input_eligible is not True:
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "preliminary Option D routes require the approved TCP geometry contract",
+        )
+    robot = yaml.safe_load(robot_config_path.read_text(encoding="utf-8")) or {}
+    workspace = robot.get("workspace")
+    if not isinstance(workspace, Mapping):
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "preliminary Option D routes require the robot workspace",
+        )
+    workspace_limits = {
+        "frame": workspace.get("frame"),
+        "lower_world_m": list(workspace.get("min_m", ())),
+        "upper_world_m": list(workspace.get("max_m", ())),
+    }
+    current_input_digests = {
+        "task_config_sha256": runtime_metadata.get("task_config_sha256"),
+        "robot_config_sha256": runtime_metadata.get("robot_config_sha256"),
+        "fr3_asset_sha256": runtime_metadata.get("asset_sha256"),
+        "task_card_sha256": runtime_metadata.get("task_card_sha256"),
+        "geometry_sha256": runtime_metadata.get("geometry_sha256"),
+    }
+    bundles: dict[str, dict[str, Any]] = {}
+    for candidate in candidates:
+        candidate_id = str(candidate["candidate_id"])
+        selected_sha256 = _sha256_json(candidate)
+        bundle = dict(
+            derive_g1_pose_conditioned_routes(
+                selected_candidate=candidate,
+                selected_pose_sha256=selected_sha256,
+                class_definitions=g1_trajectory_class_definitions(),
+                task_route_geometry=g1_press_button_task_route_geometry(),
+                command_matrix_m=G1_TRACKING_COMMANDS_M,
+                workspace_limits=workspace_limits,
+                geometry_contract=geometry,
+                current_input_digests=current_input_digests,
+            )
+        )
+        validation = validate_g1_pose_conditioned_routes(
+            route_bundle=bundle,
+            geometry_contract=geometry,
+            workspace_limits=workspace_limits,
+            current_input_digests=current_input_digests,
+        )
+        if validation.tcp_route_exclusion_qualified is not True:
+            _fail(
+                validation.code or "G1_C2A_CONTACT_EXCLUSION",
+                validation.message
+                or "preliminary command route failed the independent TCP prerequisite",
+            )
+        bundles[candidate_id] = bundle
+    return bundles
 
 
 def orchestrate_c2a_real_runtime(
@@ -908,7 +1260,7 @@ def orchestrate_c2a_real_runtime(
 ) -> dict[str, Any]:
     """Run C2a, persist all preliminary evidence, then close once with its exit code."""
 
-    del config_path, robot_config_path, task_card_path, headless
+    del task_card_path, headless
     factory: Any | None = None
     offline_candidates: list[dict[str, Any]] = []
     static_scenes: list[dict[str, Any]] = []
@@ -935,6 +1287,22 @@ def orchestrate_c2a_real_runtime(
             and candidate.get("fk_residual_valid") is True
             and candidate.get("offline_failure_code") is None
         ]
+        configure_routes = getattr(
+            factory,
+            "configure_option_d_route_bundles",
+            None,
+        )
+        if callable(configure_routes):
+            configure_routes(
+                build_c2a_option_d_route_bundles(
+                    candidates=offline_valid_candidates,
+                    config_path=Path(config_path),
+                    robot_config_path=Path(robot_config_path),
+                    runtime_metadata=dict(
+                        getattr(factory, "runtime_metadata", {}) or {}
+                    ),
+                )
+            )
         result = run_c2a_static_qualification(
             candidate_records=offline_valid_candidates,
             scene_factory=factory.create_static_scene,
@@ -959,6 +1327,37 @@ def orchestrate_c2a_real_runtime(
         exit_code = 1
 
     runtime_metadata = dict(getattr(factory, "runtime_metadata", {}) or {})
+    if factory is not None:
+        finalize_lifecycle = getattr(
+            factory,
+            "finalize_lifecycle_audit",
+            None,
+        )
+        if callable(finalize_lifecycle):
+            try:
+                runtime_metadata["factory_lifecycle_audit"] = _jsonable(
+                    finalize_lifecycle()
+                )
+            except Exception as error:
+                if systemic_failure_code is None:
+                    systemic_failure_code = str(
+                        getattr(
+                            error,
+                            "code",
+                            "G1_C2A_LIFECYCLE_INVALID",
+                        )
+                    )
+                    systemic_failure_message = str(error)
+                    exit_code = 1
+        runtime_metadata["factory_lifecycle_records"] = _jsonable(
+            getattr(factory, "lifecycle_records", ())
+        )
+        runtime_metadata["factory_lifecycle_close_records"] = _jsonable(
+            getattr(factory, "lifecycle_close_records", ())
+        )
+        runtime_metadata["factory_scene_creation_failures"] = _jsonable(
+            getattr(factory, "scene_creation_failures", ())
+        )
     report.update(
         {
             "selected_pose_id": selected_pose_id,
@@ -1093,6 +1492,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             task_card_path=task_card_path,
             headless=bool(args.headless),
             seed=int(args.seed),
+            run_id=output.name,
         ),
     )
     print(json.dumps(_jsonable(outcome["report"]), indent=2, sort_keys=True))

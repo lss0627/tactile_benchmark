@@ -395,6 +395,182 @@ def validate_c2a_static_scene_record(record: Mapping[str, Any]) -> dict[str, Any
     return dict(record)
 
 
+def validate_c2a_v3_scene_record(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate one no-claim C2a v3 scene and its Option D authorities."""
+
+    from .g1_full_robot_clearance import (
+        validate_collision_offset_authority_record,
+        validate_collision_snapshot,
+        validate_offset_authority_for_snapshot,
+        validate_scene_lifecycle_record,
+        validate_swept_clearance_receipt,
+    )
+
+    if (
+        not isinstance(record, Mapping)
+        or record.get("schema_version") != "g1.c2a.static.v3"
+    ):
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "C2a Option D scene must use g1.c2a.static.v3",
+        )
+    result = json.loads(json.dumps(dict(record), sort_keys=True))
+    lifecycle = validate_scene_lifecycle_record(result.get("lifecycle_record"))
+    if (
+        lifecycle["trial_id"] != result.get("scene_id")
+        or lifecycle["planned_fresh_scene_token"]
+        != result.get("fresh_scene_token")
+    ):
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "C2a scene identity differs from lifecycle authority",
+        )
+    snapshot = validate_collision_snapshot(
+        result.get("collision_snapshot"),
+        require_kinematics=True,
+    )
+    offsets_value = result.get("offset_authority_records")
+    if (
+        not isinstance(offsets_value, Sequence)
+        or isinstance(offsets_value, (str, bytes))
+    ):
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "C2a v3 offset authority records are missing",
+        )
+    offsets = validate_offset_authority_for_snapshot(
+        records=offsets_value,
+        snapshot=snapshot,
+        lifecycle_record=lifecycle,
+    )
+    snapshot_offset_digests = {
+        item.get("offset_authority_sha256")
+        for inventory in (
+            snapshot["subject_inventory"],
+            snapshot["obstacle_inventory"],
+        )
+        for item in inventory
+    }
+    offset_digests = {
+        item["offset_authority_sha256"] for item in offsets
+    }
+    if (
+        None in snapshot_offset_digests
+        or snapshot_offset_digests != offset_digests
+        or any(
+            item["stage_lifecycle_token"]
+            != lifecycle["stage_lifecycle_token"]
+            for item in offsets
+        )
+    ):
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "C2a offset receipts differ from snapshot/lifecycle authority",
+        )
+    collider_paths = {
+        item["collider_prim_path"]
+        for inventory in (
+            snapshot["subject_inventory"],
+            snapshot["obstacle_inventory"],
+        )
+        for item in inventory
+    }
+    offset_paths = {item["collider_prim_path"] for item in offsets}
+    if (
+        len(offsets) != len(offset_paths)
+        or offset_paths != collider_paths
+    ):
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "C2a v3 offset receipts do not bijectively cover the snapshot",
+        )
+    sweeps_value = result.get("swept_clearance_receipts")
+    if (
+        not isinstance(sweeps_value, Sequence)
+        or isinstance(sweeps_value, (str, bytes))
+        or not sweeps_value
+    ):
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "C2a v3 scene lacks full-robot sweep receipts",
+        )
+    sweeps: list[dict[str, Any]] = []
+    for item in sweeps_value:
+        if isinstance(item, Mapping) and item.get("safe") is False:
+            if (
+                not result.get("failure_code")
+                or not isinstance(item.get("closest_pair"), Mapping)
+                or not item.get("closest_segment")
+                or item.get("collision_snapshot_sha256")
+                != snapshot["snapshot_sha256"]
+            ):
+                _fail(
+                    "G1_C2A_OPTION_D_INVALID",
+                    "unsafe C2a sweep lacks retained failure provenance",
+                )
+            sweeps.append(json.loads(json.dumps(dict(item), sort_keys=True)))
+            continue
+        sweeps.append(
+            validate_swept_clearance_receipt(
+                item,
+                snapshot=snapshot,
+            )
+        )
+    if any(
+        item["phase_policy"] != "c2a_no_contact"
+        or item.get("claim_eligible") is not True
+        or item.get("lifecycle_record_sha256")
+        != lifecycle["lifecycle_record_sha256"]
+        or item["collision_snapshot_sha256"]
+        != snapshot["snapshot_sha256"]
+        for item in sweeps
+    ):
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "C2a v3 sweep does not bind the scene collision snapshot",
+        )
+    diagnostics = result.get("command_bound_route_diagnostics")
+    if (
+        not isinstance(diagnostics, Mapping)
+        or diagnostics.get("schema_version")
+        != "g1.c2a.option_d.route_diagnostics.v1"
+        or diagnostics.get("selected_pose_id")
+        != result.get("candidate_id")
+        or diagnostics.get("scene_id") != result.get("scene_id")
+        or diagnostics.get("trial_id") != lifecycle["trial_id"]
+        or diagnostics.get("command_matrix_decimal")
+        != ["0", "0.00025", "0.00035", "0.00040", "0.00045"]
+        or diagnostics.get("controller_targets_sent") != 0
+    ):
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "C2a v3 command-bound route diagnostics are invalid",
+        )
+    from .g1_full_robot_clearance import canonical_sha256
+
+    supplied_route_digest = diagnostics.get("route_diagnostic_sha256")
+    if (
+        not isinstance(supplied_route_digest, str)
+        or supplied_route_digest
+        != canonical_sha256(
+            diagnostics,
+            exclude_fields=("route_diagnostic_sha256",),
+        )
+    ):
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "C2a v3 route diagnostic digest mismatch",
+        )
+    result["lifecycle_record"] = lifecycle
+    result["collision_snapshot"] = snapshot
+    result["offset_authority_records"] = offsets
+    result["swept_clearance_receipts"] = sweeps
+    result["command_bound_route_diagnostics"] = json.loads(
+        json.dumps(dict(diagnostics), sort_keys=True)
+    )
+    return result
+
+
 __all__ = [
     "C2A_ARTICULATION_JOINT_NAMES",
     "C2A_ARM_JOINT_NAMES",
@@ -409,4 +585,5 @@ __all__ = [
     "validate_c2a_offline_record",
     "validate_c2a_readiness_sample",
     "validate_c2a_static_scene_record",
+    "validate_c2a_v3_scene_record",
 ]

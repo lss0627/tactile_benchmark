@@ -17,6 +17,7 @@ from .g1_tracking import (
     validate_g1_command_cap,
     validate_g1_tracking_trials,
     validate_formal_g1_tracking_trials,
+    validate_g1_option_d_trial_record,
     validate_g1_trajectory_routes,
 )
 from .isaacsim6 import IsaacSim6Lifecycle
@@ -37,6 +38,7 @@ from .g1_static_pose import (
     validate_c2a_offline_record,
     validate_c2a_readiness_sample,
     validate_c2a_static_scene_record,
+    validate_c2a_v3_scene_record,
 )
 
 __all__ = [
@@ -68,8 +70,10 @@ __all__ = [
     "validate_g1_command_cap",
     "validate_g1_tracking_trials",
     "validate_formal_g1_tracking_trials",
+    "validate_g1_option_d_trial_record",
     "validate_g1_trajectory_routes",
     "validate_c2a_offline_record",
     "validate_c2a_readiness_sample",
     "validate_c2a_static_scene_record",
+    "validate_c2a_v3_scene_record",
 ]

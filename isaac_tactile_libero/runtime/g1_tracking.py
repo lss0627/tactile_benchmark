@@ -2288,6 +2288,148 @@ def run_g1_multiclass_tracking_plan(
     }
 
 
+def validate_g1_option_d_trial_record(
+    record: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate one C1 v3 trial without weakening retained failure evidence."""
+
+    from .g1_full_robot_clearance import (
+        validate_collision_offset_authority_record,
+        validate_collision_snapshot,
+        validate_offset_authority_for_snapshot,
+        validate_scene_lifecycle_record,
+        validate_swept_clearance_receipt,
+    )
+
+    if not isinstance(record, Mapping):
+        raise G1ValidationError(
+            "G1_C1_OPTION_D_INVALID",
+            "Option D trial record must be a mapping",
+        )
+    result = json.loads(json.dumps(dict(record), sort_keys=True))
+    try:
+        lifecycle = validate_scene_lifecycle_record(
+            result.get("scene_lifecycle")
+        )
+        snapshot = validate_collision_snapshot(
+            result.get("collision_snapshot"),
+            require_kinematics=True,
+        )
+        offsets_value = result.get("offset_authority_records")
+        if (
+            not isinstance(offsets_value, Sequence)
+            or isinstance(offsets_value, (str, bytes))
+        ):
+            raise ValueError("offset authority records are missing")
+        offsets = validate_offset_authority_for_snapshot(
+            records=offsets_value,
+            snapshot=snapshot,
+            lifecycle_record=lifecycle,
+        )
+        collider_paths = {
+            item["collider_prim_path"]
+            for inventory in (
+                snapshot["subject_inventory"],
+                snapshot["obstacle_inventory"],
+            )
+            for item in inventory
+        }
+        offset_paths = {item["collider_prim_path"] for item in offsets}
+        if len(offset_paths) != len(offsets) or offset_paths != collider_paths:
+            raise ValueError(
+                "offset receipts do not bijectively cover the snapshot"
+            )
+        snapshot_offset_digests = {
+            item.get("offset_authority_sha256")
+            for inventory in (
+                snapshot["subject_inventory"],
+                snapshot["obstacle_inventory"],
+            )
+            for item in inventory
+        }
+        offset_digests = {
+            item["offset_authority_sha256"] for item in offsets
+        }
+        if (
+            None in snapshot_offset_digests
+            or snapshot_offset_digests != offset_digests
+            or any(
+                item["stage_lifecycle_token"]
+                != lifecycle["stage_lifecycle_token"]
+                for item in offsets
+            )
+        ):
+            raise ValueError(
+                "offset receipts differ from snapshot/lifecycle authority"
+            )
+        if (
+            lifecycle["trial_id"] != result.get("trial_id")
+            or lifecycle["planned_fresh_scene_token"]
+            != result.get("fresh_scene_token")
+        ):
+            raise ValueError("trial identity differs from lifecycle authority")
+        sweeps_value = result.get("swept_clearance_receipts")
+        if (
+            not isinstance(sweeps_value, Sequence)
+            or isinstance(sweeps_value, (str, bytes))
+            or not sweeps_value
+        ):
+            raise ValueError("trial has no full-robot sweep receipts")
+        sweeps: list[dict[str, Any]] = []
+        for item in sweeps_value:
+            if isinstance(item, Mapping) and item.get("safe") is False:
+                if (
+                    not result.get("failure_code")
+                    or not isinstance(item.get("closest_pair"), Mapping)
+                    or not item.get("closest_segment")
+                    or item.get("collision_snapshot_sha256")
+                    != snapshot["snapshot_sha256"]
+                ):
+                    raise ValueError(
+                        "unsafe sweep lacks retained failure provenance"
+                    )
+                sweeps.append(json.loads(json.dumps(dict(item), sort_keys=True)))
+                continue
+            sweep = validate_swept_clearance_receipt(
+                item,
+                snapshot=snapshot,
+            )
+            if (
+                sweep["phase_policy"] != "c1_no_contact"
+                or sweep["claim_eligible"] is not True
+                or sweep["lifecycle_record_sha256"]
+                != lifecycle["lifecycle_record_sha256"]
+                or sweep["collision_snapshot_sha256"]
+                != snapshot["snapshot_sha256"]
+                or sweep["trial_id"] != result.get("trial_id")
+                or sweep["scene_id"] != result.get("scene_id")
+                or sweep["class_id"] != result.get("class_id")
+            ):
+                raise ValueError(
+                    "sweep identity differs from trial/snapshot authority"
+                )
+            sweeps.append(sweep)
+        expected_receipts = int(result.get("readiness_action_count", 0)) + int(
+            result.get("measurement_action_count", 0)
+        )
+        if len(sweeps) != expected_receipts:
+            raise ValueError(
+                "sweep receipt count differs from attempted public actions"
+            )
+    except Exception as error:
+        if isinstance(error, G1ValidationError):
+            raise
+        raise G1ValidationError(
+            "G1_C1_OPTION_D_INVALID",
+            str(error),
+        ) from error
+    result["scene_lifecycle"] = lifecycle
+    result["collision_snapshot"] = snapshot
+    result["offset_authority_records"] = offsets
+    result["swept_clearance_receipts"] = sweeps
+    return result
+
+
 __all__ = [
     "ACTIONS_PER_TRIAL",
     "G1TrackingSample",
@@ -2317,4 +2459,5 @@ __all__ = [
     "validate_g1_multiclass_plan_trial_identities",
     "validate_g1_trial_identity",
     "validate_g1_trajectory_routes",
+    "validate_g1_option_d_trial_record",
 ]
