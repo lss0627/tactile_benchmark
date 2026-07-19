@@ -397,6 +397,20 @@ def _assert_option_d_inventory_contracts(module: Any) -> None:
         100.0,
         100.0,
     ]
+    bounded_query_pose = json.loads(json.dumps(link0_property_query))
+    bounded_query_pose["property_query_local_position"] = [
+        0.00006,
+        0.0,
+        0.0,
+    ]
+    bounded_pose_agreement = validate_geometry(
+        property_query_record=bounded_query_pose,
+        usd_geometry=link0_mesh_geometry,
+    )
+    assert (
+        bounded_pose_agreement["local_pose_sweep_inflation_m"]
+        >= 0.00006
+    )
     mismatched_query_pose = json.loads(json.dumps(link0_property_query))
     mismatched_query_pose["property_query_local_position"] = [
         100.0,

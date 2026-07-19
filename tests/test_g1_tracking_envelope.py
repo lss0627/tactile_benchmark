@@ -404,6 +404,7 @@ def _assert_option_d_sweep_contracts(module: Any) -> None:
         )
         collider["mesh_sweep_local_aabb_min"] = None
         collider["mesh_sweep_local_aabb_max"] = None
+        collider["local_pose_sweep_inflation_m"] = 0.0
         collider["stage_world_transform_diagnostic"] = collider[
             "world_transform"
         ]
