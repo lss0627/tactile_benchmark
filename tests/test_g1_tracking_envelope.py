@@ -331,11 +331,14 @@ def _option_d_action(
 
 def _assert_option_d_sweep_contracts(module: Any) -> None:
     certify = getattr(module, "certify_articulated_sweep", None)
+    validate_receipt = getattr(module, "validate_swept_clearance_receipt", None)
     validate_route = getattr(module, "validate_command_bound_swept_route", None)
     guard = getattr(module, "guard_pre_send_sweep", None)
     assert callable(certify)
+    assert callable(validate_receipt)
     assert callable(validate_route)
     assert callable(guard)
+    assert "snapshot" in inspect.signature(validate_receipt).parameters
 
     snapshot = _option_d_sweep_snapshot()
     with pytest.raises(Exception):
@@ -364,6 +367,34 @@ def _assert_option_d_sweep_contracts(module: Any) -> None:
     assert receipt["minimum_effective_contact_separation_m"] > 0.0
     assert receipt["physics_substeps"] == 3
     assert receipt["stopping_reach_bound"]["validated"] is True
+
+    claim_action = _option_d_action(start=0.0, target=0.01)
+    claim_action["lifecycle_record_sha256"] = "a" * 64
+    claim_receipt = certify(
+        snapshot=safe_snapshot,
+        action=claim_action,
+        phase_policy="c1_no_contact",
+    )
+    tampered = json.loads(json.dumps(claim_receipt))
+    for pair in tampered["pair_receipts"]:
+        for certificate in pair["interval_certificates"]:
+            certificate["effective_contact_lower_bound_m"] += 0.1
+            certificate["certificate_sha256"] = module.canonical_sha256(
+                certificate,
+                exclude_fields=("certificate_sha256",),
+            )
+        pair["minimum_effective_contact_separation_m"] += 0.1
+        pair["pair_record_sha256"] = module.canonical_sha256(
+            pair,
+            exclude_fields=("pair_record_sha256",),
+        )
+    tampered["minimum_effective_contact_separation_m"] += 0.1
+    tampered["record_sha256"] = module.canonical_sha256(
+        tampered,
+        exclude_fields=("record_sha256",),
+    )
+    with pytest.raises(Exception):
+        validate_receipt(tampered, snapshot=safe_snapshot)
 
     stopping_snapshot = json.loads(json.dumps(snapshot))
     stopping_snapshot["obstacle_inventory"][0]["local_transform"] = _identity_matrix(

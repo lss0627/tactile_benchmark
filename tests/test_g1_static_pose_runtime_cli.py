@@ -183,7 +183,85 @@ def _option_d_collision_snapshot_fixture() -> dict[str, Any]:
 
 def _assert_option_d_inventory_contracts(module: Any) -> None:
     validate = getattr(module, "validate_collision_snapshot", None)
+    bind_offsets = getattr(
+        module,
+        "bind_backend_shape_offsets_without_slot_guessing",
+        None,
+    )
+    validate_geometry = getattr(
+        module,
+        "validate_property_query_geometry_binding",
+        None,
+    )
     assert callable(validate)
+    assert callable(bind_offsets)
+    assert callable(validate_geometry)
+
+    query_records = [
+        {
+            "collider_prim_path": "/World/Body/ColliderA",
+            "property_query_ordinal": 0,
+        },
+        {
+            "collider_prim_path": "/World/Body/ColliderB",
+            "property_query_ordinal": 1,
+        },
+    ]
+    uniform = bind_offsets(
+        property_query_records=query_records,
+        contact_offsets=[0.002, 0.002],
+        rest_offsets=[0.0, 0.0],
+    )
+    assert [item["collider_prim_path"] for item in uniform] == [
+        "/World/Body/ColliderA",
+        "/World/Body/ColliderB",
+    ]
+    assert all(item["backend_shape_slot"] is None for item in uniform)
+    assert all(
+        item["shape_slot_binding_mode"]
+        == "uniform_body_shape_offsets_order_independent"
+        for item in uniform
+    )
+    with pytest.raises(Exception):
+        bind_offsets(
+            property_query_records=query_records,
+            contact_offsets=[0.002, 0.003],
+            rest_offsets=[0.0, 0.0],
+        )
+
+    geometry = {
+        "body_prim_path": "/World/Body",
+        "collider_prim_path": "/World/Body/ColliderA",
+        "collider_type": "cube",
+        "approximation": "analytic",
+        "local_transform": _option_d_matrix(),
+        "scale": [1.0, 1.0, 1.0],
+        "shape_parameters": {"size_m": 2.0},
+    }
+    query_geometry = {
+        **query_records[0],
+        "property_query_local_aabb_min": [-1.0, -1.0, -1.0],
+        "property_query_local_aabb_max": [1.0, 1.0, 1.0],
+        "property_query_local_position": [0.0, 0.0, 0.0],
+        "property_query_local_rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "property_query_volume": 8.0,
+    }
+    agreement = validate_geometry(
+        property_query_record=query_geometry,
+        usd_geometry=geometry,
+    )
+    assert agreement["geometry_agreement_valid"] is True
+    for field, value in (
+        ("property_query_local_aabb_max", [1.1, 1.0, 1.0]),
+        ("property_query_volume", 7.0),
+    ):
+        changed = json.loads(json.dumps(query_geometry))
+        changed[field] = value
+        with pytest.raises(Exception):
+            validate_geometry(
+                property_query_record=changed,
+                usd_geometry=geometry,
+            )
     snapshot = _option_d_collision_snapshot_fixture()
     subject_paths = [
         item["collider_prim_path"] for item in snapshot["subject_inventory"]
@@ -961,7 +1039,10 @@ def test_c2a_preplay_authoring_rejects_real_timeline_is_playing_even_without_pla
     assert getattr(caught.value, "code", "") == "G1_C2A_PREPLAY_AUTHORING_UNPROVEN"
 
 
-def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(tmp_path: Path) -> None:
+def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     factory = _FakeFactory()
     outcome = _orchestrate(_runner(), tmp_path, factory)
     scenes = outcome["result"]["static_scenes"]
@@ -972,6 +1053,121 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(tmp_path
     assert all(scene["broadphase_type"] == "MBP" for scene in scenes)
     assert all(scene["gpu_dynamics_enabled"] is False for scene in scenes)
     _assert_option_d_inventory_contracts(_option_d_module())
+
+    real_runtime = _real_runtime_module()
+    quaternion = np.asarray(
+        [0.0, 0.0, 0.38268343, 0.9238795],
+        dtype=np.float32,
+    ).astype(np.float64)
+    x, y, z, w = quaternion
+    quatf_matrix = np.asarray(
+        [
+            [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 0.0, 0.0],
+            [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 0.0, 0.0],
+            [0.0, 0.0, 1.0 - 2.0 * (x * x + y * y), 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+    )
+    rigid, _scale = real_runtime._matrix_without_scale(quatf_matrix.tolist())
+    linear = np.asarray(rigid, dtype=np.float64)[:3, :3]
+    assert np.max(np.abs(linear.T @ linear - np.eye(3))) <= (
+        512.0 * np.finfo(np.float64).eps
+    )
+
+    option_d = _option_d_module()
+    static_pose = importlib.import_module(
+        "isaac_tactile_libero.runtime.g1_static_pose"
+    )
+    lifecycle = {
+        "trial_id": "scene-v3",
+        "planned_fresh_scene_token": "fresh-v3",
+        "stage_lifecycle_token": "a" * 64,
+        "lifecycle_record_sha256": "b" * 64,
+    }
+    snapshot = {
+        "snapshot_sha256": "c" * 64,
+        "subject_inventory": [
+            {
+                "collider_prim_path": "/World/FR3/Collider",
+                "offset_authority_sha256": "d" * 64,
+            }
+        ],
+        "obstacle_inventory": [
+            {
+                "collider_prim_path": "/World/Button",
+                "offset_authority_sha256": "e" * 64,
+            }
+        ],
+    }
+    offsets = [
+        {
+            "collider_prim_path": "/World/FR3/Collider",
+            "offset_authority_sha256": "d" * 64,
+            "stage_lifecycle_token": "a" * 64,
+        },
+        {
+            "collider_prim_path": "/World/Button",
+            "offset_authority_sha256": "e" * 64,
+            "stage_lifecycle_token": "a" * 64,
+        },
+    ]
+    monkeypatch.setattr(
+        option_d,
+        "validate_scene_lifecycle_record",
+        lambda _value: lifecycle,
+    )
+    monkeypatch.setattr(
+        option_d,
+        "validate_collision_snapshot",
+        lambda _value, **_kwargs: snapshot,
+    )
+    monkeypatch.setattr(
+        option_d,
+        "validate_offset_authority_for_snapshot",
+        lambda **_kwargs: offsets,
+    )
+    diagnostics = {
+        "schema_version": "g1.c2a.option_d.route_diagnostics.v1",
+        "selected_pose_id": "pose-v3",
+        "scene_id": "scene-v3",
+        "trial_id": "scene-v3",
+        "command_matrix_decimal": [
+            "0",
+            "0.00025",
+            "0.00035",
+            "0.00040",
+            "0.00045",
+        ],
+        "controller_targets_sent": 0,
+    }
+    diagnostics["route_diagnostic_sha256"] = option_d.canonical_sha256(
+        diagnostics
+    )
+    validated_scene = static_pose.validate_c2a_v3_scene_record(
+        {
+            "schema_version": "g1.c2a.static.v3",
+            "candidate_id": "pose-v3",
+            "scene_id": "scene-v3",
+            "fresh_scene_token": "fresh-v3",
+            "failure_code": "EXPECTED_RETAINED_FAILURE",
+            "lifecycle_record": {},
+            "collision_snapshot": {},
+            "offset_authority_records": [{}, {}],
+            "swept_clearance_receipts": [
+                {
+                    "safe": False,
+                    "closest_pair": {
+                        "subject": "/World/FR3/Collider",
+                        "obstacle": "/World/Button",
+                    },
+                    "closest_segment": "governed_command",
+                    "collision_snapshot_sha256": "c" * 64,
+                }
+            ],
+            "command_bound_route_diagnostics": diagnostics,
+        }
+    )
+    assert validated_scene["offset_authority_records"] == offsets
 
 
 def test_c2a_real_runtime_executes_only_64_immutable_zero_actions_with_three_substeps(tmp_path: Path) -> None:
