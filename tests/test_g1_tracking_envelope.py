@@ -38,6 +38,119 @@ def _error_type():
     return value
 
 
+def _contact_provenance(
+    *,
+    trial_id: str,
+    scene_id: str,
+    action_index: int,
+    requested_vector_m: list[float],
+    phase: str = "measurement",
+    in_contact: bool = False,
+    candidate_id: str = "task-ready-z-0p55",
+    class_id: str | None = None,
+    scene_index: int = 0,
+) -> dict[str, Any]:
+    read_sequence_index = action_index if phase == "readiness" else 64 + action_index
+    observed_physics_step = 3 * (read_sequence_index + 1)
+    previous_sensor_time_s = (
+        None if read_sequence_index == 0 else float(read_sequence_index)
+    )
+    previous_observed_physics_step = observed_physics_step - 3
+    raw_contacts = (
+        [
+            {
+                "raw_index": 0,
+                "source_schema": (
+                    "isaacsim.sensors.experimental.physics.get_raw_data.v1"
+                ),
+                "body0_id": 123,
+                "body1_id": 456,
+                "body0_prim_path": "/World/FR3/fr3_hand",
+                "body1_prim_path": "/World/PressButton/Button",
+                "body0_rigid_body_prim_path": "/World/FR3/fr3_hand",
+                "body1_rigid_body_prim_path": "/World/PressButton/Button",
+                "body0_contact_report_api": True,
+                "body1_contact_report_api": True,
+                "position_m": [0.55, 0.0, 0.47],
+                "normal": [0.0, 0.0, 1.0],
+                "impulse_n_s": [0.0, 0.0, 0.001],
+                "time_s": float(read_sequence_index + 1),
+                "dt_s": 1.0 / 60.0,
+            }
+        ]
+        if in_contact
+        else []
+    )
+    record = {
+        "schema_version": "g1.contact.provenance.v1",
+        "execution": {
+            "consumer": "c1",
+            "trial_id": trial_id,
+            "candidate_id": candidate_id,
+            "class_id": class_id or TRAJECTORY_CLASS_IDS[0],
+            "scene_id": scene_id,
+            "scene_index": scene_index,
+            "phase": phase,
+            "action_index": action_index,
+            "window_index": (
+                action_index // 64 if phase == "measurement" else None
+            ),
+            "requested_vector_m": list(requested_vector_m),
+        },
+        "sensor": {
+            "sensor_prim_path": "/World/PressButton/Button/contact_sensor",
+            "sensor_prim_type": "IsaacContactSensor",
+            "sensor_rigid_body_prim_path": "/World/PressButton/Button",
+            "sensor_rigid_body_source": (
+                "nearest_ancestor_with_usdphysics_rigid_body_api"
+            ),
+            "sensor_prim_authority_source": (
+                "usd_stage_after_contact_sensor_authoring_before_evidence_read"
+            ),
+            "rigid_body_authority_source": "usd_stage_before_evidence_read",
+            "contact_report_api_prim_paths": [
+                "/World/FR3/fr3_hand",
+                "/World/PressButton/Button",
+            ]
+            if in_contact
+            else ["/World/PressButton/Button"],
+            "contact_report_api_verified": True,
+            "contact_report_api_authority_source": (
+                "usd_stage_before_evidence_read"
+            ),
+        },
+        "reading": {
+            "contact_valid": True,
+            "in_contact": in_contact,
+            "force_magnitude_n": 0.0,
+            "sensor_time_s": float(read_sequence_index + 1),
+            "read_sequence_index": read_sequence_index,
+            "observed_physics_step": observed_physics_step,
+            "observed_physics_step_source": (
+                "isaacsim.core.simulation_manager.get_num_physics_steps"
+            ),
+        },
+        "freshness": {
+            "valid": True,
+            "expected_read_sequence_index": read_sequence_index,
+            "previous_sensor_time_s": previous_sensor_time_s,
+            "sensor_time_monotonic": True,
+            "previous_observed_physics_step": previous_observed_physics_step,
+            "expected_physics_step_delta": 3,
+            "observed_physics_step_delta": 3,
+            "physics_step_relation_valid": True,
+            "blockers": [],
+        },
+        "raw_contact_count": len(raw_contacts),
+        "raw_contacts": raw_contacts,
+        "provenance": {"valid": True, "blockers": []},
+        "force_vector_valid": False,
+        "wrench_valid": False,
+        "raw_impulse_used_as_force": False,
+    }
+    return record
+
+
 def _sample(
     *,
     scene_id: str,
@@ -380,10 +493,12 @@ class _FakeTrackingScene:
         *,
         scene_id: str,
         command_magnitude_m: float,
+        trial_id: str | None = None,
         contact_at: int | None = None,
         safety_at: int | None = None,
     ) -> None:
         self.scene_id = scene_id
+        self.trial_id = trial_id or scene_id
         self.command_magnitude_m = command_magnitude_m
         self.contact_at = contact_at
         self.safety_at = safety_at
@@ -412,8 +527,16 @@ class _FakeTrackingScene:
             "observed_displacement_m": observed,
             "joint_positions_rad": [0.1, -0.2],
             "joint_velocities_rad_s": [0.0, 0.0],
+            "contact_valid": True,
             "contact": contact,
             "raw_contact_count": int(contact),
+            "contact_provenance": _contact_provenance(
+                trial_id=self.trial_id,
+                scene_id=self.scene_id,
+                action_index=action_index,
+                requested_vector_m=list(requested_vector_m),
+                in_contact=contact,
+            ),
             "collision": False,
             "penetration_m": 0.0,
             "finite": True,
@@ -434,9 +557,11 @@ class _ReadinessTrackingScene:
         *,
         scene_id: str,
         command_magnitude_m: float,
+        trial_id: str | None = None,
         fail_readiness_as: str | None = None,
     ) -> None:
         self.scene_id = scene_id
+        self.trial_id = trial_id or scene_id
         self.command_magnitude_m = float(command_magnitude_m)
         self.fail_readiness_as = fail_readiness_as
         self.initial_tcp_position_m = (0.22, 0.0, 0.88)
@@ -473,8 +598,17 @@ class _ReadinessTrackingScene:
             "observed_displacement_m": observed,
             "joint_positions_rad": [float(action_index) * 1.0e-4] * 9,
             "joint_velocities_rad_s": [0.0] * 9,
+            "contact_valid": True,
             "contact": failure in {"contact", "raw_contact"},
             "raw_contact_count": int(failure in {"contact", "raw_contact"}),
+            "contact_provenance": _contact_provenance(
+                trial_id=self.trial_id,
+                scene_id=self.scene_id,
+                action_index=action_index,
+                requested_vector_m=list(requested_vector_m),
+                phase=phase,
+                in_contact=failure in {"contact", "raw_contact"},
+            ),
             "collision": failure == "collision",
             "penetration_m": 0.0,
             "penetration_provenance_valid": failure != "invalid_penetration",
@@ -567,6 +701,7 @@ def _run_readiness_plan(runner, *, fail_readiness_as: str | None = None):
         scene = _ReadinessTrackingScene(
             scene_id=spec["scene_id"],
             command_magnitude_m=spec["command_magnitude_m"],
+            trial_id=spec["trial_id"],
             fail_readiness_as=fail_readiness_as,
         )
         scenes.append(scene)
@@ -709,6 +844,30 @@ def test_any_unsafe_readiness_sample_is_systemic_and_prevents_measurement(
     assert scenes[0].readiness_calls == 6
     assert scenes[0].measurement_calls == 0
     assert result["post_abort_actuation_count"] == int(failure_kind == "post_abort")
+    if failure_kind == "contact":
+        assert failed["failure_code"] == "G1_C1_READINESS_CONTACT"
+        assert failed.get("failure_message") == "readiness sample contains contact"
+        offender = failed["readiness_samples"][-1]
+        assert offender["action_index"] == 5
+        assert offender["contact"] is True
+        assert offender["raw_contact_count"] == 1
+        assert offender.get("contact_provenance") == _contact_provenance(
+            trial_id=failed["trial_id"],
+            scene_id=failed["scene_id"],
+            action_index=5,
+            requested_vector_m=[0.0, 0.0, 0.0],
+            phase="readiness",
+            in_contact=True,
+        )
+        assert sum(
+            sample.get("contact_provenance") == offender["contact_provenance"]
+            for sample in failed["readiness_samples"]
+        ) == 1
+        assert failed.get("candidate_eligible") is False
+        assert failed.get("cap_eligible_measurement_sample_count") == 0
+        assert len(failed["readiness_samples"]) == 6
+        assert len(failed["samples"]) == 0
+        assert not any(scene.measurement_calls for scene in scenes)
 
 
 def test_every_fresh_scene_builds_distinct_target_latch_provenance() -> None:
@@ -795,6 +954,7 @@ def test_tracking_runner_stops_failed_trial_retains_it_and_never_actuates_after_
         scene = _FakeTrackingScene(
             scene_id=spec["scene_id"],
             command_magnitude_m=spec["command_magnitude_m"],
+            trial_id=spec["trial_id"],
             contact_at=5 if fail and failure_kind == "contact" else None,
             safety_at=5 if fail and failure_kind == "safety" else None,
         )
@@ -814,6 +974,28 @@ def test_tracking_runner_stops_failed_trial_retains_it_and_never_actuates_after_
     failed_scene = next(scene for scene in scenes if scene.scene_id == failed["scene_id"])
     assert failed_scene.calls == 6
     assert failed_scene.closed is True
+    if failure_kind == "contact":
+        assert failed.get("failure_message") == "measurement sample contains contact"
+        offender = failed["samples"][-1]
+        assert offender["action_index"] == 5
+        assert offender["contact"] is True
+        assert offender["raw_contact_count"] == 1
+        assert offender.get("contact_provenance") == _contact_provenance(
+            trial_id=failed["trial_id"],
+            scene_id=failed["scene_id"],
+            action_index=5,
+            requested_vector_m=list(offender["requested_vector_m"]),
+            in_contact=True,
+        )
+        assert sum(
+            sample.get("contact_provenance") == offender["contact_provenance"]
+            for sample in failed["samples"]
+        ) == 1
+        assert failed.get("candidate_eligible") is False
+        assert failed.get("retained_rejection") is True
+        assert failed.get("cap_eligible_measurement_sample_count") == 5
+        assert len(failed["samples"]) == 6
+        assert failed["post_abort_actuation_count"] == 0
 
 
 def test_tracking_runner_writes_immutable_preliminary_evidence_without_config_mutation(
@@ -1183,6 +1365,16 @@ def test_c1_runtime_failure_writes_evidence_before_shutdown(
     )
 
     runner, orchestrate = _tracking_lifecycle()
+    accumulator_type = getattr(runtime_api, "G1TrackingRunAccumulator", None)
+    assert isinstance(accumulator_type, type), (
+        "C1 lifecycle missing run-owned retained-prefix authority"
+    )
+    writer_parameters = inspect.signature(
+        runner.write_g1_pose_conditioned_tracking_evidence
+    ).parameters
+    assert "run_snapshot" in writer_parameters
+    assert "trials" not in writer_parameters
+    assert "run_result" not in writer_parameters
     zero_request = [0.0, 0.0, 0.0]
     nonzero_request = [0.00012, -0.00016, 0.00021]
     zero_sample = _real_pose_scene_sample(runner, zero_request)
@@ -2548,8 +2740,178 @@ def test_rejected_candidate_retained_gains_enter_global_terms_but_incomplete_gro
 
 
 def test_rejected_candidate_stop_tail_does_not_invalidate_complete_lower_candidate() -> None:
+    accumulator_type = getattr(runtime_api, "G1TrackingRunAccumulator", None)
+    assert isinstance(accumulator_type, type), (
+        "C1 runtime missing the approved run-owned partial-state accumulator"
+    )
+    plan = runtime_api.build_g1_multiclass_tracking_plan(seed=20260712)
+    accumulator = accumulator_type.from_validated_plan(plan)
+    initial_snapshot = accumulator.snapshot()
+    assert set(initial_snapshot) == {
+        "schema_version",
+        "plan_identity",
+        "trials",
+        "active_trial_index",
+        "failure",
+        "stopped_after_command_m",
+        "skipped_remaining_classes",
+        "skipped_remaining_scenes",
+        "skipped_higher_commands",
+        "systemic_failure",
+        "systemic_failure_code",
+        "systemic_failure_message",
+        "selected_command_cap_m",
+        "actual_counts",
+        "post_abort_actuation_count",
+    }
+    assert initial_snapshot["schema_version"] == "g1.pose_conditioned.partial_run.v1"
+    assert initial_snapshot["plan_identity"]["plan_schema_version"] == (
+        "g1.pose_conditioned.multiclass_plan.v1"
+    )
+    assert initial_snapshot["plan_identity"]["commands_m"] == [
+        0.0,
+        0.00025,
+        0.00035,
+        0.00040,
+        0.00045,
+    ]
+    assert initial_snapshot["plan_identity"]["class_ids"] == list(
+        TRAJECTORY_CLASS_IDS
+    )
+    assert len(initial_snapshot["plan_identity"]["trial_ids"]) == 90
+    assert initial_snapshot["actual_counts"] == {
+        "trials_started": 0,
+        "trials_complete": 0,
+        "readiness_samples": 0,
+        "measurement_samples": 0,
+        "cap_eligible_measurement_samples": 0,
+    }
+
+    lower_spec = next(
+        spec
+        for spec in plan["trials"]
+        if spec["command_m"] == 0.00025
+        and spec["class_id"] == TRAJECTORY_CLASS_IDS[0]
+        and spec["scene_index"] == 0
+    )
+    accumulator.begin_trial(lower_spec)
+    lower_sample = {
+        "trial_id": lower_spec["trial_id"],
+        "class_id": lower_spec["class_id"],
+        "scene_id": lower_spec["scene_id"],
+        "scene_index": lower_spec["scene_index"],
+        "action_index": 0,
+        "window_index": 0,
+        "requested_vector_m": [0.0, 0.0, -0.00025],
+        "observed_displacement_vector_m": [0.0, 0.0, -0.00010],
+        "contact_provenance": _contact_provenance(
+            trial_id=lower_spec["trial_id"],
+            scene_id=lower_spec["scene_id"],
+            action_index=0,
+            requested_vector_m=[0.0, 0.0, -0.00025],
+            class_id=lower_spec["class_id"],
+            scene_index=lower_spec["scene_index"],
+        ),
+        "qualification_eligible": True,
+        "post_abort_actuation_count": 0,
+        "force_vector_valid": False,
+        "wrench_valid": False,
+        "raw_impulse_used_as_force": False,
+    }
+    accumulator.append_sample(phase="measurement", sample=lower_sample)
+    accumulator.finalize_active_trial(
+        {
+            "complete": True,
+            "candidate_eligible": True,
+            "cap_eligible_measurement_sample_count": 1,
+            "post_abort_actuation_count": 0,
+        },
+        trial_state="COMPLETE",
+    )
+
+    failing_spec = next(
+        spec
+        for spec in plan["trials"]
+        if spec["command_m"] == 0.00035
+        and spec["class_id"] == TRAJECTORY_CLASS_IDS[0]
+        and spec["scene_index"] == 0
+    )
+    accumulator.begin_trial(failing_spec)
+    contact_sample = {
+        **lower_sample,
+        "trial_id": failing_spec["trial_id"],
+        "scene_id": failing_spec["scene_id"],
+        "requested_vector_m": [0.0, 0.0, -0.00035],
+        "observed_displacement_vector_m": [0.0, 0.0, -0.00020],
+        "contact": True,
+        "raw_contact_count": 1,
+        "contact_provenance": _contact_provenance(
+            trial_id=failing_spec["trial_id"],
+            scene_id=failing_spec["scene_id"],
+            action_index=0,
+            requested_vector_m=[0.0, 0.0, -0.00035],
+            in_contact=True,
+            class_id=failing_spec["class_id"],
+            scene_index=failing_spec["scene_index"],
+        ),
+        "qualification_eligible": False,
+    }
+    accumulator.append_sample(phase="measurement", sample=contact_sample)
+    accumulator.fail_active_trial(
+        code="G1_C1_CANDIDATE_CONTACT",
+        message="measurement sample contains contact",
+        trial_state="RETAINED_REJECTION",
+        retained_rejection=True,
+    )
+    accumulator.apply_stop_tail(
+        stopped_after_command_m=0.00035,
+        skipped_remaining_classes=TRAJECTORY_CLASS_IDS[1:],
+        skipped_remaining_scenes=(1, 2),
+        skipped_higher_commands=(0.00040, 0.00045),
+    )
+    snapshot = accumulator.snapshot()
+    assert snapshot["active_trial_index"] is None
+    assert snapshot["actual_counts"] == {
+        "trials_started": 2,
+        "trials_complete": 1,
+        "readiness_samples": 0,
+        "measurement_samples": 2,
+        "cap_eligible_measurement_samples": 1,
+    }
+    assert snapshot["failure"]["code"] == "G1_C1_CANDIDATE_CONTACT"
+    assert snapshot["failure"]["phase"] == "measurement"
+    assert snapshot["failure"]["sample_index"] == 0
+    assert snapshot["failure"]["sample"] == contact_sample
+    assert snapshot["trials"][-1]["measurement_samples"] == [contact_sample]
+    assert snapshot["trials"][-1]["trial_state"] == "RETAINED_REJECTION"
+    assert snapshot["skipped_remaining_classes"] == list(
+        TRAJECTORY_CLASS_IDS[1:]
+    )
+    assert snapshot["skipped_remaining_scenes"] == [1, 2]
+    assert snapshot["skipped_higher_commands"] == [0.00040, 0.00045]
+    assert snapshot["post_abort_actuation_count"] == 0
+    detached = accumulator.snapshot()
+    detached["trials"][-1]["measurement_samples"][0]["contact"] = False
+    assert accumulator.snapshot() == snapshot
+    assert json.dumps(snapshot, sort_keys=True) == json.dumps(
+        accumulator.snapshot(),
+        sort_keys=True,
+    )
+
     aggregate = _capability("aggregate_g1_multiclass_tracking_envelope")
     rows = _multiclass_summary_fixture()
+    failure_provenance = {
+        "trial_id": failing_spec["trial_id"],
+        "class_id": failing_spec["class_id"],
+        "scene_id": failing_spec["scene_id"],
+        "scene_index": 0,
+        "phase": "measurement",
+        "action_index": 0,
+        "window_index": 0,
+        "requested_vector_m": [0.0, 0.0, -0.00035],
+        "observed_displacement_vector_m": [0.0, 0.0, -0.00051],
+        "contact_provenance": contact_sample["contact_provenance"],
+    }
     rows.append(
         {
             "class_id": TRAJECTORY_CLASS_IDS[0],
@@ -2559,12 +2921,14 @@ def test_rejected_candidate_stop_tail_does_not_invalidate_complete_lower_candida
             "complete": False,
             "retained_gains": [1.1],
             "window_maxima": [1.1],
-            "failure_code": "G1_C1_CANDIDATE_SAFETY",
+            "failure_code": "G1_C1_CANDIDATE_CONTACT",
+            "failure_message": "measurement sample contains contact",
             "failure_action_index": 0,
             "failure_window_index": 0,
             "requested_m": 0.00035,
             "observed_m": 0.00051,
             "failure_detail": "retained sample exceeded the exact hard limit",
+            "failure_provenance": failure_provenance,
             "retained_rejection": True,
             "skipped_remaining_classes": list(TRAJECTORY_CLASS_IDS[1:]),
             "skipped_remaining_scenes": [1, 2],
@@ -2584,6 +2948,9 @@ def test_rejected_candidate_stop_tail_does_not_invalidate_complete_lower_candida
     assert result["candidate_decisions"]["0.00025000"]["eligible"] is True
     assert result["candidate_decisions"]["0.00035000"]["eligible"] is False
     assert result["selected_command_cap_m"] == 0.00025
+    assert result["candidate_decisions"]["0.00035000"]["failure_provenance"] == (
+        failure_provenance
+    )
     message = result["candidate_decisions"]["0.00035000"]["message"]
     assert "action=0; window=0" in message
     assert "requested_m=0.00035; observed_m=0.00051" in message
@@ -2693,6 +3060,11 @@ def test_unexplained_multiclass_incompleteness_is_systemic(mutation: str) -> Non
 def test_higher_commands_are_skipped_after_first_retained_candidate_failure() -> None:
     plan = _capability("build_g1_multiclass_tracking_plan")(seed=20260712)
     execute = _capability("run_g1_multiclass_tracking_plan")
+    accumulator_type = getattr(runtime_api, "G1TrackingRunAccumulator", None)
+    assert isinstance(accumulator_type, type), (
+        "C1 runtime missing the approved run-owned partial-state accumulator"
+    )
+    accumulator = accumulator_type.from_validated_plan(plan)
     calls: list[tuple[float, str, int]] = []
 
     def retained_result(spec: dict[str, Any]) -> dict[str, Any]:
@@ -2714,17 +3086,47 @@ def test_higher_commands_are_skipped_after_first_retained_candidate_failure() ->
             "retained_gains": [0.0],
             "window_maxima": [0.0],
             "governor_activated": False,
-            "failure_code": "G1_C1_CANDIDATE_SAFETY",
+            "failure_code": "G1_C1_CANDIDATE_CONTACT",
+            "failure_message": "measurement sample contains contact",
             "failure_action_index": 0,
             "failure_window_index": 0,
             "requested_m": 0.00025,
             "observed_m": 0.0,
-            "failure_detail": "retained first-candidate sample",
+            "failure_detail": "measurement sample contains contact",
+            "measurement_samples": [
+                {
+                    "trial_id": spec["trial_id"],
+                    "class_id": spec["class_id"],
+                    "scene_id": spec["scene_id"],
+                    "scene_index": spec["scene_index"],
+                    "action_index": 0,
+                    "window_index": 0,
+                    "requested_vector_m": [0.0, 0.0, -0.00025],
+                    "observed_displacement_vector_m": [0.0, 0.0, 0.0],
+                    "contact": True,
+                    "raw_contact_count": 1,
+                    "contact_provenance": _contact_provenance(
+                        trial_id=spec["trial_id"],
+                        scene_id=spec["scene_id"],
+                        action_index=0,
+                        requested_vector_m=[0.0, 0.0, -0.00025],
+                        in_contact=True,
+                        class_id=spec["class_id"],
+                        scene_index=spec["scene_index"],
+                    ),
+                    "qualification_eligible": False,
+                    "post_abort_actuation_count": 0,
+                    "force_vector_valid": False,
+                    "wrench_valid": False,
+                    "raw_impulse_used_as_force": False,
+                }
+            ],
         }
 
     result = execute(
         plan,
         trial_runner=retained_result,
+        accumulator=accumulator,
     )
 
     assert result["skipped_remaining_scenes"] == [1, 2]
@@ -2737,6 +3139,14 @@ def test_higher_commands_are_skipped_after_first_retained_candidate_failure() ->
     assert retained_rejection["skipped_remaining_classes"] == list(
         TRAJECTORY_CLASS_IDS[1:]
     )
+    snapshot = result.get("run_snapshot")
+    assert isinstance(snapshot, dict), "multiclass runner must expose its detached snapshot"
+    assert snapshot == accumulator.snapshot()
+    assert snapshot["failure"]["code"] == "G1_C1_CANDIDATE_CONTACT"
+    assert snapshot["failure"]["sample"] == retained_rejection["measurement_samples"][0]
+    assert snapshot["actual_counts"]["measurement_samples"] == 1
+    assert snapshot["actual_counts"]["cap_eligible_measurement_samples"] == 0
+    assert snapshot["post_abort_actuation_count"] == 0
     accepted = runtime_api.aggregate_g1_multiclass_tracking_envelope(
         result["trials"],
         observed_hard_limit_m=0.0005,
@@ -2939,10 +3349,36 @@ def test_c1_nonzero_path_invokes_shared_qualifying_kernel_with_observed_state(
             scene.runtime = runtime
             scene.contact_sensor = SimpleNamespace(
                 read=lambda _index: SimpleNamespace(
+                    is_valid=True,
                     in_contact=False,
+                    force_magnitude=0.0,
+                    time=65.0,
+                    read_sequence_index=64,
                     raw_contacts=[],
                 )
             )
+            scene.contact_authority = {
+                "sensor_prim_path": "/World/PressButton/Button/contact_sensor",
+                "sensor_prim_type": "IsaacContactSensor",
+                "sensor_rigid_body_prim_path": "/World/PressButton/Button",
+                "sensor_rigid_body_source": (
+                    "nearest_ancestor_with_usdphysics_rigid_body_api"
+                ),
+                "sensor_prim_authority_source": (
+                    "usd_stage_after_contact_sensor_authoring_before_evidence_read"
+                ),
+                "rigid_body_authority_source": "usd_stage_before_evidence_read",
+                "contact_report_api_prim_paths": [
+                    "/World/PressButton/Button"
+                ],
+                "contact_report_api_verified": True,
+                "contact_report_api_authority_source": (
+                    "usd_stage_before_evidence_read"
+                ),
+            }
+            scene.contact_previous_sensor_time_s = 64.0
+            scene.contact_previous_observed_physics_step = 192
+            scene.read_observed_physics_step = lambda: 195
             scene.collision_monitor = SimpleNamespace(
                 read=lambda: {
                     "valid": True,
@@ -3014,6 +3450,117 @@ def test_c1_nonzero_path_invokes_shared_qualifying_kernel_with_observed_state(
             0.0,
             0.0,
         ]
+        expected_contact = _contact_provenance(
+            trial_id=trial_id,
+            scene_id=spec["scene_id"],
+            action_index=0,
+            requested_vector_m=requested_vector,
+            candidate_id=selected["candidate_id"],
+            class_id=spec["class_id"],
+            scene_index=spec["scene_index"],
+        )
+        assert sample.get("contact_provenance") == expected_contact, (
+            "real C1 sample must carry the exact normalized Contact envelope"
+        )
+        assert sample["contact_valid"] is expected_contact["reading"]["contact_valid"]
+        assert sample["contact"] is expected_contact["reading"]["in_contact"]
+        assert sample["raw_contact_count"] == expected_contact["raw_contact_count"]
+        assert sample["force_vector_valid"] is expected_contact["force_vector_valid"]
+        assert sample["wrench_valid"] is expected_contact["wrench_valid"]
+        assert (
+            sample["raw_impulse_used_as_force"]
+            is expected_contact["raw_impulse_used_as_force"]
+        )
+        json.dumps(sample["contact_provenance"])
+        runner._validate_pose_conditioned_sample(
+            sample,
+            phase="measurement",
+            requested_vector_m=requested_vector,
+            trial_id=trial_id,
+        )
+
+        invalid_contact_cases = (
+            ("missing", lambda value: value.pop("contact_provenance")),
+            (
+                "wrong-version",
+                lambda value: value["contact_provenance"].update(
+                    {"schema_version": "g1.contact.provenance.v0"}
+                ),
+            ),
+            (
+                "mirror-mismatch",
+                lambda value: value.update({"raw_contact_count": 1}),
+            ),
+            (
+                "invalid-reading",
+                lambda value: value["contact_provenance"]["reading"].update(
+                    {"contact_valid": False}
+                ),
+            ),
+            (
+                "stale",
+                lambda value: value["contact_provenance"]["freshness"].update(
+                    {
+                        "valid": False,
+                        "sensor_time_monotonic": False,
+                        "blockers": [
+                            {
+                                "code": "CONTACT_SENSOR_TIME_INVALID",
+                                "message": "sensor time did not advance strictly",
+                            }
+                        ],
+                    }
+                ),
+            ),
+        )
+        for label, mutate in invalid_contact_cases:
+            invalid_contact = json.loads(json.dumps(sample))
+            mutate(invalid_contact)
+            with pytest.raises(runner.G1ValidationError) as invalid:
+                runner._validate_pose_conditioned_sample(
+                    invalid_contact,
+                    phase="measurement",
+                    requested_vector_m=requested_vector,
+                    trial_id=trial_id,
+                )
+            assert invalid.value.code == "G1_C1_CONTACT_PROVENANCE_INVALID", label
+            assert str(invalid.value) == (
+                "measurement sample Contact provenance is invalid"
+            )
+
+        positive_contact = json.loads(json.dumps(sample))
+        positive_record = _contact_provenance(
+            trial_id=trial_id,
+            scene_id=spec["scene_id"],
+            action_index=0,
+            requested_vector_m=requested_vector,
+            in_contact=True,
+            candidate_id=selected["candidate_id"],
+            class_id=spec["class_id"],
+            scene_index=spec["scene_index"],
+        )
+        positive_contact.update(
+            {
+                "contact": True,
+                "raw_contact_count": 1,
+                "contact_provenance": positive_record,
+            }
+        )
+        with pytest.raises(runner.G1ValidationError) as contact_failure:
+            runner._validate_pose_conditioned_sample(
+                positive_contact,
+                phase="measurement",
+                requested_vector_m=requested_vector,
+                trial_id=trial_id,
+            )
+        assert contact_failure.value.code == "G1_C1_CANDIDATE_CONTACT"
+        assert str(contact_failure.value) == "measurement sample contains contact"
+        assert positive_record["raw_contacts"][0]["impulse_n_s"] == [
+            0.0,
+            0.0,
+            0.001,
+        ]
+        assert positive_record["raw_impulse_used_as_force"] is False
         assert sent_targets == accepted_targets
         assert len(sent_targets) == 1
         assert abort_reasons == []

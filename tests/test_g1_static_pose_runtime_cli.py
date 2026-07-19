@@ -170,10 +170,111 @@ def _assert_checksum_file(output: Path) -> None:
         assert hashlib.sha256(artifact.read_bytes()).hexdigest() == expected
 
 
+def _c2a_contact_provenance(
+    candidate_id: str,
+    action_index: int,
+    *,
+    in_contact: bool = False,
+) -> dict[str, Any]:
+    observed_physics_step = 3 * (action_index + 1)
+    raw_contacts = (
+        [
+            {
+                "raw_index": 0,
+                "source_schema": (
+                    "isaacsim.sensors.experimental.physics.get_raw_data.v1"
+                ),
+                "body0_id": 123,
+                "body1_id": 456,
+                "body0_prim_path": "/World/FR3/fr3_hand",
+                "body1_prim_path": "/World/PressButton/Button",
+                "body0_rigid_body_prim_path": "/World/FR3/fr3_hand",
+                "body1_rigid_body_prim_path": "/World/PressButton/Button",
+                "body0_contact_report_api": True,
+                "body1_contact_report_api": True,
+                "position_m": [0.55, 0.0, 0.47],
+                "normal": [0.0, 0.0, 1.0],
+                "impulse_n_s": [0.0, 0.0, 0.001],
+                "time_s": float(action_index + 1),
+                "dt_s": 1.0 / 60.0,
+            }
+        ]
+        if in_contact
+        else []
+    )
+    return {
+        "schema_version": "g1.contact.provenance.v1",
+        "execution": {
+            "consumer": "c2a",
+            "trial_id": None,
+            "candidate_id": candidate_id,
+            "class_id": None,
+            "scene_id": f"{candidate_id}-static-0",
+            "scene_index": 0,
+            "phase": "c2a_readiness",
+            "action_index": action_index,
+            "window_index": None,
+            "requested_vector_m": [0.0, 0.0, 0.0],
+        },
+        "sensor": {
+            "sensor_prim_path": "/World/PressButton/Button/contact_sensor",
+            "sensor_prim_type": "IsaacContactSensor",
+            "sensor_rigid_body_prim_path": "/World/PressButton/Button",
+            "sensor_rigid_body_source": (
+                "nearest_ancestor_with_usdphysics_rigid_body_api"
+            ),
+            "sensor_prim_authority_source": (
+                "usd_stage_after_contact_sensor_authoring_before_evidence_read"
+            ),
+            "rigid_body_authority_source": "usd_stage_before_evidence_read",
+            "contact_report_api_prim_paths": [
+                "/World/FR3/fr3_hand",
+                "/World/PressButton/Button",
+            ]
+            if in_contact
+            else ["/World/PressButton/Button"],
+            "contact_report_api_verified": True,
+            "contact_report_api_authority_source": (
+                "usd_stage_before_evidence_read"
+            ),
+        },
+        "reading": {
+            "contact_valid": True,
+            "in_contact": in_contact,
+            "force_magnitude_n": 0.0,
+            "sensor_time_s": float(action_index + 1),
+            "read_sequence_index": action_index,
+            "observed_physics_step": observed_physics_step,
+            "observed_physics_step_source": (
+                "isaacsim.core.simulation_manager.get_num_physics_steps"
+            ),
+        },
+        "freshness": {
+            "valid": True,
+            "expected_read_sequence_index": action_index,
+            "previous_sensor_time_s": (
+                None if action_index == 0 else float(action_index)
+            ),
+            "sensor_time_monotonic": True,
+            "previous_observed_physics_step": observed_physics_step - 3,
+            "expected_physics_step_delta": 3,
+            "observed_physics_step_delta": 3,
+            "physics_step_relation_valid": True,
+            "blockers": [],
+        },
+        "raw_contact_count": len(raw_contacts),
+        "raw_contacts": raw_contacts,
+        "provenance": {"valid": True, "blockers": []},
+        "force_vector_valid": False,
+        "wrench_valid": False,
+        "raw_impulse_used_as_force": False,
+    }
+
+
 def _real_sample(candidate_id: str, action_index: int) -> dict[str, Any]:
     target = [0.1] * 7 + [0.02, 0.02]
     return {
-        "schema_version": "g1.c2a.static.v1",
+        "schema_version": "g1.c2a.static.v2",
         "candidate_id": candidate_id,
         "seed": 1701,
         "readiness_action_index": action_index,
@@ -185,6 +286,10 @@ def _real_sample(candidate_id: str, action_index: int) -> dict[str, Any]:
         "contact_valid": True,
         "contact": False,
         "raw_contact_count": 0,
+        "contact_provenance": _c2a_contact_provenance(
+            candidate_id,
+            action_index,
+        ),
         "collision_report_valid": True,
         "collision": False,
         "penetration_m": 0.0,
@@ -656,7 +761,101 @@ def test_c2a_real_runtime_executes_only_64_immutable_zero_actions_with_three_sub
 def test_c2a_real_readiness_requires_complete_sensor_collision_button_state_and_force_truth() -> None:
     validate = _capability(_runner(), "validate_real_c2a_readiness_sample")
     sample = _real_sample(CANDIDATES[0][0], 0)
-    assert validate(sample)["real_runtime_truth"] is True
+    historical_v1 = dict(sample)
+    historical_v1["schema_version"] = "g1.c2a.static.v1"
+    historical_v1.pop("contact_provenance")
+    with pytest.raises(G1ValidationError) as historical:
+        validate(historical_v1)
+    assert historical.value.code == "G1_C2A_CONTACT_PROVENANCE_INVALID"
+
+    validated = validate(sample)
+    assert validated["real_runtime_truth"] is True
+    assert validated["schema_version"] == "g1.c2a.static.v2"
+    contact = validated.get("contact_provenance")
+    assert isinstance(contact, dict), "C2a v2 sample missing shared Contact envelope"
+    assert contact["schema_version"] == "g1.contact.provenance.v1"
+    assert contact["execution"]["consumer"] == "c2a"
+    assert contact["execution"]["phase"] == "c2a_readiness"
+    assert contact["reading"]["read_sequence_index"] == 0
+    assert contact["reading"]["observed_physics_step"] == 3
+    assert contact["freshness"]["observed_physics_step_delta"] == 3
+    assert contact["freshness"]["valid"] is True
+    assert contact["provenance"] == {"valid": True, "blockers": []}
+    assert validated["contact_valid"] is contact["reading"]["contact_valid"]
+    assert validated["contact"] is contact["reading"]["in_contact"]
+    assert validated["raw_contact_count"] == contact["raw_contact_count"]
+    assert validated["force_vector_valid"] is contact["force_vector_valid"] is False
+    assert validated["wrench_valid"] is contact["wrench_valid"] is False
+    assert (
+        validated["raw_impulse_used_as_force"]
+        is contact["raw_impulse_used_as_force"]
+        is False
+    )
+    json.dumps(contact)
+
+    contact_positive = json.loads(json.dumps(sample))
+    positive_record = _c2a_contact_provenance(
+        CANDIDATES[0][0],
+        0,
+        in_contact=True,
+    )
+    contact_positive.update(
+        {
+            "contact": True,
+            "raw_contact_count": 1,
+            "contact_provenance": positive_record,
+        }
+    )
+    with pytest.raises(G1ValidationError) as positive:
+        validate(contact_positive)
+    assert positive.value.code == "G1_C2A_CONTACT"
+    assert str(positive.value) == "C2a readiness sample contains contact"
+    assert positive_record["raw_contacts"][0]["impulse_n_s"] == [0.0, 0.0, 0.001]
+    assert positive_record["raw_impulse_used_as_force"] is False
+
+    invalid_cases = (
+        ("missing", lambda record: record.pop("contact_provenance")),
+        (
+            "wrong-version",
+            lambda record: record["contact_provenance"].update(
+                {"schema_version": "g1.contact.provenance.v0"}
+            ),
+        ),
+        (
+            "mirror-mismatch",
+            lambda record: record.update({"raw_contact_count": 1}),
+        ),
+        (
+            "invalid-reading",
+            lambda record: record["contact_provenance"]["reading"].update(
+                {"contact_valid": False}
+            ),
+        ),
+        (
+            "stale",
+            lambda record: record["contact_provenance"]["freshness"].update(
+                {
+                    "valid": False,
+                    "physics_step_relation_valid": False,
+                    "observed_physics_step_delta": 2,
+                    "blockers": [
+                        {
+                            "code": "CONTACT_PHYSICS_STEP_INVALID",
+                            "message": "observed physics-step delta is not exactly 3",
+                        }
+                    ],
+                }
+            ),
+        ),
+    )
+    for label, mutate in invalid_cases:
+        broken = json.loads(json.dumps(sample))
+        mutate(broken)
+        with pytest.raises(G1ValidationError) as invalid:
+            validate(broken)
+        assert invalid.value.code == "G1_C2A_CONTACT_PROVENANCE_INVALID", label
+        assert str(invalid.value) == "C2a readiness Contact provenance is invalid"
+
     for field in (
         "contact_valid", "contact", "raw_contact_count", "collision_report_valid", "collision",
         "penetration_m", "penetration_limit_m", "penetration_provenance_valid", "button_released", "button_reset",
