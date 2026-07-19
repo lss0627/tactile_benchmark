@@ -2069,8 +2069,21 @@ def test_c2a_real_runtime_module_exposes_import_safe_factory_and_scene() -> None
 
 def test_c2a_real_factory_exposes_reference_lula_and_fresh_static_scene_methods() -> None:
     factory = _real_runtime_module().C2ARealSceneFactory
-    for name in ("build_reference_scene", "build_offline_candidates", "create_static_scene", "close"):
+    for name in (
+        "build_reference_scene",
+        "build_offline_candidates",
+        "configure_option_d_route_bundles",
+        "create_static_scene",
+        "close",
+    ):
         assert callable(getattr(factory, name, None)), f"T144 real factory missing method: {name}"
+    instance = factory.__new__(factory)
+    route_bundles = {
+        candidate_id: {"candidate_id": candidate_id}
+        for candidate_id, _position in CANDIDATES
+    }
+    instance.configure_option_d_route_bundles(route_bundles)
+    assert instance.option_d_route_bundles == route_bundles
 
 
 def test_c2a_real_scene_source_has_only_zero_readiness_and_lazy_isaac_imports() -> None:
