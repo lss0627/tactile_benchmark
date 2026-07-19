@@ -1156,6 +1156,9 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
             "swept_clearance_receipts": [
                 {
                     "safe": False,
+                    "phase_policy": "c2a_no_contact",
+                    "claim_eligible": True,
+                    "lifecycle_record_sha256": "b" * 64,
                     "closest_pair": {
                         "subject": "/World/FR3/Collider",
                         "obstacle": "/World/Button",
