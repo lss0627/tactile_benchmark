@@ -262,16 +262,15 @@ def orchestrate_backend_provenance(
         result = dict(factory.acquire_backend_shape_provenance())
         exit_code = 0
     except BaseException as error:
-        failure_code = str(
-            getattr(
-                error,
-                "code",
-                "G1_BACKEND_SHAPE_PROVENANCE_RUNTIME_FAILED",
+        structured_code = getattr(error, "code", None)
+        if structured_code is None:
+            failure_code = "G1_BACKEND_SHAPE_PROVENANCE_RUNTIME_FAILED"
+            failure_message = f"{type(error).__name__}: {error}"
+        else:
+            failure_code = str(structured_code)
+            failure_message = str(
+                getattr(error, "message", str(error))
             )
-        )
-        failure_message = str(
-            getattr(error, "message", str(error))
-        )
         snapshot = getattr(
             error,
             "backend_provenance_snapshot",
@@ -305,44 +304,44 @@ def orchestrate_backend_provenance(
         }
         exit_code = 1
     finally:
-        if factory is not None:
-            try:
-                evidence_finished_at = _utc_now()
-                report = evidence_writer(
-                    output=output,
-                    repository_commit=repository_commit,
-                    command=command,
-                    snapshot=result.get("snapshot", {}),
-                    lifecycle_records=result.get(
-                        "lifecycle_records",
-                        (),
-                    ),
-                    lifecycle_close_records=result.get(
-                        "lifecycle_close_records",
-                        (),
-                    ),
-                    lifecycle_audit=result.get(
-                        "lifecycle_audit",
-                        {},
-                    ),
-                    runtime_metadata=getattr(
-                        factory,
-                        "runtime_metadata",
-                        {},
-                    ),
-                    process_started_at=process_started_at,
-                    evidence_finished_at=evidence_finished_at,
-                    shutdown_exit_code=exit_code,
-                    failure_code=failure_code,
-                    failure_message=failure_message,
-                )
-            except BaseException as writer_error:
-                exit_code = 1
-                failure_code = (
-                    "G1_BACKEND_SHAPE_PROVENANCE_EVIDENCE_WRITE_FAILED"
-                )
-                failure_message = str(writer_error)
-            finally:
+        try:
+            evidence_finished_at = _utc_now()
+            report = evidence_writer(
+                output=output,
+                repository_commit=repository_commit,
+                command=command,
+                snapshot=result.get("snapshot", {}),
+                lifecycle_records=result.get(
+                    "lifecycle_records",
+                    (),
+                ),
+                lifecycle_close_records=result.get(
+                    "lifecycle_close_records",
+                    (),
+                ),
+                lifecycle_audit=result.get(
+                    "lifecycle_audit",
+                    {},
+                ),
+                runtime_metadata=(
+                    getattr(factory, "runtime_metadata", {})
+                    if factory is not None
+                    else {}
+                ),
+                process_started_at=process_started_at,
+                evidence_finished_at=evidence_finished_at,
+                shutdown_exit_code=exit_code,
+                failure_code=failure_code,
+                failure_message=failure_message,
+            )
+        except BaseException as writer_error:
+            exit_code = 1
+            failure_code = (
+                "G1_BACKEND_SHAPE_PROVENANCE_EVIDENCE_WRITE_FAILED"
+            )
+            failure_message = str(writer_error)
+        finally:
+            if factory is not None:
                 factory.close(exit_code=exit_code)
     return {
         "exit_code": exit_code,
