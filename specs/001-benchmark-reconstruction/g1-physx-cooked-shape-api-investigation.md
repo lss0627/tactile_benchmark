@@ -263,4 +263,3 @@ analytic representation hypothesis at source level, and retain explicit
 `UNAVAILABLE` fields for missing backend authority. It must not claim a
 stable backend handle or narrowphase placement, and it must keep the current
 strict geometry agreement result unchanged.
-
