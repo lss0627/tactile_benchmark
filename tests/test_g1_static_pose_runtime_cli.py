@@ -803,6 +803,31 @@ def _assert_option_a_disagreement_contracts(module: Any) -> None:
             "receipt_not_bound_to_current_usd_shape_dimensions"
         )
 
+    stale_geometry_type_record = deepcopy(record)
+    stale_geometry_type_record["geometry_type"] = "Sphere"
+    stale_geometry_type_record["record_sha256"] = module.canonical_sha256(
+        stale_geometry_type_record,
+        exclude_fields=("record_sha256",),
+    )
+    validate(stale_geometry_type_record)
+    with pytest.raises(Exception) as stale_geometry_type_receipt:
+        binding(
+            property_query_record=equivalent_sign_query,
+            usd_geometry={
+                **stale_shape_usd,
+                "geometry_type": "Cube",
+            },
+            disagreement_record=stale_geometry_type_record,
+        )
+    if getattr(
+        stale_geometry_type_receipt.value,
+        "receipt",
+        None,
+    ) is not None:
+        accepted_invalid_records.append(
+            "receipt_not_bound_to_current_usd_geometry_type"
+        )
+
     unsupported_descendant_claim = deepcopy(record)
     unsupported_descendant_claim["mesh_or_primitive_authority"] = (
         "usd_collision_xform_with_descendant_geometry"
