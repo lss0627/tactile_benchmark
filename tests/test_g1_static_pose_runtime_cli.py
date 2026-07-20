@@ -211,7 +211,7 @@ def _option_a_pose(
         ],
     ]
     matrix = [
-        [rotation[row][column] * scale[column] for column in range(3)]
+        [rotation[row][column] for column in range(3)]
         + [translation[row]]
         for row in range(3)
     ]
@@ -535,6 +535,158 @@ def _assert_option_a_disagreement_contracts(module: Any) -> None:
     invalid_digest["record_sha256"] = "0" * 64
     with pytest.raises(Exception):
         validate(invalid_digest)
+
+    accepted_invalid_records: list[str] = []
+
+    def accepted_after_resigning(
+        label: str,
+        invalid: dict[str, Any],
+    ) -> None:
+        invalid["record_sha256"] = module.canonical_sha256(
+            invalid,
+            exclude_fields=("record_sha256",),
+        )
+        try:
+            validate(invalid)
+        except Exception:
+            return
+        accepted_invalid_records.append(label)
+
+    retained_pose_mismatch = deepcopy(record)
+    retained_pose_mismatch["usd_local_to_rigid_body_pose"][
+        "translation_stage_units"
+    ][0] = 0.01
+    retained_pose_mismatch["usd_local_to_rigid_body_pose"][
+        "translation_m"
+    ][0] = 0.01
+    retained_pose_mismatch["usd_local_to_rigid_body_pose"][
+        "matrix_row_major_4x4"
+    ][0][3] = 0.01
+    accepted_after_resigning(
+        "comparison_pose_not_bound_to_retained_pose",
+        retained_pose_mismatch,
+    )
+
+    matrix_quaternion_mismatch = deepcopy(record)
+    matrix_quaternion_mismatch["usd_world_pose"][
+        "matrix_row_major_4x4"
+    ][:3] = [
+        [0.0, -1.0, 0.0, 0.5],
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.5],
+    ]
+    accepted_after_resigning(
+        "matrix_not_bound_to_quaternion",
+        matrix_quaternion_mismatch,
+    )
+
+    fabricated_dimension_residual = deepcopy(record)
+    fabricated_dimension_residual["shape_dimension_residual"][
+        "aabb_min_residual_m"
+    ][0] = 123.0
+    fabricated_dimension_residual["shape_dimension_residual"][
+        "aabb_min_float32_ulp_distance"
+    ][0] = 123456
+    accepted_after_resigning(
+        "dimension_residual_not_bound_to_usd_dimensions",
+        fabricated_dimension_residual,
+    )
+
+    fabricated_support_radius = deepcopy(record)
+    fabricated_support_radius["query_support_radius_or_bounds"][
+        "support_radius_m"
+    ] = 999.0
+    accepted_after_resigning(
+        "support_radius_not_bound_to_retained_bounds",
+        fabricated_support_radius,
+    )
+
+    fabricated_query_authority = deepcopy(record)
+    fabricated_query_authority["query_api_name"] = "fabricated.api"
+    fabricated_query_authority["query_shape_type"] = "fabricated_shape"
+    fabricated_query_authority[
+        "query_convex_or_mesh_approximation"
+    ] = "fabricated_approximation"
+    fabricated_query_authority["cooked_shape_provenance"][
+        "query_api_name"
+    ] = "fabricated.api"
+    fabricated_query_authority["cooked_shape_provenance"][
+        "source_version"
+    ] = "fabricated-version"
+    fabricated_query_authority["cooked_shape_identifier"] = (
+        module.canonical_sha256(
+            {
+                "stage_identifier": fabricated_query_authority[
+                    "stage_identifier"
+                ],
+                "rigid_body_prim_path": fabricated_query_authority[
+                    "rigid_body_prim_path"
+                ],
+                "collider_prim_path": fabricated_query_authority[
+                    "collider_prim_path"
+                ],
+                "query_operation_index": fabricated_query_authority[
+                    "query_operation_index"
+                ],
+                "query_shape_index": fabricated_query_authority[
+                    "query_shape_index"
+                ],
+                "query_local_pose_raw": fabricated_query_authority[
+                    "query_local_pose_raw"
+                ],
+                "query_shape_dimensions": fabricated_query_authority[
+                    "query_shape_dimensions"
+                ],
+            }
+        )
+    )
+    accepted_after_resigning(
+        "unexposed_query_authority_not_exactly_null",
+        fabricated_query_authority,
+    )
+
+    if "usd_shape_dimensions" not in record:
+        accepted_invalid_records.append("usd_shape_dimensions_not_retained")
+
+    binding = getattr(
+        module,
+        "validate_property_query_geometry_binding",
+    )
+    other_query = {
+        "collider_prim_path": "/World/OtherBody/OtherCollider",
+        "property_query_local_aabb_min": [-1.0, -1.0, -1.0],
+        "property_query_local_aabb_max": [1.0, 1.0, 1.0],
+        "property_query_local_position": [0.025, 0.0, 0.0],
+        "property_query_local_rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "property_query_volume": 8.0,
+        "property_query_stage_identifier": 731,
+        "query_operation_index": 0,
+        "query_shape_index": 0,
+    }
+    other_usd = {
+        "body_prim_path": "/World/OtherBody",
+        "collider_prim_path": "/World/OtherBody/OtherCollider",
+        "collider_type": "cube",
+        "approximation": "analytic",
+        "local_transform": _option_d_matrix(),
+        "scale": [1.0, 1.0, 1.0],
+        "shape_parameters": {"size_m": 2.0},
+    }
+    with pytest.raises(Exception) as wrong_receipt:
+        binding(
+            property_query_record=other_query,
+            usd_geometry=other_usd,
+            disagreement_record=record,
+        )
+    if getattr(wrong_receipt.value, "receipt", None) is not None:
+        accepted_invalid_records.append(
+            "disagreement_receipt_not_bound_to_current_collider"
+        )
+
+    assert accepted_invalid_records == [], (
+        "Option A validator accepted unbound diagnostic facts: "
+        f"{accepted_invalid_records}"
+    )
 
     body = "/World/FR3/fr3_rightfinger"
     collider = f"{body}/collisions/mesh_0"
@@ -1699,6 +1851,25 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
     _assert_option_a_disagreement_contracts(option_d)
 
     real_runtime = _real_runtime_module()
+    query_source = inspect.getsource(
+        real_runtime.PhysxResolvedOffsetAdapter._query_colliders
+    )
+    assert "response.stage_id" in query_source
+    factory_source = inspect.getsource(
+        real_runtime.C2ARealSceneFactory.create_static_scene
+    )
+    assert "G1_C2A_GEOMETRY_DISAGREEMENT_RECORD_INVALID" in factory_source
+    tracking_source = (ROOT / "scripts/run_g1_tracking_envelope.py").read_text(
+        encoding="utf-8"
+    )
+    tracking_resolve = tracking_source[
+        tracking_source.index("PhysxResolvedOffsetAdapter(") :
+        tracking_source.index(
+            "self.collision_snapshot = extract_full_robot_collision_snapshot",
+        )
+    ]
+    assert "diagnostic_identity=" in tracking_resolve
+    assert "lifecycle_record=" in tracking_resolve
     tensors = types.ModuleType("omni.physics.tensors")
 
     def require_stage_bound_view(backend_name: str, **kwargs: Any) -> None:
