@@ -2225,16 +2225,22 @@ def validate_geometry_disagreement_record(
     if (
         list(raw_query["translation_stage_units"])
         != query_local_to_body["translation_stage_units"]
-        or _canonical_quaternion_xyzw(
-            raw_query["rotation_xyzw"],
-            "query_local_pose_raw.rotation_xyzw",
-        )
-        != query_local_to_body["rotation_xyzw"]
     ):
         _fail(
             _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
             "raw and composed property-query local poses disagree",
         )
+    _require_composed_pose_agreement(
+        left=_quaternion_rotation_matrix_xyzw(
+            raw_query["rotation_xyzw"],
+            "query_local_pose_raw.rotation_xyzw",
+        ),
+        right=_quaternion_rotation_matrix_xyzw(
+            query_local_to_body["rotation_xyzw"],
+            "query_local_to_rigid_body_pose.rotation_xyzw",
+        ),
+        field="raw and composed property-query local pose",
+    )
     if value["query_shape_type"] is not None:
         _fail(
             _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
