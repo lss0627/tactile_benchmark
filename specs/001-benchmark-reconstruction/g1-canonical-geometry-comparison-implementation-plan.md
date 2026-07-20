@@ -332,10 +332,15 @@ query_operation_index
 query_shape_index
 ```
 
-`record_sha256` is SHA-256 over the complete canonical result excluding only
-`record_sha256`. Binding diagnostics and field diagnostics are therefore
-digest-bound. Canonical JSON uses sorted keys, compact separators, UTF-8,
-`allow_nan=false`, and no residual rounding.
+`record_sha256` is SHA-256 over the immutable comparison facts excluding
+`record_sha256` and the writer-envelope fields
+`evidence_write_started`, `evidence_write_finished`, `shutdown_started` and
+`shutdown_exit_code`. Binding diagnostics, field diagnostics, raw facts,
+residuals, bounds and the agreement decision are digest-bound. Separating the
+writer envelope keeps the decision, exception reference, accumulator snapshot
+and serialized result on one record digest while still recording
+write-before-close state. Canonical JSON uses sorted keys, compact separators,
+UTF-8, `allow_nan=false`, and no residual rounding.
 
 The decision, structured blocker reference, accumulator snapshot, writer and
 manifest all use this same `record_id` and `record_sha256`. No layer creates a
@@ -449,8 +454,9 @@ geometry_disagreement_record_sha256s
 geometry_comparison_accumulator_sha256
 ```
 
-Writer finalization changes only the four writer/shutdown fields, recomputes
-the same record digest, and preserves the record ID. Writer failure uses
+Writer finalization changes only the four writer/shutdown fields, preserves
+the immutable comparison record digest and record ID, and records the envelope
+state in the serialized result. Writer failure uses
 `G1_C2A_EVIDENCE_WRITE_FAILED`, removes claim-valid manifest/checksum files and
 still closes the single SimulationApp with exit 1.
 
@@ -593,4 +599,3 @@ attempt-10 = absent
 driver = 550.144.03 / UNVALIDATED
 REFERENCE_DRIVER_REVALIDATION_REQUIRED
 ```
-

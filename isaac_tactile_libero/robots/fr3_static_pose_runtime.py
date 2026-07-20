@@ -750,6 +750,7 @@ class PhysxResolvedOffsetAdapter:
         physics_policy: Mapping[str, Any],
         diagnostic_identity: Mapping[str, Any] | None = None,
         lifecycle_record: Mapping[str, Any] | None = None,
+        geometry_comparison_accumulator: Any,
     ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
         """Return path-keyed resolved offsets plus independently hashed receipts."""
 
@@ -758,14 +759,24 @@ class PhysxResolvedOffsetAdapter:
         from pxr import Usd, UsdGeom  # type: ignore
 
         from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
-            build_geometry_disagreement_record,
+            GeometryAgreementAccumulator,
+            GeometryAgreementRawInputs,
             bind_backend_shape_offsets_without_slot_guessing,
             canonical_sha256,
-            compare_geometry_poses_same_frame,
+            evaluate_geometry_agreement,
             _declared_local_bounds_and_volume,
             validate_collision_offset_authority_record,
             validate_property_query_geometry_binding,
         )
+
+        if not isinstance(
+            geometry_comparison_accumulator,
+            GeometryAgreementAccumulator,
+        ):
+            _fail(
+                "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+                "offset authority lacks its run-owned geometry accumulator",
+            )
 
         lifecycle_token = str(stage_lifecycle_token)
         if len(lifecycle_token) != 64:
@@ -1063,18 +1074,6 @@ class PhysxResolvedOffsetAdapter:
                         UsdGeom.GetStageMetersPerUnit(stage)
                     ),
                 )
-                comparison = compare_geometry_poses_same_frame(
-                    usd_pose_in_comparison_frame=usd_provenance[
-                        "usd_local_to_rigid_body_pose"
-                    ],
-                    query_pose_in_comparison_frame=query_local_pose,
-                    query_local_rotation_xyzw=query[
-                        "property_query_local_rotation_xyzw"
-                    ],
-                    query_scale=None,
-                    usd_shape_dimensions=usd_dimensions,
-                    query_shape_dimensions=query_dimensions,
-                )
                 support_min = np.asarray(
                     query_dimensions["local_aabb_min_m"],
                     dtype=np.float64,
@@ -1117,32 +1116,103 @@ class PhysxResolvedOffsetAdapter:
                 )
                 identity = dict(diagnostic_identity or {})
                 lifecycle = dict(lifecycle_record or {})
-                disagreement_context = None
-                if not comparison["agreement"]:
-                    required_identity = {
-                        "run_id",
-                        "trial_id",
-                        "candidate_id",
-                        "scene_id",
-                        "scene_index",
-                    }
-                    if (
-                        not required_identity.issubset(identity)
-                        or lifecycle.get(
-                            "stage_lifecycle_token"
-                        )
-                        != lifecycle_token
-                        or not lifecycle.get(
-                            "lifecycle_record_sha256"
-                        )
-                    ):
-                        _fail(
-                            "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
-                            "geometry disagreement diagnostic identity is unavailable",
-                        )
-                    usd_record = dict(usd_provenance)
-                    usd_record.pop("_body_world_matrix")
-                    disagreement_context = build_geometry_disagreement_record(
+                required_identity = {
+                    "run_id",
+                    "trial_id",
+                    "candidate_id",
+                    "scene_id",
+                    "scene_index",
+                }
+                if (
+                    not required_identity.issubset(identity)
+                    or lifecycle.get("stage_lifecycle_token")
+                    != lifecycle_token
+                    or not lifecycle.get(
+                        "lifecycle_record_sha256"
+                    )
+                ):
+                    _fail(
+                        "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+                        "geometry comparison diagnostic identity is unavailable",
+                    )
+                usd_record = dict(usd_provenance)
+                usd_record.pop("_body_world_matrix")
+                usd_record["usd_shape_dimensions"] = usd_dimensions
+                query_record = {
+                    "query_api_name": (
+                        "omni.physx.IPhysxPropertyQuery.query_prim"
+                    ),
+                    "query_backend": "physx",
+                    "query_operation_index": int(
+                        query["query_operation_index"]
+                    ),
+                    "query_property_count": int(
+                        query["query_property_count"]
+                    ),
+                    "query_shape_index": int(
+                        query["query_shape_index"]
+                    ),
+                    "query_local_pose_raw": query_raw,
+                    "query_local_pose_frame": (
+                        "queried_rigid_body_actor"
+                    ),
+                    "query_local_to_rigid_body_pose": query_local_pose,
+                    "query_world_pose": query_world_pose,
+                    "query_shape_type": None,
+                    "query_shape_dimensions": query_dimensions,
+                    "query_scale": None,
+                    "query_convex_or_mesh_approximation": None,
+                    "query_support_radius_or_bounds": {
+                        "local_bounds_min_m": support_min.tolist(),
+                        "local_bounds_max_m": support_max.tolist(),
+                        "support_radius_m": float(
+                            np.max(
+                                np.linalg.norm(
+                                    np.asarray(
+                                        [
+                                            [x, y, z]
+                                            for x in (
+                                                support_min[0],
+                                                support_max[0],
+                                            )
+                                            for y in (
+                                                support_min[1],
+                                                support_max[1],
+                                            )
+                                            for z in (
+                                                support_min[2],
+                                                support_max[2],
+                                            )
+                                        ],
+                                        dtype=np.float64,
+                                    ),
+                                    axis=1,
+                                )
+                            )
+                        ),
+                    },
+                    "cooked_shape_identifier": cooked_identifier,
+                    "cooked_shape_provenance": {
+                        "identifier_kind": (
+                            "canonical_property_query_shape_observation_sha256"
+                        ),
+                        "backend_handle_exposed": False,
+                        "shape_type_exposed": False,
+                        "shape_scale_exposed": False,
+                        "shape_approximation_exposed": False,
+                        "query_api_name": (
+                            "omni.physx.IPhysxPropertyQuery.query_prim"
+                        ),
+                        "query_mode": (
+                            "QUERY_RIGID_BODY_WITH_COLLIDERS"
+                        ),
+                        "source_version": (
+                            "Isaac Sim 6.0.1 / omni.physx 110.1.13"
+                        ),
+                    },
+                }
+                evaluation = evaluate_geometry_agreement(
+                    GeometryAgreementRawInputs(
                         identity={
                             **{
                                 field: identity[field]
@@ -1171,94 +1241,21 @@ class PhysxResolvedOffsetAdapter:
                             ),
                         },
                         usd=usd_record,
-                        query={
-                            "query_api_name": (
-                                "omni.physx.IPhysxPropertyQuery.query_prim"
-                            ),
-                            "query_backend": "physx",
-                            "query_operation_index": int(
-                                query["query_operation_index"]
-                            ),
-                            "query_property_count": int(
-                                query["query_property_count"]
-                            ),
-                            "query_shape_index": int(
-                                query["query_shape_index"]
-                            ),
-                            "query_local_pose_raw": query_raw,
-                            "query_local_pose_frame": (
-                                "queried_rigid_body_actor"
-                            ),
-                            "query_local_to_rigid_body_pose": (
-                                query_local_pose
-                            ),
-                            "query_world_pose": query_world_pose,
-                            "query_shape_type": None,
-                            "query_shape_dimensions": query_dimensions,
-                            "query_scale": None,
-                            "query_convex_or_mesh_approximation": None,
-                            "query_support_radius_or_bounds": {
-                                "local_bounds_min_m": (
-                                    support_min.tolist()
-                                ),
-                                "local_bounds_max_m": (
-                                    support_max.tolist()
-                                ),
-                                "support_radius_m": float(
-                                    np.max(
-                                        np.linalg.norm(
-                                            np.asarray(
-                                                [
-                                                    [x, y, z]
-                                                    for x in (
-                                                        support_min[0],
-                                                        support_max[0],
-                                                    )
-                                                    for y in (
-                                                        support_min[1],
-                                                        support_max[1],
-                                                    )
-                                                    for z in (
-                                                        support_min[2],
-                                                        support_max[2],
-                                                    )
-                                                ],
-                                                dtype=np.float64,
-                                            ),
-                                            axis=1,
-                                        )
-                                    )
-                                ),
-                            },
-                            "cooked_shape_identifier": cooked_identifier,
-                            "cooked_shape_provenance": {
-                                "identifier_kind": (
-                                    "canonical_property_query_shape_observation_sha256"
-                                ),
-                                "backend_handle_exposed": False,
-                                "shape_type_exposed": False,
-                                "shape_scale_exposed": False,
-                                "shape_approximation_exposed": False,
-                                "query_api_name": (
-                                    "omni.physx.IPhysxPropertyQuery.query_prim"
-                                ),
-                                "query_mode": (
-                                    "QUERY_RIGID_BODY_WITH_COLLIDERS"
-                                ),
-                                "source_version": (
-                                    "Isaac Sim 6.0.1 / omni.physx 110.1.13"
-                                ),
-                            },
-                        },
-                        comparison=comparison,
-                    )
-                geometry_agreement = (
-                    validate_property_query_geometry_binding(
-                        property_query_record=query,
+                        query=query_record,
                         usd_geometry=usd_geometry,
-                        disagreement_record=disagreement_context,
+                        property_query_record=query,
                     )
                 )
+                geometry_comparison_accumulator.append(evaluation)
+                try:
+                    geometry_agreement = (
+                        validate_property_query_geometry_binding(
+                            evaluation=evaluation
+                        )
+                    )
+                except Exception:
+                    geometry_comparison_accumulator.seal_partial()
+                    raise
                 contact_value = float(
                     offset_binding["contact_offset_resolved"]
                 )
@@ -2031,10 +2028,14 @@ class C2ARealSceneFactory:
         self.seed = int(seed)
         self.headless = bool(headless)
         from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
+            GeometryAgreementAccumulator,
             SceneLifecycleAuthority,
         )
 
         self.lifecycle_authority = SceneLifecycleAuthority(run_id=str(run_id))
+        self.geometry_comparison_accumulator = (
+            GeometryAgreementAccumulator(run_id=str(run_id))
+        )
         self.lifecycle_records: list[dict[str, Any]] = []
         self.lifecycle_close_records: list[dict[str, Any]] = []
         self.scene_creation_failures: list[dict[str, Any]] = []
@@ -2505,30 +2506,25 @@ class C2ARealSceneFactory:
             return scene
         except Exception as error:
             geometry_disagreement_record = None
-            retained_receipt = getattr(error, "receipt", None)
-            if isinstance(retained_receipt, Mapping):
-                from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
-                    G1FullRobotClearanceError,
-                    validate_geometry_disagreement_record,
-                )
-
-                try:
-                    geometry_disagreement_record = (
-                        validate_geometry_disagreement_record(
-                            retained_receipt
-                        )
+            comparison_snapshot = (
+                self.geometry_comparison_accumulator.snapshot()
+            )
+            record_id = getattr(error, "record_id", None)
+            record_sha256 = getattr(error, "record_sha256", None)
+            for retained_record in comparison_snapshot["records"]:
+                if (
+                    retained_record["record_id"] == record_id
+                    and retained_record["record_sha256"]
+                    == record_sha256
+                ):
+                    geometry_disagreement_record = dict(
+                        retained_record
                     )
-                except Exception as receipt_validation_error:
-                    error = G1FullRobotClearanceError(
-                        "G1_C2A_GEOMETRY_DISAGREEMENT_RECORD_INVALID",
-                        "strict geometry disagreement carried an invalid "
-                        f"retained record: {receipt_validation_error}",
-                    )
-            elif (
+                    break
+            if (
                 str(getattr(error, "code", ""))
                 == "G1_FULL_ROBOT_OFFSET_UNRESOLVED"
-                and str(error)
-                == "property-query local pose differs from USD geometry"
+                and geometry_disagreement_record is None
             ):
                 from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
                     G1FullRobotClearanceError,
@@ -2536,7 +2532,8 @@ class C2ARealSceneFactory:
 
                 error = G1FullRobotClearanceError(
                     "G1_C2A_GEOMETRY_DISAGREEMENT_RECORD_INVALID",
-                    "strict geometry disagreement lacked a complete retained record",
+                    "strict geometry disagreement did not reference an "
+                    "appended canonical evaluation",
                 )
             cleanup_errors: list[dict[str, str]] = []
             if (
@@ -2612,6 +2609,10 @@ class C2ARealSceneFactory:
                     ),
                     "geometry_disagreement_record": (
                         geometry_disagreement_record
+                    ),
+                    "geometry_comparison_record_id": record_id,
+                    "geometry_comparison_record_sha256": (
+                        record_sha256
                     ),
                     "failure_code": str(
                         getattr(
@@ -2797,6 +2798,9 @@ class C2ARealStaticScene:
                 "scene_index": int(self.spec["scene_index"]),
             },
             lifecycle_record=self.lifecycle_record,
+            geometry_comparison_accumulator=(
+                owner.geometry_comparison_accumulator
+            ),
         )
         self.collision_snapshot = extract_full_robot_collision_snapshot(
             stage=stage,

@@ -918,6 +918,7 @@ def write_c2a_static_evidence(
             encoding="utf-8",
         )
         from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
+            GEOMETRY_COMPARISON_SCHEMA_VERSION,
             GEOMETRY_DISAGREEMENT_SCHEMA_VERSION,
             finalize_geometry_disagreement_for_evidence,
         )
@@ -941,6 +942,18 @@ def write_c2a_static_evidence(
                 )
             retained_disagreements[record_id] = finalized
 
+        comparison_snapshot = metadata.get(
+            "factory_geometry_comparison_snapshot"
+        )
+        if isinstance(comparison_snapshot, Mapping):
+            for retained in comparison_snapshot.get("records", ()):
+                if (
+                    isinstance(retained, Mapping)
+                    and retained.get("schema_version")
+                    == GEOMETRY_COMPARISON_SCHEMA_VERSION
+                    and retained.get("agreement") is False
+                ):
+                    retain_disagreement(retained)
         for failure in metadata.get(
             "factory_scene_creation_failures",
             (),
@@ -950,10 +963,20 @@ def write_c2a_static_evidence(
             retained = failure.get("geometry_disagreement_record")
             if not isinstance(retained, Mapping):
                 continue
+            if (
+                retained.get("schema_version")
+                == GEOMETRY_COMPARISON_SCHEMA_VERSION
+            ):
+                continue
             retain_disagreement(retained)
         for scene in static_scenes:
             retained = scene.get("geometry_disagreement_record")
             if not isinstance(retained, Mapping):
+                continue
+            if (
+                retained.get("schema_version")
+                == GEOMETRY_COMPARISON_SCHEMA_VERSION
+            ):
                 continue
             retain_disagreement(retained)
         geometry_disagreements = [
@@ -1151,7 +1174,14 @@ def write_c2a_static_evidence(
                 for record in geometry_disagreements
             ],
             geometry_disagreement_schema_version=(
-                GEOMETRY_DISAGREEMENT_SCHEMA_VERSION
+                geometry_disagreements[0]["schema_version"]
+                if geometry_disagreements
+                else GEOMETRY_DISAGREEMENT_SCHEMA_VERSION
+            ),
+            geometry_comparison_accumulator_sha256=(
+                comparison_snapshot.get("accumulator_sha256")
+                if isinstance(comparison_snapshot, Mapping)
+                else None
             ),
         )
     report_path = destination / "report.json"
@@ -1424,6 +1454,15 @@ def orchestrate_c2a_real_runtime(
         runtime_metadata["factory_scene_creation_failures"] = _jsonable(
             getattr(factory, "scene_creation_failures", ())
         )
+        comparison_accumulator = getattr(
+            factory,
+            "geometry_comparison_accumulator",
+            None,
+        )
+        if comparison_accumulator is not None:
+            runtime_metadata[
+                "factory_geometry_comparison_snapshot"
+            ] = _jsonable(comparison_accumulator.snapshot())
     report.update(
         {
             "selected_pose_id": selected_pose_id,

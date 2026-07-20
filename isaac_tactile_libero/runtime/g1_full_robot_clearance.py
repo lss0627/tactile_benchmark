@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 import hashlib
 import json
 import math
@@ -19,6 +20,19 @@ OFFSET_AUTHORITY_SCHEMA_VERSION = "g1.physx.collision_offset_authority.v1"
 ROUTE_SCHEMA_VERSION = "g1.pose_conditioned.command_bound_routes.v2"
 GEOMETRY_DISAGREEMENT_SCHEMA_VERSION = (
     "g1.full_robot.geometry_disagreement.v1"
+)
+GEOMETRY_COMPARISON_SCHEMA_VERSION = (
+    "g1.full_robot.geometry_comparison_result.v1"
+)
+GEOMETRY_ACCUMULATOR_SCHEMA_VERSION = (
+    "g1.full_robot.geometry_comparison_accumulator.v1"
+)
+_GEOMETRY_COMPARISON_DIGEST_EXCLUDED_FIELDS = (
+    "record_sha256",
+    "evidence_write_started",
+    "evidence_write_finished",
+    "shutdown_started",
+    "shutdown_exit_code",
 )
 
 G1_TRAJECTORY_CLASS_IDS = (
@@ -40,10 +54,33 @@ _MESH_APPROXIMATIONS = frozenset({"convexHull", "convex_hull"})
 class G1FullRobotClearanceError(ValueError):
     """Structured fail-closed Option D validation error."""
 
-    def __init__(self, code: str, message: str, *, receipt: Mapping[str, Any] | None = None):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        receipt: Mapping[str, Any] | None = None,
+        record_id: str | None = None,
+        record_sha256: str | None = None,
+    ):
         self.code = str(code)
         self.message = str(message)
         self.receipt = None if receipt is None else _json_safe(receipt)
+        if self.receipt is not None:
+            record_id = (
+                self.receipt.get("record_id")
+                if record_id is None
+                else record_id
+            )
+            record_sha256 = (
+                self.receipt.get("record_sha256")
+                if record_sha256 is None
+                else record_sha256
+            )
+        self.record_id = None if record_id is None else str(record_id)
+        self.record_sha256 = (
+            None if record_sha256 is None else str(record_sha256)
+        )
         super().__init__(self.message)
 
 
@@ -52,8 +89,16 @@ def _fail(
     message: str,
     *,
     receipt: Mapping[str, Any] | None = None,
+    record_id: str | None = None,
+    record_sha256: str | None = None,
 ) -> None:
-    raise G1FullRobotClearanceError(code, message, receipt=receipt)
+    raise G1FullRobotClearanceError(
+        code,
+        message,
+        receipt=receipt,
+        record_id=record_id,
+        record_sha256=record_sha256,
+    )
 
 
 def _json_safe(value: Any) -> Any:
@@ -105,6 +150,178 @@ def canonical_sha256(
     for field in exclude_fields:
         payload.pop(str(field), None)
     return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
+
+
+def geometry_comparison_record_sha256(
+    value: Mapping[str, Any],
+) -> str:
+    """Hash immutable comparison facts while excluding writer-envelope state."""
+
+    return canonical_sha256(
+        value,
+        exclude_fields=(
+            _GEOMETRY_COMPARISON_DIGEST_EXCLUDED_FIELDS
+        ),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class GeometryAgreementRawInputs:
+    """One detached set of stage/query facts for the canonical evaluator."""
+
+    identity: Mapping[str, Any]
+    collider: Mapping[str, Any]
+    usd: Mapping[str, Any]
+    query: Mapping[str, Any]
+    usd_geometry: Mapping[str, Any]
+    property_query_record: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        for field in (
+            "identity",
+            "collider",
+            "usd",
+            "query",
+            "usd_geometry",
+            "property_query_record",
+        ):
+            value = getattr(self, field)
+            if not isinstance(value, Mapping):
+                raise TypeError(f"{field} must be a mapping")
+            object.__setattr__(self, field, deepcopy(dict(value)))
+
+
+@dataclass(frozen=True, slots=True)
+class GeometryAgreementEvaluation:
+    """Immutable canonical geometry decision backed by canonical JSON bytes."""
+
+    record_id: str
+    record_sha256: str
+    agreement: bool
+    blocker_code: str | None
+    blocker_message: str | None
+    _record_json: bytes
+    _offset_agreement_json: bytes | None
+
+    @classmethod
+    def _from_records(
+        cls,
+        record: Mapping[str, Any],
+        offset_agreement: Mapping[str, Any] | None,
+    ) -> "GeometryAgreementEvaluation":
+        safe = _json_safe(record)
+        if not isinstance(safe, Mapping):
+            _fail(
+                "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+                "canonical geometry result is not a mapping",
+            )
+        return cls(
+            record_id=str(safe["record_id"]),
+            record_sha256=str(safe["record_sha256"]),
+            agreement=bool(safe["agreement"]),
+            blocker_code=(
+                None
+                if safe.get("blocker_code") is None
+                else str(safe["blocker_code"])
+            ),
+            blocker_message=(
+                None
+                if safe.get("blocker_message") is None
+                else str(safe["blocker_message"])
+            ),
+            _record_json=canonical_json_bytes(safe),
+            _offset_agreement_json=(
+                None
+                if offset_agreement is None
+                else canonical_json_bytes(offset_agreement)
+            ),
+        )
+
+    def to_record(self) -> dict[str, Any]:
+        return dict(json.loads(self._record_json.decode("utf-8")))
+
+    def offset_agreement_record(self) -> dict[str, Any] | None:
+        if self._offset_agreement_json is None:
+            return None
+        return dict(
+            json.loads(self._offset_agreement_json.decode("utf-8"))
+        )
+
+    def canonical_json(self) -> bytes:
+        return bytes(self._record_json)
+
+
+class GeometryAgreementAccumulator:
+    """Run-owned append-before-classification comparison retention."""
+
+    def __init__(self, *, run_id: str) -> None:
+        self.run_id = str(run_id)
+        if not self.run_id:
+            _fail(
+                "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+                "geometry accumulator run_id is empty",
+            )
+        self._records: dict[str, dict[str, Any]] = {}
+        self._digests: set[str] = set()
+        self._sealed = False
+
+    def append(self, evaluation: GeometryAgreementEvaluation) -> None:
+        if self._sealed:
+            _fail(
+                "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+                "geometry accumulator is sealed",
+            )
+        if not isinstance(evaluation, GeometryAgreementEvaluation):
+            _fail(
+                "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+                "geometry accumulator requires a canonical evaluation",
+            )
+        record = validate_geometry_comparison_result(
+            evaluation.to_record()
+        )
+        record_id = str(record["record_id"])
+        record_sha256 = str(record["record_sha256"])
+        if (
+            record_id in self._records
+            or record_sha256 in self._digests
+        ):
+            _fail(
+                "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+                "geometry accumulator record identity is duplicated",
+            )
+        if str(record.get("run_id")) != self.run_id:
+            _fail(
+                "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+                "geometry accumulator record belongs to another run",
+            )
+        self._records[record_id] = record
+        self._digests.add(record_sha256)
+
+    def _project(self) -> dict[str, Any]:
+        records = [
+            deepcopy(self._records[record_id])
+            for record_id in sorted(self._records)
+        ]
+        snapshot = {
+            "schema_version": GEOMETRY_ACCUMULATOR_SCHEMA_VERSION,
+            "run_id": self.run_id,
+            "sealed": self._sealed,
+            "record_count": len(records),
+            "record_ids": [record["record_id"] for record in records],
+            "record_sha256s": [
+                record["record_sha256"] for record in records
+            ],
+            "records": records,
+        }
+        snapshot["accumulator_sha256"] = canonical_sha256(snapshot)
+        return snapshot
+
+    def seal_partial(self) -> dict[str, Any]:
+        self._sealed = True
+        return self._project()
+
+    def snapshot(self) -> dict[str, Any]:
+        return self._project()
 
 
 def _is_sha256(value: Any) -> bool:
@@ -834,34 +1051,6 @@ def validate_offset_authority_for_snapshot(
             _fail(
                 "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
                 "offset authority differs from collider geometry/offset snapshot",
-            )
-        geometry_agreement = validate_property_query_geometry_binding(
-            property_query_record=record,
-            usd_geometry={
-                "body_prim_path": collider["body_prim_path"],
-                "collider_prim_path": collider["collider_prim_path"],
-                "local_transform": collider["local_transform"],
-                "scale": collider["scale"],
-                "collider_type": collider["collider_type"],
-                "approximation": collider["approximation"],
-                "shape_parameters": collider["shape_parameters"],
-            },
-        )
-        if (
-            geometry_agreement["property_query_geometry_agreement_sha256"]
-            != record["property_query_geometry_agreement_sha256"]
-            or geometry_agreement["aabb_authority_model"]
-            != record["aabb_authority_model"]
-            or geometry_agreement["mesh_sweep_local_aabb_min"]
-            != record["mesh_sweep_local_aabb_min"]
-            or geometry_agreement["mesh_sweep_local_aabb_max"]
-            != record["mesh_sweep_local_aabb_max"]
-            or geometry_agreement["local_pose_sweep_inflation_m"]
-            != record["local_pose_sweep_inflation_m"]
-        ):
-            _fail(
-                "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
-                "property-query geometry receipt differs from snapshot geometry",
             )
         for field in (
             "property_query_geometry_agreement_sha256",
@@ -2656,6 +2845,27 @@ def finalize_geometry_disagreement_for_evidence(
 ) -> dict[str, Any]:
     """Finalize writer facts before the unique runtime shutdown starts."""
 
+    if (
+        isinstance(record, Mapping)
+        and record.get("schema_version")
+        == GEOMETRY_COMPARISON_SCHEMA_VERSION
+    ):
+        value = validate_geometry_comparison_result(record)
+        if shutdown_exit_code != 1:
+            _fail(
+                _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+                "geometry disagreement requires failure shutdown code 1",
+            )
+        value.update(
+            evidence_write_started=True,
+            evidence_write_finished=True,
+            shutdown_started=False,
+            shutdown_exit_code=1,
+        )
+        value["record_sha256"] = geometry_comparison_record_sha256(
+            value
+        )
+        return validate_geometry_comparison_result(value)
     value = validate_geometry_disagreement_record(record)
     if shutdown_exit_code != 1:
         _fail(
@@ -2675,7 +2885,781 @@ def finalize_geometry_disagreement_for_evidence(
     return validate_geometry_disagreement_record(value)
 
 
-def validate_property_query_geometry_binding(
+def _comparison_binding_mismatches(
+    *,
+    record: Mapping[str, Any],
+    property_query_record: Mapping[str, Any],
+    usd_geometry: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Return stable raw-to-canonical diagnostics without numerical decisions."""
+
+    checks = (
+        (
+            "stage_identifier",
+            property_query_record.get(
+                "property_query_stage_identifier"
+            ),
+            record.get("stage_identifier"),
+            "identity",
+        ),
+        (
+            "rigid_body_prim_path",
+            usd_geometry.get("body_prim_path"),
+            record.get("rigid_body_prim_path"),
+            "identity",
+        ),
+        (
+            "collider_prim_path",
+            property_query_record.get("collider_prim_path"),
+            record.get("collider_prim_path"),
+            "identity",
+        ),
+        (
+            "query_operation_index",
+            property_query_record.get("query_operation_index"),
+            record.get("query_operation_index"),
+            "identity",
+        ),
+        (
+            "query_property_count",
+            property_query_record.get("query_property_count"),
+            record.get("query_property_count"),
+            "identity",
+        ),
+        (
+            "query_shape_index",
+            property_query_record.get("query_shape_index"),
+            record.get("query_shape_index"),
+            "identity",
+        ),
+        (
+            "query_local_pose_raw.path_id_from_response",
+            property_query_record.get(
+                "property_query_path_identifier"
+            ),
+            (
+                record.get("query_local_pose_raw", {}) or {}
+            ).get("path_id_from_response"),
+            "identity",
+        ),
+        (
+            "query_local_pose_raw.translation_stage_units",
+            property_query_record.get(
+                "property_query_local_position"
+            ),
+            (
+                record.get("query_local_pose_raw", {}) or {}
+            ).get("translation_stage_units"),
+            "value",
+        ),
+        (
+            "query_shape_dimensions.local_aabb_min_stage_units",
+            property_query_record.get(
+                "property_query_local_aabb_min"
+            ),
+            (
+                record.get("query_shape_dimensions", {}) or {}
+            ).get("local_aabb_min_stage_units"),
+            "value",
+        ),
+        (
+            "query_shape_dimensions.local_aabb_max_stage_units",
+            property_query_record.get(
+                "property_query_local_aabb_max"
+            ),
+            (
+                record.get("query_shape_dimensions", {}) or {}
+            ).get("local_aabb_max_stage_units"),
+            "value",
+        ),
+        (
+            "query_shape_dimensions.volume_stage_units_cubed",
+            property_query_record.get("property_query_volume"),
+            (
+                record.get("query_shape_dimensions", {}) or {}
+            ).get("volume_stage_units_cubed"),
+            "value",
+        ),
+        (
+            "usd_pose_in_comparison_frame.matrix_row_major_4x4",
+            usd_geometry.get("local_transform"),
+            (
+                record.get(
+                    "usd_pose_in_comparison_frame",
+                    {},
+                )
+                or {}
+            ).get("matrix_row_major_4x4"),
+            "value",
+        ),
+        (
+            "usd_pose_in_comparison_frame.scale_xyz",
+            usd_geometry.get("scale"),
+            (
+                record.get(
+                    "usd_pose_in_comparison_frame",
+                    {},
+                )
+                or {}
+            ).get("scale_xyz"),
+            "value",
+        ),
+        (
+            "collider_type",
+            usd_geometry.get("collider_type"),
+            record.get("collider_type"),
+            "type",
+        ),
+        (
+            "geometry_type",
+            usd_geometry.get("geometry_type"),
+            record.get("geometry_type"),
+            "type",
+        ),
+        (
+            "approximation",
+            usd_geometry.get("approximation"),
+            record.get("approximation"),
+            "type",
+        ),
+    )
+    mismatches = [
+        {
+            "field_path": field_path,
+            "strict_value": _json_safe(strict_value),
+            "receipt_value": _json_safe(receipt_value),
+            "mismatch_kind": mismatch_kind,
+        }
+        for (
+            field_path,
+            strict_value,
+            receipt_value,
+            mismatch_kind,
+        ) in checks
+        if _json_safe(strict_value) != _json_safe(receipt_value)
+    ]
+    return sorted(
+        mismatches,
+        key=lambda item: (
+            str(item["field_path"]),
+            str(item["mismatch_kind"]),
+        ),
+    )
+
+
+def _minimal_geometry_evaluation(
+    raw_inputs: GeometryAgreementRawInputs,
+    error: Exception,
+) -> GeometryAgreementEvaluation:
+    """Retain a no-claim field diagnostic when complete evaluation is impossible."""
+
+    diagnostic = {
+        "field_path": "raw_inputs",
+        "available": False,
+        "error_code": str(
+            getattr(
+                error,
+                "code",
+                "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+            )
+        ),
+        "message": str(error) or type(error).__name__,
+    }
+    identity = raw_inputs.identity
+    seed = {
+        "schema_version": GEOMETRY_COMPARISON_SCHEMA_VERSION,
+        "evaluation_status": "minimal_safe_failure",
+        "run_id": (
+            str(identity.get("run_id"))
+            if identity.get("run_id") is not None
+            else "unavailable"
+        ),
+        "trial_id": (
+            str(identity.get("trial_id"))
+            if identity.get("trial_id") is not None
+            else "unavailable"
+        ),
+        "field_diagnostics": [diagnostic],
+    }
+    record_id = canonical_sha256(seed)
+    record = {
+        **seed,
+        "record_id": record_id,
+        "record_sha256": "",
+        "agreement": False,
+        "binding_valid": False,
+        "binding_mismatches": [],
+        "translation_residual_vector_m": None,
+        "translation_residual_norm_m": None,
+        "orientation_residual_rad": None,
+        "scale_residual": None,
+        "shape_dimension_residual": None,
+        "translation_bound_m": None,
+        "orientation_bound_rad": None,
+        "scale_bound": None,
+        "dimension_bound": None,
+        "bound_authority": None,
+        "blocker_code": _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+        "blocker_message": str(error) or type(error).__name__,
+        "selected_command_cap_m": None,
+        "claim_eligible": False,
+        "actuation_performed": False,
+        "post_abort_actuation_count": 0,
+        "force_vector_valid": False,
+        "wrench_valid": False,
+        "raw_impulse_used_as_force": False,
+        "evidence_write_started": False,
+        "evidence_write_finished": False,
+        "shutdown_started": False,
+        "shutdown_exit_code": None,
+    }
+    record["record_sha256"] = geometry_comparison_record_sha256(
+        record
+    )
+    return GeometryAgreementEvaluation._from_records(record, None)
+
+
+def validate_geometry_comparison_result(
+    record: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate identity, digest and fail-closed facts without recomputation."""
+
+    if not isinstance(record, Mapping):
+        _fail(
+            _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+            "geometry comparison result must be a mapping",
+        )
+    value = _json_safe(record)
+    if (
+        value.get("schema_version")
+        != GEOMETRY_COMPARISON_SCHEMA_VERSION
+        or value.get("evaluation_status")
+        not in {"complete", "minimal_safe_failure"}
+        or not isinstance(value.get("agreement"), bool)
+        or not isinstance(value.get("binding_valid"), bool)
+        or not isinstance(value.get("binding_mismatches"), list)
+        or not isinstance(value.get("field_diagnostics"), list)
+    ):
+        _fail(
+            _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+            "geometry comparison result header is invalid",
+        )
+    _require_sha256(value.get("record_id"), "record_id")
+    _require_sha256(value.get("record_sha256"), "record_sha256")
+    if value["binding_mismatches"] != sorted(
+        value["binding_mismatches"],
+        key=lambda item: (
+            str(item.get("field_path", "")),
+            str(item.get("mismatch_kind", "")),
+        ),
+    ):
+        _fail(
+            _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+            "geometry binding diagnostics are not stable-sorted",
+        )
+    if value["field_diagnostics"] != sorted(
+        value["field_diagnostics"],
+        key=lambda item: (
+            str(item.get("field_path", "")),
+            str(item.get("error_code", "")),
+        ),
+    ):
+        _fail(
+            _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+            "geometry field diagnostics are not stable-sorted",
+        )
+    if value["evaluation_status"] == "complete":
+        required = {
+            *_GEOMETRY_DISAGREEMENT_ID_FIELDS,
+            "record_id",
+            "record_sha256",
+            "evaluation_status",
+            "binding_valid",
+            "binding_mismatches",
+            "field_diagnostics",
+            "agreement",
+            "blocker_code",
+            "blocker_message",
+            "selected_command_cap_m",
+            "claim_eligible",
+            "actuation_performed",
+            "post_abort_actuation_count",
+            "force_vector_valid",
+            "wrench_valid",
+            "raw_impulse_used_as_force",
+            "evidence_write_started",
+            "evidence_write_finished",
+            "shutdown_started",
+            "shutdown_exit_code",
+        }
+        if not required <= set(value):
+            _fail(
+                _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+                "complete geometry comparison result is incomplete",
+            )
+        expected_id = canonical_sha256(
+            {
+                field: value[field]
+                for field in _GEOMETRY_DISAGREEMENT_ID_FIELDS
+            }
+        )
+        if value["record_id"] != expected_id:
+            _fail(
+                _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+                "geometry comparison record identity changed",
+            )
+    elif not value["field_diagnostics"]:
+        _fail(
+            _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+            "minimal geometry result lacks a field diagnostic",
+        )
+    if not value["agreement"] and (
+        value.get("blocker_code")
+        != _GEOMETRY_DISAGREEMENT_BLOCKER_CODE
+        or value.get("selected_command_cap_m") is not None
+        or value.get("claim_eligible") is not False
+        or value.get("actuation_performed") is not False
+        or value.get("post_abort_actuation_count") != 0
+        or value.get("force_vector_valid") is not False
+        or value.get("wrench_valid") is not False
+        or value.get("raw_impulse_used_as_force") is not False
+    ):
+        _fail(
+            _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+            "geometry comparison failure safety boundary is invalid",
+        )
+    expected_digest = geometry_comparison_record_sha256(value)
+    if value["record_sha256"] != expected_digest:
+        _fail(
+            _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+            "geometry comparison result digest changed",
+        )
+    return dict(value)
+
+
+def _build_offset_agreement_from_canonical_record(
+    comparison_record: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build the passing offset receipt from retained facts without a decision."""
+
+    record = validate_geometry_comparison_result(comparison_record)
+    if record["agreement"] is not True:
+        _fail(
+            "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+            "failed geometry comparison cannot produce an offset receipt",
+        )
+    query_path = str(record["collider_prim_path"])
+    query_dimensions = record["query_shape_dimensions"]
+    usd_dimensions = record["usd_shape_dimensions"]
+    query_min = _finite_vector(
+        query_dimensions["local_aabb_min_stage_units"],
+        3,
+        "property-query local AABB min",
+    )
+    query_max = _finite_vector(
+        query_dimensions["local_aabb_max_stage_units"],
+        3,
+        "property-query local AABB max",
+    )
+    expected_min = _finite_vector(
+        usd_dimensions["local_aabb_min_stage_units"],
+        3,
+        "USD local AABB min",
+    )
+    expected_max = _finite_vector(
+        usd_dimensions["local_aabb_max_stage_units"],
+        3,
+        "USD local AABB max",
+    )
+    if any(lower > upper for lower, upper in zip(query_min, query_max)):
+        _fail(
+            "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+            "property-query local AABB is inverted",
+        )
+    expected_min_f32 = [
+        float(np.float32(value)) for value in expected_min
+    ]
+    expected_max_f32 = [
+        float(np.float32(value)) for value in expected_max
+    ]
+    aabb_min_ulp = [
+        _float32_ulp_distance(observed, expected)
+        for observed, expected in zip(query_min, expected_min_f32)
+    ]
+    aabb_max_ulp = [
+        _float32_ulp_distance(observed, expected)
+        for observed, expected in zip(query_max, expected_max_f32)
+    ]
+    min_inward_ulp = [
+        distance if observed > expected else 0
+        for observed, expected, distance in zip(
+            query_min,
+            expected_min_f32,
+            aabb_min_ulp,
+        )
+    ]
+    max_inward_ulp = [
+        distance if observed < expected else 0
+        for observed, expected, distance in zip(
+            query_max,
+            expected_max_f32,
+            aabb_max_ulp,
+        )
+    ]
+    collider_type = str(record["collider_type"])
+    if collider_type == "mesh":
+        aabb_authority_model = (
+            "physx_cooked_mesh_aabb_union_authored_conservative_obb"
+        )
+        mesh_sweep_min = [
+            min(observed, expected)
+            for observed, expected in zip(
+                query_min,
+                expected_min_f32,
+            )
+        ]
+        mesh_sweep_max = [
+            max(observed, expected)
+            for observed, expected in zip(
+                query_max,
+                expected_max_f32,
+            )
+        ]
+        volume_model = "convex_mesh_aabb_envelope"
+    else:
+        aabb_authority_model = (
+            "analytic_shape_exact_within_one_float32_ulp"
+        )
+        mesh_sweep_min = None
+        mesh_sweep_max = None
+        volume_model = f"analytic_{collider_type}"
+        if any(
+            distance > 1
+            for distance in (*aabb_min_ulp, *aabb_max_ulp)
+        ):
+            _fail(
+                "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+                "property-query analytic AABB exceeds one float32 ULP "
+                "from USD geometry",
+            )
+    query_volume = _finite_float(
+        query_dimensions["volume_stage_units_cubed"],
+        "property-query volume",
+    )
+    exact_volume = usd_dimensions["volume_stage_units_cubed"]
+    scale_vector = np.abs(
+        np.asarray(
+            _finite_vector(
+                record["usd_pose_in_comparison_frame"][
+                    "scale_xyz"
+                ],
+                3,
+                "collider scale",
+            ),
+            dtype=np.float64,
+        )
+    )
+    scaled_aabb_volume = float(
+        np.prod(
+            np.asarray(expected_max)
+            - np.asarray(expected_min)
+        )
+        * np.prod(scale_vector)
+    )
+    if exact_volume is not None:
+        expected_volume_f32 = float(np.float32(exact_volume))
+        volume_ulp_distance = _float32_ulp_distance(
+            query_volume,
+            expected_volume_f32,
+        )
+        if volume_ulp_distance > 1:
+            _fail(
+                "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+                "property-query volume exceeds one float32 ULP "
+                "from analytic USD geometry",
+            )
+        volume_lower = expected_volume_f32
+        volume_upper = expected_volume_f32
+    else:
+        _float32_ulp_distance(query_volume, query_volume)
+        volume_ulp_distance = None
+        cooked_aabb_volume = float(
+            np.prod(
+                np.asarray(query_max) - np.asarray(query_min)
+            )
+            * np.prod(scale_vector)
+        )
+        if query_volume <= 0.0 or query_volume > cooked_aabb_volume:
+            _fail(
+                "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+                "property-query convex volume is outside its cooked "
+                "AABB envelope",
+            )
+        volume_lower = 0.0
+        volume_upper = cooked_aabb_volume
+    sweep_min = (
+        mesh_sweep_min
+        if mesh_sweep_min is not None
+        else [
+            min(observed, expected)
+            for observed, expected in zip(
+                query_min,
+                expected_min_f32,
+            )
+        ]
+    )
+    sweep_max = (
+        mesh_sweep_max
+        if mesh_sweep_max is not None
+        else [
+            max(observed, expected)
+            for observed, expected in zip(
+                query_max,
+                expected_max_f32,
+            )
+        ]
+    )
+    support_extent = np.maximum(
+        np.abs(np.asarray(sweep_min, dtype=np.float64)),
+        np.abs(np.asarray(sweep_max, dtype=np.float64)),
+    )
+    pose_support_radius = float(
+        np.linalg.norm(support_extent * scale_vector)
+    )
+    translation_delta_norm = float(
+        record["translation_residual_norm_m"]
+    )
+    query_rotation = _quaternion_rotation_matrix_xyzw(
+        record["query_pose_in_comparison_frame"][
+            "rotation_xyzw"
+        ],
+        "canonical query rotation",
+    )
+    usd_rotation = _quaternion_rotation_matrix_xyzw(
+        record["usd_pose_in_comparison_frame"]["rotation_xyzw"],
+        "canonical USD rotation",
+    )
+    rotation_operator_norm = float(
+        np.linalg.norm(query_rotation - usd_rotation, ord=2)
+    )
+    analytic_aabb_inflation = 0.0
+    if collider_type != "mesh":
+        outward_delta = np.maximum(
+            np.maximum(
+                np.asarray(expected_min_f32)
+                - np.asarray(query_min),
+                np.asarray(query_max)
+                - np.asarray(expected_max_f32),
+            ),
+            0.0,
+        )
+        analytic_aabb_inflation = float(
+            np.linalg.norm(outward_delta * scale_vector)
+        )
+    local_pose_sweep_inflation = (
+        translation_delta_norm
+        + rotation_operator_norm * pose_support_radius
+        + analytic_aabb_inflation
+    )
+    authority = record["bound_authority"]
+    raw_rotation = _canonical_quaternion_xyzw(
+        record["query_local_pose_raw"]["rotation_xyzw"],
+        "canonical raw query rotation",
+    )
+    agreement = {
+        "collider_prim_path": query_path,
+        "expected_local_aabb_min_float32": expected_min_f32,
+        "expected_local_aabb_max_float32": expected_max_f32,
+        "observed_local_aabb_min": query_min,
+        "observed_local_aabb_max": query_max,
+        "observed_local_position": list(
+            record["query_local_pose_raw"][
+                "translation_stage_units"
+            ]
+        ),
+        "observed_local_rotation_xyzw": list(
+            record["query_local_pose_raw"]["rotation_xyzw"]
+        ),
+        "normalized_local_rotation_xyzw": raw_rotation,
+        "local_position_residual_max_abs": authority[
+            "translation_component_max_abs_m"
+        ],
+        "local_rotation_residual_max_abs": authority[
+            "rotation_matrix_component_max_abs"
+        ],
+        "local_pose_residual_bound_max_abs": authority[
+            "pose_residual_bound_max_abs"
+        ],
+        "local_pose_float32_scalar_operation_bound": authority[
+            "float32_scalar_operation_count"
+        ],
+        "local_pose_float32_unit_roundoff": authority[
+            "float32_unit_roundoff"
+        ],
+        "local_pose_numeric_model": authority["policy_id"],
+        "local_pose_translation_delta_norm_m": (
+            translation_delta_norm
+        ),
+        "local_pose_rotation_operator_norm": rotation_operator_norm,
+        "local_pose_support_radius_m": pose_support_radius,
+        "analytic_aabb_outward_inflation_m": (
+            analytic_aabb_inflation
+        ),
+        "local_pose_sweep_inflation_m": (
+            local_pose_sweep_inflation
+        ),
+        "local_aabb_min_float32_ulp_distance": aabb_min_ulp,
+        "local_aabb_max_float32_ulp_distance": aabb_max_ulp,
+        "local_aabb_min_inward_float32_ulp_distance": (
+            min_inward_ulp
+        ),
+        "local_aabb_max_inward_float32_ulp_distance": (
+            max_inward_ulp
+        ),
+        "aabb_authority_model": aabb_authority_model,
+        "mesh_sweep_local_aabb_min": mesh_sweep_min,
+        "mesh_sweep_local_aabb_max": mesh_sweep_max,
+        "observed_volume_m3": query_volume,
+        "volume_float32_ulp_distance": volume_ulp_distance,
+        "volume_lower_bound_m3": volume_lower,
+        "volume_upper_bound_m3": volume_upper,
+        "volume_model": volume_model,
+        "geometry_agreement_valid": True,
+    }
+    agreement[
+        "property_query_geometry_agreement_sha256"
+    ] = canonical_sha256(agreement)
+    return agreement
+
+
+def evaluate_geometry_agreement(
+    raw_inputs: GeometryAgreementRawInputs,
+) -> GeometryAgreementEvaluation:
+    """Create the single canonical geometry decision and no-claim record."""
+
+    if not isinstance(raw_inputs, GeometryAgreementRawInputs):
+        raise TypeError(
+            "raw_inputs must be GeometryAgreementRawInputs"
+        )
+    try:
+        identity = _json_safe(raw_inputs.identity)
+        collider = _json_safe(raw_inputs.collider)
+        usd = _json_safe(raw_inputs.usd)
+        query = _json_safe(raw_inputs.query)
+        usd_geometry = _json_safe(raw_inputs.usd_geometry)
+        property_query = _json_safe(
+            raw_inputs.property_query_record
+        )
+        usd_dimensions = usd.pop("usd_shape_dimensions")
+        comparison = compare_geometry_poses_same_frame(
+            usd_pose_in_comparison_frame=usd[
+                "usd_local_to_rigid_body_pose"
+            ],
+            query_pose_in_comparison_frame=query[
+                "query_local_to_rigid_body_pose"
+            ],
+            query_local_rotation_xyzw=query[
+                "query_local_pose_raw"
+            ]["rotation_xyzw"],
+            query_scale=query["query_scale"],
+            usd_shape_dimensions=usd_dimensions,
+            query_shape_dimensions=query["query_shape_dimensions"],
+        )
+        record = {
+            "schema_version": GEOMETRY_COMPARISON_SCHEMA_VERSION,
+            "evaluation_status": "complete",
+            **identity,
+            **collider,
+            **usd,
+            **query,
+            **comparison,
+            "binding_valid": True,
+            "binding_mismatches": [],
+            "field_diagnostics": [],
+            "blocker_code": None,
+            "blocker_message": None,
+            "selected_command_cap_m": None,
+            "claim_eligible": False,
+            "actuation_performed": False,
+            "post_abort_actuation_count": 0,
+            "force_vector_valid": False,
+            "wrench_valid": False,
+            "raw_impulse_used_as_force": False,
+            "evidence_write_started": False,
+            "evidence_write_finished": False,
+            "shutdown_started": False,
+            "shutdown_exit_code": None,
+        }
+        record["cooked_shape_identifier"] = canonical_sha256(
+            {
+                "stage_identifier": record.get(
+                    "stage_identifier"
+                ),
+                "rigid_body_prim_path": record.get(
+                    "rigid_body_prim_path"
+                ),
+                "collider_prim_path": record.get(
+                    "collider_prim_path"
+                ),
+                "query_operation_index": record.get(
+                    "query_operation_index"
+                ),
+                "query_shape_index": record.get(
+                    "query_shape_index"
+                ),
+                "query_local_pose_raw": record.get(
+                    "query_local_pose_raw"
+                ),
+                "query_shape_dimensions": record.get(
+                    "query_shape_dimensions"
+                ),
+            }
+        )
+        mismatches = _comparison_binding_mismatches(
+            record=record,
+            property_query_record=property_query,
+            usd_geometry=usd_geometry,
+        )
+        record["binding_mismatches"] = mismatches
+        record["binding_valid"] = not mismatches
+        record["agreement"] = bool(
+            comparison["agreement"] and not mismatches
+        )
+        if not record["agreement"]:
+            record["blocker_code"] = (
+                _GEOMETRY_DISAGREEMENT_BLOCKER_CODE
+            )
+            record["blocker_message"] = (
+                _GEOMETRY_DISAGREEMENT_BLOCKER_MESSAGE
+                if not comparison["agreement"]
+                else "geometry disagreement receipt differs from strict gate"
+            )
+        record["record_id"] = canonical_sha256(
+            {
+                field: record.get(field)
+                for field in _GEOMETRY_DISAGREEMENT_ID_FIELDS
+            }
+        )
+        record["record_sha256"] = geometry_comparison_record_sha256(
+            record
+        )
+        record = validate_geometry_comparison_result(record)
+        offset_agreement = None
+        if record["agreement"]:
+            offset_agreement = (
+                _build_offset_agreement_from_canonical_record(
+                    record
+                )
+            )
+        return GeometryAgreementEvaluation._from_records(
+            record,
+            offset_agreement,
+        )
+    except Exception as error:
+        return _minimal_geometry_evaluation(raw_inputs, error)
+
+
+def _build_offset_agreement_from_raw(
     *,
     property_query_record: Mapping[str, Any],
     usd_geometry: Mapping[str, Any],
@@ -3128,6 +4112,45 @@ def validate_property_query_geometry_binding(
         agreement
     )
     return agreement
+
+
+def validate_property_query_geometry_binding(
+    evaluation: GeometryAgreementEvaluation,
+) -> dict[str, Any]:
+    """Gate one retained canonical evaluation without recomputing residuals."""
+
+    if not isinstance(evaluation, GeometryAgreementEvaluation):
+        _fail(
+            "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+            "geometry gate requires a canonical evaluation",
+        )
+    record = validate_geometry_comparison_result(
+        evaluation.to_record()
+    )
+    if (
+        record["record_id"] != evaluation.record_id
+        or record["record_sha256"] != evaluation.record_sha256
+        or bool(record["agreement"]) != evaluation.agreement
+    ):
+        _fail(
+            "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+            "geometry evaluation identity differs from its record",
+        )
+    if not evaluation.agreement:
+        _fail(
+            _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+            str(record["blocker_message"]),
+            receipt=record,
+            record_id=evaluation.record_id,
+            record_sha256=evaluation.record_sha256,
+        )
+    offset_agreement = evaluation.offset_agreement_record()
+    if offset_agreement is None:
+        _fail(
+            "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+            "agreed geometry evaluation lacks its offset receipt",
+        )
+    return offset_agreement
 
 
 def _validate_shape_parameters(
@@ -5649,7 +6672,12 @@ def build_claim_bearing_command_bound_routes_v2(
 
 __all__ = [
     "COLLISION_SNAPSHOT_SCHEMA_VERSION",
+    "GEOMETRY_ACCUMULATOR_SCHEMA_VERSION",
+    "GEOMETRY_COMPARISON_SCHEMA_VERSION",
     "GEOMETRY_DISAGREEMENT_SCHEMA_VERSION",
+    "GeometryAgreementAccumulator",
+    "GeometryAgreementEvaluation",
+    "GeometryAgreementRawInputs",
     "G1FullRobotClearanceError",
     "LIFECYCLE_SCHEMA_VERSION",
     "OFFSET_AUTHORITY_SCHEMA_VERSION",
@@ -5661,12 +6689,15 @@ __all__ = [
     "build_geometry_disagreement_record",
     "certify_articulated_sweep",
     "compare_geometry_poses_same_frame",
+    "evaluate_geometry_agreement",
     "finalize_geometry_disagreement_for_evidence",
     "guard_pre_send_sweep",
+    "geometry_comparison_record_sha256",
     "validate_collision_snapshot",
     "validate_collision_offset_authority_record",
     "validate_command_bound_swept_route",
     "validate_geometry_disagreement_record",
+    "validate_geometry_comparison_result",
     "validate_scene_lifecycle_record",
     "validate_swept_clearance_receipt",
 ]

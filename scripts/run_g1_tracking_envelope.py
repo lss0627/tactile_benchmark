@@ -2972,6 +2972,9 @@ class _PoseConditionedIsaacTrackingScene:
                     "scene_index": int(self.spec["scene_index"]),
                 },
                 lifecycle_record=self.lifecycle_record,
+                geometry_comparison_accumulator=(
+                    owner.geometry_comparison_accumulator
+                ),
             )
         )
         input_hashes = asdict(owner.current_input_digests)
@@ -3643,10 +3646,14 @@ class _IsaacSceneFactory:
         self.c2a_evidence = c2a_evidence
         self.current_input_digests = current_input_digests
         from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
+            GeometryAgreementAccumulator,
             SceneLifecycleAuthority,
         )
 
         self.lifecycle_authority = SceneLifecycleAuthority(run_id=str(run_id))
+        self.geometry_comparison_accumulator = (
+            GeometryAgreementAccumulator(run_id=str(run_id))
+        )
         self.option_d_v3 = True
         self.lifecycle_records: list[dict[str, Any]] = []
         self.lifecycle_close_records: list[dict[str, Any]] = []

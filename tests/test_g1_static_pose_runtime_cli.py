@@ -751,6 +751,12 @@ def _assert_option_a_disagreement_contracts(module: Any) -> None:
     assert canonical_record["field_diagnostics"] == []
     assert canonical_record["record_id"] == evaluation.record_id
     assert canonical_record["record_sha256"] == evaluation.record_sha256
+    assert (
+        canonical_record["record_sha256"]
+        == module.geometry_comparison_record_sha256(
+            canonical_record
+        )
+    )
     assert evaluation.canonical_json() == module.canonical_json_bytes(
         canonical_record
     )
@@ -843,9 +849,11 @@ def _assert_option_a_disagreement_contracts(module: Any) -> None:
             "mismatch_kind": "identity",
         }
     ]
-    assert mismatch_record["record_sha256"] == module.canonical_sha256(
-        mismatch_record,
-        exclude_fields=("record_sha256",),
+    assert (
+        mismatch_record["record_sha256"]
+        == module.geometry_comparison_record_sha256(
+            mismatch_record
+        )
     )
 
     malformed_query = deepcopy(round_trip_query)
@@ -874,6 +882,57 @@ def _assert_option_a_disagreement_contracts(module: Any) -> None:
     assert malformed_record["force_vector_valid"] is False
     assert malformed_record["wrench_valid"] is False
     assert malformed_record["raw_impulse_used_as_force"] is False
+
+    agreeing_inputs = deepcopy(round_trip_inputs)
+    agreeing_query = deepcopy(round_trip_query)
+    agreeing_pose = deepcopy(
+        agreeing_inputs["usd"]["usd_local_to_rigid_body_pose"]
+    )
+    agreeing_query["property_query_local_position"] = [0.0, 0.0, 0.0]
+    agreeing_query["property_query_local_rotation_xyzw"] = deepcopy(
+        agreeing_pose["rotation_xyzw"]
+    )
+    agreeing_inputs["query"]["query_local_pose_raw"][
+        "translation_stage_units"
+    ] = [0.0, 0.0, 0.0]
+    agreeing_inputs["query"]["query_local_pose_raw"][
+        "rotation_xyzw"
+    ] = deepcopy(agreeing_pose["rotation_xyzw"])
+    agreeing_inputs["query"][
+        "query_local_to_rigid_body_pose"
+    ] = deepcopy(agreeing_pose)
+    agreeing_inputs["query"]["query_world_pose"] = deepcopy(
+        agreeing_pose
+    )
+    agreeing_inputs["query"]["query_world_pose"]["to_frame"] = "world"
+    agreeing_evaluation = evaluate(
+        raw_type(
+            identity=deepcopy(agreeing_inputs["identity"]),
+            collider=deepcopy(agreeing_inputs["collider"]),
+            usd=deepcopy(agreeing_inputs["usd"]),
+            query=deepcopy(agreeing_inputs["query"]),
+            usd_geometry=deepcopy(round_trip_usd),
+            property_query_record=agreeing_query,
+        )
+    )
+    assert agreeing_evaluation.agreement is True
+    agreeing_offset = module.validate_property_query_geometry_binding(
+        evaluation=agreeing_evaluation
+    )
+    assert agreeing_offset["geometry_agreement_valid"] is True
+    assert (
+        agreeing_offset[
+            "property_query_geometry_agreement_sha256"
+        ]
+        == module.canonical_sha256(
+            {
+                key: value
+                for key, value in agreeing_offset.items()
+                if key
+                != "property_query_geometry_agreement_sha256"
+            }
+        )
+    )
 
     identity_fields = (
         "schema_version",
@@ -1085,7 +1144,7 @@ def _assert_option_a_disagreement_contracts(module: Any) -> None:
 
     binding = getattr(
         module,
-        "validate_property_query_geometry_binding",
+        "_build_offset_agreement_from_raw",
     )
     other_query = {
         "collider_prim_path": "/World/OtherBody/OtherCollider",
@@ -1323,7 +1382,7 @@ def _assert_option_d_inventory_contracts(module: Any) -> None:
     )
     validate_geometry = getattr(
         module,
-        "validate_property_query_geometry_binding",
+        "_build_offset_agreement_from_raw",
         None,
     )
     assert callable(validate)
@@ -2549,12 +2608,17 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
             stage=object(),
             collider_body_paths={"/World/FR3/Collider": "/World/FR3"},
             stage_lifecycle_token="a" * 64,
-            physics_policy={
-                "physics_device": "cpu",
-                "broadphase_type": "MBP",
-                "gpu_dynamics_enabled": False,
-            },
-        )
+                physics_policy={
+                    "physics_device": "cpu",
+                    "broadphase_type": "MBP",
+                    "gpu_dynamics_enabled": False,
+                },
+                geometry_comparison_accumulator=(
+                    option_d.GeometryAgreementAccumulator(
+                        run_id="stage-bound-view-probe"
+                    )
+                ),
+            )
 
     quaternion = np.asarray(
         [0.0, 0.0, 0.38268343, 0.9238795],
@@ -2848,6 +2912,10 @@ def test_c2a_runtime_failure_preserves_exact_code_message_writes_before_shutdown
     assert len(retained) == 1
     retained_record = retained[0]
     assert retained_record["agreement"] is False
+    assert (
+        retained_record["record_sha256"]
+        == factory.evaluation.record_sha256
+    ), "writer changed the canonical decision/snapshot digest"
     assert retained_record["evidence_write_started"] is True
     assert retained_record["evidence_write_finished"] is True
     assert retained_record["shutdown_started"] is False
