@@ -853,14 +853,17 @@ class PhysxResolvedOffsetAdapter:
                 "G1_BACKEND_SHAPE_PROVENANCE_INVALID",
                 "backend provenance lifecycle identity is unavailable",
             )
+        observed_device = physics_policy.get("post_play_observed_device")
+        observed_broadphase = physics_policy.get("post_play_broadphase_type")
+        observed_gpu_dynamics = physics_policy.get("post_play_gpu_dynamics_enabled")
         if (
-            str(physics_policy.get("physics_device")) != "cpu"
-            or str(physics_policy.get("broadphase_type")) != "MBP"
-            or physics_policy.get("gpu_dynamics_enabled") is not False
+            observed_device != "cpu"
+            or observed_broadphase != "MBP"
+            or observed_gpu_dynamics is not False
         ):
             _fail(
                 "G1_BACKEND_SHAPE_PROVENANCE_INVALID",
-                "backend provenance physics policy is not CPU/MBP/GPU-off",
+                "backend provenance lacks observed CPU/MBP/GPU-off physics",
             )
         settings = carb.settings.get_settings()
         approximate_setting = settings.get(
@@ -1127,9 +1130,9 @@ class PhysxResolvedOffsetAdapter:
                     ),
                     "stage_lifecycle_token": lifecycle_token,
                     "physics_scene_path": "/World/PhysicsScene",
-                    "physics_device": "cpu",
-                    "broadphase_type": "MBP",
-                    "gpu_dynamics_enabled": False,
+                    "physics_device": observed_device,
+                    "broadphase_type": observed_broadphase,
+                    "gpu_dynamics_enabled": observed_gpu_dynamics,
                     "native_gpu_contact_enabled": False,
                     "approximate_cylinders_setting": approximate_setting,
                     "source_repository": "NVIDIA-Omniverse/PhysX",
@@ -3298,11 +3301,7 @@ class C2ARealSceneFactory:
                 ),
                 lifecycle_record=lifecycle_record,
                 runtime_metadata=self.runtime_metadata,
-                physics_policy={
-                    "physics_device": "cpu",
-                    "broadphase_type": "MBP",
-                    "gpu_dynamics_enabled": False,
-                },
+                physics_policy=capture["policy"],
                 accumulator=self.backend_shape_provenance_accumulator,
             )
         except BaseException as caught:
