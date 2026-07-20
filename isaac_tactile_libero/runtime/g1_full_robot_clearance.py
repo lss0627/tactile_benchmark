@@ -136,6 +136,69 @@ def canonical_json_bytes(value: Any) -> bytes:
     ).encode("utf-8")
 
 
+def _raw_input_json_bytes(value: Mapping[str, Any]) -> bytes:
+    """Detach even malformed raw facts without admitting them to evidence."""
+
+    def detach(item: Any) -> Any:
+        if isinstance(item, np.ndarray):
+            item = item.tolist()
+        if isinstance(item, np.generic):
+            item = item.item()
+        if isinstance(item, Mapping):
+            return {
+                str(key): detach(nested)
+                for key, nested in item.items()
+            }
+        if isinstance(item, (list, tuple)):
+            return [detach(nested) for nested in item]
+        if (
+            isinstance(item, bool)
+            or item is None
+            or isinstance(item, (str, int))
+        ):
+            return item
+        if isinstance(item, float):
+            if math.isfinite(item):
+                return item
+            return {
+                "__g1_unavailable_nonfinite__": (
+                    "nan"
+                    if math.isnan(item)
+                    else ("positive_inf" if item > 0.0 else "negative_inf")
+                )
+            }
+        return {
+            "__g1_unavailable_type__": (
+                f"{type(item).__module__}.{type(item).__qualname__}"
+            )
+        }
+
+    return json.dumps(
+        detach(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def _raw_input_contains_unavailable(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        if (
+            "__g1_unavailable_nonfinite__" in value
+            or "__g1_unavailable_type__" in value
+        ):
+            return True
+        return any(
+            _raw_input_contains_unavailable(item)
+            for item in value.values()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(
+            _raw_input_contains_unavailable(item) for item in value
+        )
+    return False
+
+
 def canonical_sha256(
     value: Any,
     *,
@@ -165,30 +228,71 @@ def geometry_comparison_record_sha256(
     )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class GeometryAgreementRawInputs:
     """One detached set of stage/query facts for the canonical evaluator."""
 
-    identity: Mapping[str, Any]
-    collider: Mapping[str, Any]
-    usd: Mapping[str, Any]
-    query: Mapping[str, Any]
-    usd_geometry: Mapping[str, Any]
-    property_query_record: Mapping[str, Any]
+    _identity_json: bytes
+    _collider_json: bytes
+    _usd_json: bytes
+    _query_json: bytes
+    _usd_geometry_json: bytes
+    _property_query_record_json: bytes
 
-    def __post_init__(self) -> None:
-        for field in (
-            "identity",
-            "collider",
-            "usd",
-            "query",
-            "usd_geometry",
-            "property_query_record",
-        ):
-            value = getattr(self, field)
+    def __init__(
+        self,
+        *,
+        identity: Mapping[str, Any],
+        collider: Mapping[str, Any],
+        usd: Mapping[str, Any],
+        query: Mapping[str, Any],
+        usd_geometry: Mapping[str, Any],
+        property_query_record: Mapping[str, Any],
+    ) -> None:
+        values = {
+            "identity": identity,
+            "collider": collider,
+            "usd": usd,
+            "query": query,
+            "usd_geometry": usd_geometry,
+            "property_query_record": property_query_record,
+        }
+        for field, value in values.items():
             if not isinstance(value, Mapping):
                 raise TypeError(f"{field} must be a mapping")
-            object.__setattr__(self, field, deepcopy(dict(value)))
+            object.__setattr__(
+                self,
+                f"_{field}_json",
+                _raw_input_json_bytes(value),
+            )
+
+    @staticmethod
+    def _project(payload: bytes) -> dict[str, Any]:
+        return dict(json.loads(payload.decode("utf-8")))
+
+    @property
+    def identity(self) -> Mapping[str, Any]:
+        return self._project(self._identity_json)
+
+    @property
+    def collider(self) -> Mapping[str, Any]:
+        return self._project(self._collider_json)
+
+    @property
+    def usd(self) -> Mapping[str, Any]:
+        return self._project(self._usd_json)
+
+    @property
+    def query(self) -> Mapping[str, Any]:
+        return self._project(self._query_json)
+
+    @property
+    def usd_geometry(self) -> Mapping[str, Any]:
+        return self._project(self._usd_geometry_json)
+
+    @property
+    def property_query_record(self) -> Mapping[str, Any]:
+        return self._project(self._property_query_record_json)
 
 
 @dataclass(frozen=True, slots=True)
@@ -3208,11 +3312,26 @@ def validate_geometry_comparison_result(
                 _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
                 "geometry comparison record identity changed",
             )
-    elif not value["field_diagnostics"]:
-        _fail(
-            _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
-            "minimal geometry result lacks a field diagnostic",
+    else:
+        if not value["field_diagnostics"]:
+            _fail(
+                _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+                "minimal geometry result lacks a field diagnostic",
+            )
+        expected_id = canonical_sha256(
+            {
+                "schema_version": value["schema_version"],
+                "evaluation_status": value["evaluation_status"],
+                "run_id": value.get("run_id"),
+                "trial_id": value.get("trial_id"),
+                "field_diagnostics": value["field_diagnostics"],
+            }
         )
+        if value["record_id"] != expected_id:
+            _fail(
+                _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+                "minimal geometry comparison identity changed",
+            )
     if not value["agreement"] and (
         value.get("blocker_code")
         != _GEOMETRY_DISAGREEMENT_BLOCKER_CODE
@@ -3550,6 +3669,27 @@ def evaluate_geometry_agreement(
         property_query = _json_safe(
             raw_inputs.property_query_record
         )
+        raw_projections = {
+            "identity": identity,
+            "collider": collider,
+            "usd": usd,
+            "query": query,
+            "usd_geometry": usd_geometry,
+            "property_query_record": property_query,
+        }
+        unavailable_field = next(
+            (
+                field
+                for field, value in raw_projections.items()
+                if _raw_input_contains_unavailable(value)
+            ),
+            None,
+        )
+        if unavailable_field is not None:
+            _fail(
+                "G1_OPTION_D_NONFINITE",
+                f"{unavailable_field} contains an unavailable raw value",
+            )
         usd_dimensions = usd.pop("usd_shape_dimensions")
         comparison = compare_geometry_poses_same_frame(
             usd_pose_in_comparison_frame=usd[
@@ -3646,11 +3786,42 @@ def evaluate_geometry_agreement(
         record = validate_geometry_comparison_result(record)
         offset_agreement = None
         if record["agreement"]:
-            offset_agreement = (
-                _build_offset_agreement_from_canonical_record(
-                    record
+            try:
+                offset_agreement = (
+                    _build_offset_agreement_from_canonical_record(
+                        record
+                    )
                 )
-            )
+            except Exception as offset_error:
+                record["agreement"] = False
+                record["field_diagnostics"] = [
+                    {
+                        "field_path": "offset_agreement",
+                        "available": False,
+                        "error_code": str(
+                            getattr(
+                                offset_error,
+                                "code",
+                                _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+                            )
+                        ),
+                        "message": (
+                            str(offset_error)
+                            or type(offset_error).__name__
+                        ),
+                    }
+                ]
+                record["blocker_code"] = (
+                    _GEOMETRY_DISAGREEMENT_BLOCKER_CODE
+                )
+                record["blocker_message"] = (
+                    str(offset_error)
+                    or type(offset_error).__name__
+                )
+                record["record_sha256"] = (
+                    geometry_comparison_record_sha256(record)
+                )
+                record = validate_geometry_comparison_result(record)
         return GeometryAgreementEvaluation._from_records(
             record,
             offset_agreement,

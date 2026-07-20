@@ -3692,33 +3692,30 @@ class _IsaacSceneFactory:
             return scene
         except Exception as error:
             geometry_disagreement_record = None
-            retained_receipt = getattr(error, "receipt", None)
-            if isinstance(retained_receipt, Mapping):
-                from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
-                    validate_geometry_disagreement_record,
-                )
-
-                try:
-                    geometry_disagreement_record = (
-                        validate_geometry_disagreement_record(
-                            retained_receipt
-                        )
+            comparison_snapshot = (
+                self.geometry_comparison_accumulator.snapshot()
+            )
+            record_id = getattr(error, "record_id", None)
+            record_sha256 = getattr(error, "record_sha256", None)
+            for retained_record in comparison_snapshot["records"]:
+                if (
+                    retained_record["record_id"] == record_id
+                    and retained_record["record_sha256"]
+                    == record_sha256
+                ):
+                    geometry_disagreement_record = dict(
+                        retained_record
                     )
-                except Exception as receipt_validation_error:
-                    error = G1ValidationError(
-                        "G1_C1_GEOMETRY_DISAGREEMENT_RECORD_INVALID",
-                        "strict geometry disagreement carried an invalid "
-                        f"retained record: {receipt_validation_error}",
-                    )
-            elif (
+                    break
+            if (
                 str(getattr(error, "code", ""))
                 == "G1_FULL_ROBOT_OFFSET_UNRESOLVED"
-                and str(error)
-                == "property-query local pose differs from USD geometry"
+                and geometry_disagreement_record is None
             ):
                 error = G1ValidationError(
                     "G1_C1_GEOMETRY_DISAGREEMENT_RECORD_INVALID",
-                    "strict geometry disagreement lacked a complete retained record",
+                    "strict geometry disagreement did not reference an "
+                    "appended canonical evaluation",
                 )
             cleanup_error: str | None = None
             lifecycle_finalized = (
