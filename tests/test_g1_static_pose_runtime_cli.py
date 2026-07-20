@@ -416,6 +416,152 @@ def _option_a_disagreement_record(module: Any) -> dict[str, Any]:
     return build(**_option_a_disagreement_inputs(module))
 
 
+def _option_a_round_trip_receipt_binding_inputs(
+    module: Any,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], float]:
+    inputs = _option_a_disagreement_inputs(module)
+    body = inputs["collider"]["rigid_body_prim_path"]
+    collider = inputs["collider"]["collider_prim_path"]
+    parent = inputs["usd"]["usd_parent_prim_path"]
+    local_transform = [
+        [0.8412698412698414, -0.0317460317460318, 0.5396825396825393, 0.0],
+        [0.4126984126984125, 0.6825396825396824, -0.6031746031746031, 0.0],
+        [-0.3492063492063491, 0.7301587301587299, 0.5873015873015872, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+    local_scale = [1.3, 0.7, 2.1]
+    usd_pose = _option_a_pose(
+        from_frame=collider,
+        to_frame=body,
+        rotation_xyzw=(
+            0.3779644730092273,
+            0.2519763153394848,
+            0.12598815766974242,
+            0.881917103688197,
+        ),
+        scale=tuple(local_scale),
+    )
+    usd_pose["matrix_row_major_4x4"] = deepcopy(local_transform)
+    query_pose = _option_a_pose(
+        from_frame=collider,
+        to_frame=body,
+        translation=(0.025, 0.0, 0.0),
+    )
+    inputs["usd"]["usd_local_pose_raw"] = deepcopy(usd_pose)
+    inputs["usd"]["usd_local_pose_raw"]["to_frame"] = parent
+    inputs["usd"]["usd_local_to_rigid_body_pose"] = deepcopy(usd_pose)
+    inputs["usd"]["usd_world_pose"] = deepcopy(usd_pose)
+    inputs["usd"]["usd_world_pose"]["to_frame"] = "world"
+    inputs["usd"]["usd_parent_world_pose"] = _option_a_pose(
+        from_frame=parent,
+        to_frame="world",
+    )
+    usd_geometry = {
+        "body_prim_path": body,
+        "collider_prim_path": collider,
+        "collider_type": "cube",
+        "geometry_type": "Cube",
+        "approximation": "analytic",
+        "local_transform": local_transform,
+        "scale": local_scale,
+        "shape_parameters": {"size_m": 2.0},
+    }
+    declared_min, declared_max, declared_volume, _model = (
+        module._declared_local_bounds_and_volume(usd_geometry)
+    )
+    assert declared_volume is not None
+    query_min = [float(np.float32(value)) for value in declared_min]
+    query_max = [float(np.float32(value)) for value in declared_max]
+    query_volume = float(np.float32(declared_volume))
+
+    def dimensions(
+        lower: list[float],
+        upper: list[float],
+        volume: float,
+    ) -> dict[str, Any]:
+        extent = (
+            np.asarray(upper, dtype=np.float64)
+            - np.asarray(lower, dtype=np.float64)
+        ).tolist()
+        return {
+            "local_aabb_min_stage_units": lower,
+            "local_aabb_max_stage_units": upper,
+            "local_aabb_extent_stage_units": extent,
+            "local_aabb_min_m": lower,
+            "local_aabb_max_m": upper,
+            "local_aabb_extent_m": extent,
+            "volume_stage_units_cubed": volume,
+            "volume_m3": volume,
+        }
+
+    usd_dimensions = dimensions(
+        list(declared_min),
+        list(declared_max),
+        float(declared_volume),
+    )
+    query_dimensions = dimensions(query_min, query_max, query_volume)
+    inputs["query"]["query_local_pose_raw"][
+        "translation_stage_units"
+    ] = [0.025, 0.0, 0.0]
+    inputs["query"]["query_local_pose_raw"]["rotation_xyzw"] = [
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]
+    inputs["query"]["query_local_to_rigid_body_pose"] = query_pose
+    inputs["query"]["query_world_pose"] = deepcopy(query_pose)
+    inputs["query"]["query_world_pose"]["to_frame"] = "world"
+    inputs["query"]["query_shape_dimensions"] = query_dimensions
+    support_points = np.asarray(
+        [
+            [x, y, z]
+            for x in (query_min[0], query_max[0])
+            for y in (query_min[1], query_max[1])
+            for z in (query_min[2], query_max[2])
+        ],
+        dtype=np.float64,
+    )
+    inputs["query"]["query_support_radius_or_bounds"] = {
+        "local_bounds_min_m": query_min,
+        "local_bounds_max_m": query_max,
+        "support_radius_m": float(
+            np.max(np.linalg.norm(support_points, axis=1))
+        ),
+    }
+    inputs["comparison"] = module.compare_geometry_poses_same_frame(
+        usd_pose_in_comparison_frame=usd_pose,
+        query_pose_in_comparison_frame=query_pose,
+        query_local_rotation_xyzw=[0.0, 0.0, 0.0, 1.0],
+        query_scale=None,
+        usd_shape_dimensions=usd_dimensions,
+        query_shape_dimensions=query_dimensions,
+    )
+    record = module.build_geometry_disagreement_record(**inputs)
+    property_query = {
+        "collider_prim_path": collider,
+        "property_query_local_aabb_min": query_min,
+        "property_query_local_aabb_max": query_max,
+        "property_query_local_position": [0.025, 0.0, 0.0],
+        "property_query_local_rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "property_query_volume": query_volume,
+        "property_query_stage_identifier": 731,
+        "property_query_path_identifier": 991,
+        "query_operation_index": 0,
+        "query_property_count": 1,
+        "query_shape_index": 0,
+    }
+    strict_rotation_residual = float(
+        np.max(
+            np.abs(
+                np.eye(3, dtype=np.float64)
+                - np.asarray(local_transform, dtype=np.float64)[:3, :3]
+            )
+        )
+    )
+    return property_query, usd_geometry, record, strict_rotation_residual
+
+
 def _assert_option_a_disagreement_contracts(module: Any) -> None:
     assert (
         getattr(module, "GEOMETRY_DISAGREEMENT_SCHEMA_VERSION", None)
@@ -517,6 +663,33 @@ def _assert_option_a_disagreement_contracts(module: Any) -> None:
     ] = [0.0, 0.0, 0.0, 1.0]
     with pytest.raises(Exception):
         build(**different_rotation)
+
+    (
+        round_trip_query,
+        round_trip_usd,
+        round_trip_receipt,
+        strict_rotation_residual,
+    ) = _option_a_round_trip_receipt_binding_inputs(module)
+    assert (
+        round_trip_receipt["bound_authority"][
+            "rotation_matrix_component_max_abs"
+        ]
+        != strict_rotation_residual
+    )
+    with pytest.raises(Exception) as retained_round_trip_receipt:
+        module.validate_property_query_geometry_binding(
+            property_query_record=round_trip_query,
+            usd_geometry=round_trip_usd,
+            disagreement_record=round_trip_receipt,
+        )
+    assert (
+        str(retained_round_trip_receipt.value)
+        == "property-query local pose differs from USD geometry"
+    )
+    assert (
+        getattr(retained_round_trip_receipt.value, "receipt", None)
+        == round_trip_receipt
+    )
 
     identity_fields = (
         "schema_version",
