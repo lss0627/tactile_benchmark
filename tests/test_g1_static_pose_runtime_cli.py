@@ -3672,6 +3672,56 @@ def test_c2a_runtime_failure_preserves_exact_code_message_writes_before_shutdown
     ).read_text(encoding="utf-8")
     assert "backend_shape_provenance.jsonl" in backend_checksums
 
+    construction_failure_events: list[str] = []
+
+    def failing_factory_builder() -> Any:
+        construction_failure_events.append("factory-builder")
+        raise RuntimeError("factory-construction-probe")
+
+    def construction_failure_writer(**payload: Any) -> dict[str, Any]:
+        construction_failure_events.append("write")
+        return real_writer(**payload)
+
+    construction_failure_output = tmp_path / "backend-construction-failure"
+    construction_failure = backend_runner.orchestrate_backend_provenance(
+        output=construction_failure_output,
+        repository_commit="d" * 40,
+        command=[sys.executable, str(BACKEND_PROVENANCE_RUNNER_PATH)],
+        factory_builder=failing_factory_builder,
+        evidence_writer=construction_failure_writer,
+    )
+    assert construction_failure["exit_code"] == 1
+    assert construction_failure["failure_code"] == (
+        "G1_BACKEND_SHAPE_PROVENANCE_RUNTIME_FAILED"
+    )
+    assert construction_failure["failure_message"] == (
+        "RuntimeError: factory-construction-probe"
+    )
+    assert construction_failure_events == ["factory-builder", "write"]
+    construction_failure_report = json.loads(
+        (construction_failure_output / "report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert construction_failure_report["status"] == "BLOCKED"
+    assert construction_failure_report["systemic_failure"] is True
+    assert construction_failure_report["backend_record_count"] == 0
+    assert construction_failure_report["readiness_sample_count"] == 0
+    assert construction_failure_report["controller_command_count"] == 0
+    assert construction_failure_report["actuation_performed"] is False
+    assert construction_failure_report["selected_pose_id"] is None
+    assert construction_failure_report["selected_command_cap_m"] is None
+    assert construction_failure_report["post_abort_actuation_count"] == 0
+    assert construction_failure_report["force_vector_valid"] is False
+    assert construction_failure_report["wrench_valid"] is False
+    assert construction_failure_report["raw_impulse_used_as_force"] is False
+    assert construction_failure_report["claim_eligible"] is False
+    construction_checksums = (
+        construction_failure_output / "checksums.sha256"
+    ).read_text(encoding="utf-8")
+    assert "report.json" in construction_checksums
+    assert "manifest.json" in construction_checksums
+
 
 def test_c2a_offline_validation_failure_retains_all_raw_lula_records_for_evidence(tmp_path: Path) -> None:
     factory = _FakeFactory()
