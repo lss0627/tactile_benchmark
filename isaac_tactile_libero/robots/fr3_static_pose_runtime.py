@@ -318,8 +318,24 @@ def _extract_usd_xform_provenance(
         ),
         dtype=np.float64,
     )
-    local_raw = np.linalg.inv(parent_world) @ geometry_world
+    geometry_xformable = UsdGeom.Xformable(geometry_prim)
+    if not geometry_xformable:
+        _fail(
+            "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+            f"geometry prim is not xformable: {geometry_path}",
+        )
+    local_raw = np.asarray(
+        _gf_matrix_to_column_major_list(
+            geometry_xformable.GetLocalTransformation(
+                Usd.TimeCode.Default()
+            )
+        ),
+        dtype=np.float64,
+    )
     local_to_body = np.linalg.inv(body_world) @ geometry_world
+    geometry_resets = bool(
+        records and records[0]["reset_xform_stack"]
+    )
     return {
         "usd_xform_op_count": sum(
             len(record["ordered_ops"]) for record in records
@@ -331,10 +347,12 @@ def _extract_usd_xform_provenance(
         "usd_local_pose_raw": _option_a_pose_record(
             matrix=local_raw,
             from_frame=geometry_path,
-            to_frame=parent_path,
+            to_frame=("world" if geometry_resets else parent_path),
             meters_per_unit=meters_per_unit,
         ),
-        "usd_local_pose_frame": "immediate_usd_parent",
+        "usd_local_pose_frame": (
+            "reset_world" if geometry_resets else "immediate_usd_parent"
+        ),
         "usd_local_to_rigid_body_pose": _option_a_pose_record(
             matrix=local_to_body,
             from_frame=geometry_path,
@@ -2487,12 +2505,22 @@ class C2ARealSceneFactory:
             retained_receipt = getattr(error, "receipt", None)
             if isinstance(retained_receipt, Mapping):
                 from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
+                    G1FullRobotClearanceError,
                     validate_geometry_disagreement_record,
                 )
 
-                geometry_disagreement_record = (
-                    validate_geometry_disagreement_record(retained_receipt)
-                )
+                try:
+                    geometry_disagreement_record = (
+                        validate_geometry_disagreement_record(
+                            retained_receipt
+                        )
+                    )
+                except Exception as receipt_validation_error:
+                    error = G1FullRobotClearanceError(
+                        "G1_C2A_GEOMETRY_DISAGREEMENT_RECORD_INVALID",
+                        "strict geometry disagreement carried an invalid "
+                        f"retained record: {receipt_validation_error}",
+                    )
             elif (
                 str(getattr(error, "code", ""))
                 == "G1_FULL_ROBOT_OFFSET_UNRESOLVED"

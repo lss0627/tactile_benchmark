@@ -3691,9 +3691,18 @@ class _IsaacSceneFactory:
                     validate_geometry_disagreement_record,
                 )
 
-                geometry_disagreement_record = (
-                    validate_geometry_disagreement_record(retained_receipt)
-                )
+                try:
+                    geometry_disagreement_record = (
+                        validate_geometry_disagreement_record(
+                            retained_receipt
+                        )
+                    )
+                except Exception as receipt_validation_error:
+                    error = G1ValidationError(
+                        "G1_C1_GEOMETRY_DISAGREEMENT_RECORD_INVALID",
+                        "strict geometry disagreement carried an invalid "
+                        f"retained record: {receipt_validation_error}",
+                    )
             elif (
                 str(getattr(error, "code", ""))
                 == "G1_FULL_ROBOT_OFFSET_UNRESOLVED"

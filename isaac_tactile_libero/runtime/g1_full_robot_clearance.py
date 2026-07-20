@@ -1231,7 +1231,6 @@ _GEOMETRY_DISAGREEMENT_AUTHORITIES = frozenset(
     {
         "usd_analytic_primitive_schema",
         "usd_mesh_points_faces_and_approximation",
-        "usd_collision_xform_with_descendant_geometry",
     }
 )
 
@@ -2024,6 +2023,11 @@ def validate_geometry_disagreement_record(
     ):
         _validate_absolute_prim_path(value[field], field)
     body_path = str(value["rigid_body_prim_path"])
+    if value["geometry_prim_path"] != value["collider_prim_path"]:
+        _fail(
+            _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+            "geometry disagreement v1 requires a direct geometry collider",
+        )
     if not all(
         path == body_path or path.startswith(body_path + "/")
         for path in (
@@ -2107,7 +2111,11 @@ def validate_geometry_disagreement_record(
             _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
             "USD xform provenance omitted the geometry-to-body chain",
         )
-    if value["usd_local_pose_frame"] != "immediate_usd_parent":
+    geometry_resets = bool(ops and ops[0]["reset_xform_stack"])
+    expected_local_frame = (
+        "reset_world" if geometry_resets else "immediate_usd_parent"
+    )
+    if value["usd_local_pose_frame"] != expected_local_frame:
         _fail(
             _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
             "USD local pose frame is invalid",
@@ -2129,7 +2137,8 @@ def validate_geometry_disagreement_record(
     collider = str(value["collider_prim_path"])
     if (
         usd_local_raw["from_frame"] != collider
-        or usd_local_raw["to_frame"] != value["usd_parent_prim_path"]
+        or usd_local_raw["to_frame"]
+        != ("world" if geometry_resets else value["usd_parent_prim_path"])
         or usd_local_to_body["from_frame"] != collider
         or usd_local_to_body["to_frame"] != body
         or usd_world["from_frame"] != collider
@@ -2424,11 +2433,18 @@ def validate_geometry_disagreement_record(
         query_local_to_body
     )
     query_world_matrix = _geometry_pose_affine_matrix(query_world)
-    _require_composed_pose_agreement(
-        left=usd_parent_world_matrix @ usd_local_raw_matrix,
-        right=usd_world_matrix,
-        field="USD parent/local/world",
-    )
+    if geometry_resets:
+        _require_composed_pose_agreement(
+            left=usd_local_raw_matrix,
+            right=usd_world_matrix,
+            field="USD reset-local/world",
+        )
+    else:
+        _require_composed_pose_agreement(
+            left=usd_parent_world_matrix @ usd_local_raw_matrix,
+            right=usd_world_matrix,
+            field="USD parent/local/world",
+        )
     try:
         body_world_matrix = (
             usd_world_matrix @ np.linalg.inv(usd_local_to_body_matrix)
@@ -2747,6 +2763,9 @@ def validate_property_query_geometry_binding(
     rotation_residual = float(
         np.max(np.abs(query_rotation - local_matrix[:3, :3]))
     )
+    expected_min, expected_max, exact_volume, volume_model = (
+        _declared_local_bounds_and_volume(usd_geometry)
+    )
     if (
         position_residual > pose_residual_bound
         or rotation_residual > pose_residual_bound
@@ -2823,6 +2842,37 @@ def validate_property_query_geometry_binding(
                     "matrix_row_major_4x4"
                 ]
                 != local_matrix.tolist()
+                or receipt["usd_pose_in_comparison_frame"]["scale_xyz"]
+                != list(usd_geometry.get("scale", ()))
+                or receipt["collider_type"]
+                != usd_geometry.get("collider_type")
+                or receipt["approximation"]
+                != usd_geometry.get("approximation")
+                or receipt["mesh_or_primitive_authority"]
+                != (
+                    "usd_mesh_points_faces_and_approximation"
+                    if usd_geometry.get("collider_type") == "mesh"
+                    else "usd_analytic_primitive_schema"
+                )
+                or receipt["usd_shape_dimensions"][
+                    "local_aabb_min_stage_units"
+                ]
+                != list(expected_min)
+                or receipt["usd_shape_dimensions"][
+                    "local_aabb_max_stage_units"
+                ]
+                != list(expected_max)
+                or receipt["usd_shape_dimensions"][
+                    "local_aabb_extent_stage_units"
+                ]
+                != (
+                    np.asarray(expected_max, dtype=np.float64)
+                    - np.asarray(expected_min, dtype=np.float64)
+                ).tolist()
+                or receipt["usd_shape_dimensions"][
+                    "volume_stage_units_cubed"
+                ]
+                != exact_volume
                 or
                 receipt["translation_bound_m"]
                 != pose_residual_bound
@@ -2844,9 +2894,6 @@ def validate_property_query_geometry_binding(
             "property-query local pose differs from USD geometry",
             receipt=receipt,
         )
-    expected_min, expected_max, exact_volume, volume_model = (
-        _declared_local_bounds_and_volume(usd_geometry)
-    )
     query_min = _finite_vector(
         property_query_record.get("property_query_local_aabb_min"),
         3,
