@@ -3207,6 +3207,19 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
         "set_joint_position_target(",
     ):
         assert forbidden not in acquire_source
+    factory_backend_source = inspect.getsource(
+        real_runtime.C2ARealSceneFactory.acquire_backend_shape_provenance
+    )
+    assert 'physics_policy=capture["policy"]' in factory_backend_source
+    assert '"physics_device": "cpu"' not in factory_backend_source
+    assert '"broadphase_type": "MBP"' not in factory_backend_source
+    assert '"gpu_dynamics_enabled": False' not in factory_backend_source
+    assert 'physics_policy.get("post_play_observed_device")' in acquire_source
+    assert 'physics_policy.get("post_play_broadphase_type")' in acquire_source
+    assert (
+        'physics_policy.get("post_play_gpu_dynamics_enabled")'
+        in acquire_source
+    )
     tensors = types.ModuleType("omni.physics.tensors")
 
     def require_stage_bound_view(backend_name: str, **kwargs: Any) -> None:
