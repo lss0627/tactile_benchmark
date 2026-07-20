@@ -2959,6 +2959,19 @@ class _PoseConditionedIsaacTrackingScene:
                     "broadphase_type": "MBP",
                     "gpu_dynamics_enabled": False,
                 },
+                diagnostic_identity={
+                    "run_id": owner.lifecycle_authority.run_id,
+                    "trial_id": self.lifecycle_record["trial_id"],
+                    "candidate_id": str(
+                        self.spec.get(
+                            "starting_pose_id",
+                            "c1-scene-initialization",
+                        )
+                    ),
+                    "scene_id": str(self.spec["scene_id"]),
+                    "scene_index": int(self.spec["scene_index"]),
+                },
+                lifecycle_record=self.lifecycle_record,
             )
         )
         input_hashes = asdict(owner.current_input_digests)
@@ -3671,6 +3684,26 @@ class _IsaacSceneFactory:
             )
             return scene
         except Exception as error:
+            geometry_disagreement_record = None
+            retained_receipt = getattr(error, "receipt", None)
+            if isinstance(retained_receipt, Mapping):
+                from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
+                    validate_geometry_disagreement_record,
+                )
+
+                geometry_disagreement_record = (
+                    validate_geometry_disagreement_record(retained_receipt)
+                )
+            elif (
+                str(getattr(error, "code", ""))
+                == "G1_FULL_ROBOT_OFFSET_UNRESOLVED"
+                and str(error)
+                == "property-query local pose differs from USD geometry"
+            ):
+                error = G1ValidationError(
+                    "G1_C1_GEOMETRY_DISAGREEMENT_RECORD_INVALID",
+                    "strict geometry disagreement lacked a complete retained record",
+                )
             cleanup_error: str | None = None
             lifecycle_finalized = (
                 getattr(scene, "lifecycle_record", None) is not None
@@ -3702,11 +3735,14 @@ class _IsaacSceneFactory:
                     "failure_code": getattr(error, "code", None),
                     "failure_type": type(error).__name__,
                     "failure_message": str(error),
+                    "geometry_disagreement_record": (
+                        geometry_disagreement_record
+                    ),
                     "cleanup_error": cleanup_error,
                     "lifecycle_finalized": lifecycle_finalized,
                 }
             )
-            raise
+            raise error
 
     def finalize_lifecycle_audit(self) -> dict[str, Any]:
         if getattr(self, "lifecycle_audit", None) is None:

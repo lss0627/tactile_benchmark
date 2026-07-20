@@ -923,6 +923,24 @@ def write_c2a_static_evidence(
         )
 
         retained_disagreements: dict[str, dict[str, Any]] = {}
+
+        def retain_disagreement(record: Mapping[str, Any]) -> None:
+            finalized = finalize_geometry_disagreement_for_evidence(
+                record,
+                shutdown_exit_code=1,
+            )
+            record_id = str(finalized["record_id"])
+            existing = retained_disagreements.get(record_id)
+            if (
+                existing is not None
+                and existing["record_sha256"]
+                != finalized["record_sha256"]
+            ):
+                raise RuntimeError(
+                    "conflicting geometry disagreement records share one record_id"
+                )
+            retained_disagreements[record_id] = finalized
+
         for failure in metadata.get(
             "factory_scene_creation_failures",
             (),
@@ -932,20 +950,12 @@ def write_c2a_static_evidence(
             retained = failure.get("geometry_disagreement_record")
             if not isinstance(retained, Mapping):
                 continue
-            finalized = finalize_geometry_disagreement_for_evidence(
-                retained,
-                shutdown_exit_code=1,
-            )
-            retained_disagreements[str(finalized["record_id"])] = finalized
+            retain_disagreement(retained)
         for scene in static_scenes:
             retained = scene.get("geometry_disagreement_record")
             if not isinstance(retained, Mapping):
                 continue
-            finalized = finalize_geometry_disagreement_for_evidence(
-                retained,
-                shutdown_exit_code=1,
-            )
-            retained_disagreements[str(finalized["record_id"])] = finalized
+            retain_disagreement(retained)
         geometry_disagreements = [
             retained_disagreements[record_id]
             for record_id in sorted(retained_disagreements)
