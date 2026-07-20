@@ -58,6 +58,9 @@ safety_boundary
 
 Unknown optional backend values are JSON null and must have a structured
 field diagnostic. Numeric zero is never used for unavailable data.
+The USD mapping includes positive finite `stage_meters_per_unit` and the
+explicit `stage_up_axis` token, so no pose or dimension is interpreted
+without its unit authority.
 
 ## 3. Canonical JSON and digest
 
@@ -418,4 +421,3 @@ proves that running the diagnostic cannot add any stage-bound facts.
 Stop immediately if progress requires a private pointer as identity, final
 authority selection, changed geometry/offset/bound/pose/matrix, a command,
 readiness, or a runtime stage beyond the single authorized diagnostic.
-

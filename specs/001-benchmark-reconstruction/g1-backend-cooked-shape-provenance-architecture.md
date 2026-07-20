@@ -131,6 +131,8 @@ usd_local_pose: pose mapping
 usd_local_pose_frame: absolute body path
 usd_world_pose: pose mapping
 usd_prim_digest: 64-character digest
+stage_meters_per_unit: positive finite number
+stage_up_axis: "X" | "Y" | "Z"
 ```
 
 Pose mappings use translation in metres and quaternion order `xyzw`.
@@ -334,4 +336,3 @@ The runtime review classifies:
 This architecture permits source-level representation evidence and a P4
 runtime classification at the same time. P4 means the missing public backend
 authority remains explicit, not that the retained facts are invalid.
-
