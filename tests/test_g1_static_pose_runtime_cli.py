@@ -700,6 +700,30 @@ def _assert_option_a_disagreement_contracts(module: Any) -> None:
             "disagreement_receipt_not_bound_to_current_collider"
         )
 
+    stale_shape_query = {
+        **other_query,
+        "collider_prim_path": record["collider_prim_path"],
+        "property_query_local_aabb_min": [-2.0, -2.0, -2.0],
+        "property_query_local_aabb_max": [2.0, 2.0, 2.0],
+        "property_query_volume": 64.0,
+        "query_property_count": 1,
+    }
+    stale_shape_usd = {
+        **other_usd,
+        "body_prim_path": record["rigid_body_prim_path"],
+        "collider_prim_path": record["collider_prim_path"],
+    }
+    with pytest.raises(Exception) as stale_shape_receipt:
+        binding(
+            property_query_record=stale_shape_query,
+            usd_geometry=stale_shape_usd,
+            disagreement_record=record,
+        )
+    if getattr(stale_shape_receipt.value, "receipt", None) is not None:
+        accepted_invalid_records.append(
+            "receipt_not_bound_to_query_shape_and_path_identity"
+        )
+
     assert accepted_invalid_records == [], (
         "Option A validator accepted unbound diagnostic facts: "
         f"{accepted_invalid_records}"
