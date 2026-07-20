@@ -22,9 +22,15 @@ from isaac_tactile_libero.runtime.g1_tracking import G1ValidationError
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER_PATH = ROOT / "scripts/run_g1_static_pose_qualification.py"
+BACKEND_PROVENANCE_RUNNER_PATH = (
+    ROOT / "scripts/run_g1_backend_shape_provenance.py"
+)
 DIAGNOSTIC_PATH = ROOT / "isaac_tactile_libero/robots/fr3_static_pose_diagnostic.py"
 REAL_RUNTIME_MODULE = "isaac_tactile_libero.robots.fr3_static_pose_runtime"
 OPTION_D_MODULE = "isaac_tactile_libero.runtime.g1_full_robot_clearance"
+BACKEND_PROVENANCE_MODULE = (
+    "isaac_tactile_libero.runtime.g1_backend_shape_provenance"
+)
 ARM_NAMES = tuple(f"fr3_joint{index}" for index in range(1, 8))
 JOINT_NAMES = ARM_NAMES + ("fr3_finger_joint1", "fr3_finger_joint2")
 CANDIDATES = (
@@ -69,6 +75,24 @@ def _option_d_module():
     return importlib.import_module(OPTION_D_MODULE)
 
 
+def _backend_provenance_module():
+    spec = importlib.util.find_spec(BACKEND_PROVENANCE_MODULE)
+    assert spec is not None, (
+        "backend cooked-shape provenance module is missing"
+    )
+    return importlib.import_module(BACKEND_PROVENANCE_MODULE)
+
+
+def _backend_provenance_runner():
+    assert BACKEND_PROVENANCE_RUNNER_PATH.is_file(), (
+        "read-only backend provenance runner is missing"
+    )
+    return _load(
+        BACKEND_PROVENANCE_RUNNER_PATH,
+        "run_g1_backend_shape_provenance_test",
+    )
+
+
 def _option_d_matrix(*, x: float = 0.0, y: float = 0.0, z: float = 0.0):
     return [
         [1.0, 0.0, 0.0, x],
@@ -76,6 +100,527 @@ def _option_d_matrix(*, x: float = 0.0, y: float = 0.0, z: float = 0.0):
         [0.0, 0.0, 1.0, z],
         [0.0, 0.0, 0.0, 1.0],
     ]
+
+
+def _backend_pose(
+    *,
+    from_frame: str,
+    to_frame: str,
+    rotation_xyzw: tuple[float, float, float, float] = (
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ),
+) -> dict[str, Any]:
+    x, y, z, w = rotation_xyzw
+    matrix = [
+        [
+            1.0 - 2.0 * (y * y + z * z),
+            2.0 * (x * y - z * w),
+            2.0 * (x * z + y * w),
+            0.0,
+        ],
+        [
+            2.0 * (x * y + z * w),
+            1.0 - 2.0 * (x * x + z * z),
+            2.0 * (y * z - x * w),
+            0.0,
+        ],
+        [
+            2.0 * (x * z - y * w),
+            2.0 * (y * z + x * w),
+            1.0 - 2.0 * (x * x + y * y),
+            0.0,
+        ],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+    return {
+        "from_frame": from_frame,
+        "to_frame": to_frame,
+        "translation_m": [0.0, 0.0, 0.0],
+        "rotation_xyzw": list(rotation_xyzw),
+        "quaternion_order": "xyzw",
+        "scale": [1.0, 1.0, 1.0],
+        "matrix_row_major_4x4": matrix,
+    }
+
+
+def _backend_provenance_raw_inputs(module: Any) -> Any:
+    body = "/World/PressButton/Button"
+    collider = body
+    minus_ninety_y = (
+        0.0,
+        -math.sqrt(0.5),
+        0.0,
+        math.sqrt(0.5),
+    )
+    raw_type = getattr(module, "BackendShapeProvenanceRawInputs", None)
+    assert raw_type is not None, "backend provenance raw-input model is missing"
+    return raw_type(
+        runtime_authority={
+            "isaac_sim_version": "6.0.1",
+            "physx_extension_version": "110.1.13",
+            "physx_extension_build": (
+                "110.1.13+release.78978.c38f7d1e.gl"
+            ),
+            "kit_version": "110.1.2",
+            "backend_name": "physx",
+            "query_api": "omni.physx.IPhysxPropertyQuery.query_prim",
+            "query_api_version": "110.1.13",
+            "query_api_visibility": "PUBLIC",
+            "stage_identifier": 731,
+            "stage_lifecycle_token": "a" * 64,
+            "physics_scene_path": "/World/PhysicsScene",
+            "physics_device": "cpu",
+            "broadphase_type": "MBP",
+            "gpu_dynamics_enabled": False,
+            "native_gpu_contact_enabled": False,
+            "approximate_cylinders_setting": False,
+            "installed_stub_sha256": "b" * 64,
+            "installed_extension_metadata_sha256": "c" * 64,
+            "source_repository": "NVIDIA-Omniverse/PhysX",
+            "source_commit": (
+                "b4b286abff6f2b3debd1d1acb120dc428765cf2e"
+            ),
+            "source_binary_match": "UNPROVEN",
+        },
+        usd_binding={
+            "rigid_body_prim_path": body,
+            "collider_prim_path": collider,
+            "geometry_prim_path": collider,
+            "usd_geometry_type": "Cylinder",
+            "usd_axis_token": "Z",
+            "usd_dimensions": {
+                "radius_m": 0.035,
+                "height_m": 0.018,
+            },
+            "usd_scale": [1.0, 1.0, 1.0],
+            "usd_approximation": "analytic",
+            "usd_local_pose": _backend_pose(
+                from_frame=collider,
+                to_frame=body,
+            ),
+            "usd_local_pose_frame": body,
+            "usd_world_pose": _backend_pose(
+                from_frame=collider,
+                to_frame="world",
+            ),
+            "usd_prim_digest": "d" * 64,
+            "stage_meters_per_unit": 1.0,
+            "stage_up_axis": "Z",
+        },
+        property_query_binding={
+            "operation_index": 0,
+            "property_index": 0,
+            "property_count": 1,
+            "shape_index": 0,
+            "query_actor_or_body_identity": body,
+            "query_shape_identity": "e" * 64,
+            "query_shape_identity_source": (
+                "STAGE_LIFECYCLE_USD_PATH_QUERY_OBSERVATION"
+            ),
+            "query_local_pose": _backend_pose(
+                from_frame=collider,
+                to_frame=body,
+                rotation_xyzw=minus_ninety_y,
+            ),
+            "query_local_pose_frame": (
+                "property_query_mass_information_local"
+            ),
+            "query_world_pose": _backend_pose(
+                from_frame=collider,
+                to_frame="world",
+                rotation_xyzw=minus_ninety_y,
+            ),
+            "query_bounds": {
+                "local_aabb_min_m": [-0.009, -0.035, -0.035],
+                "local_aabb_max_m": [0.009, 0.035, 0.035],
+            },
+            "query_dimensions": {
+                "local_aabb_extent_m": [0.018, 0.07, 0.07],
+                "volume_m3": math.pi * 0.035 * 0.035 * 0.018,
+            },
+            "query_scale": None,
+            "query_geometry_type": None,
+            "query_approximation": None,
+            "query_path_identifier": 991,
+            "query_stage_identifier": 731,
+        },
+        backend_authority={
+            "backend_shape_handle_exposed": False,
+            "backend_shape_handle": None,
+            "backend_shape_handle_stability": "UNAVAILABLE",
+            "backend_shape_type_exposed": False,
+            "backend_shape_type": None,
+            "backend_geometry_exposed": False,
+            "backend_scale_exposed": False,
+            "backend_scale": None,
+            "backend_approximation_exposed": False,
+            "backend_approximation": None,
+            "backend_local_pose_exposed": False,
+            "backend_local_pose": None,
+            "backend_world_pose_exposed": False,
+            "backend_world_pose": None,
+            "backend_narrowphase_pose_exposed": False,
+            "backend_narrowphase_pose": None,
+            "canonical_primitive_axis_exposed": True,
+            "canonical_primitive_axis": "X",
+            "primitive_representation_transform": None,
+            "cooking_source": {
+                "repository": "NVIDIA-Omniverse/PhysX",
+                "commit": (
+                    "b4b286abff6f2b3debd1d1acb120dc428765cf2e"
+                ),
+                "source_visibility": "OFFICIAL_PUBLIC_SOURCE",
+                "installed_binary_match": "UNPROVEN",
+                "analytic_branch": True,
+            },
+            "cooked_data_identifier": None,
+        },
+        one_to_one_binding={
+            "binding_candidates": [
+                {
+                    "rigid_body_prim_path": body,
+                    "collider_prim_path": collider,
+                    "stage_collider_match_count": 1,
+                    "query_path_match_count": 1,
+                    "query_shape_identity": "e" * 64,
+                    "repeated_query_shape_identity": "e" * 64,
+                }
+            ],
+            "binding_method": (
+                "STAGE_LIFECYCLE_PLUS_DECODED_QUERY_PATH"
+            ),
+            "binding_authority": "PUBLIC_PROPERTY_QUERY_PATH_ID",
+        },
+        safety_boundary={
+            "read_only_acquisition": True,
+            "actuation_performed": False,
+            "controller_command_count": 0,
+            "readiness_sample_count": 0,
+            "selected_pose_id": None,
+            "selected_pose_sha256": None,
+            "selected_command_cap_m": None,
+            "post_abort_actuation_count": 0,
+            "force_vector_valid": False,
+            "wrench_valid": False,
+            "raw_impulse_used_as_force": False,
+            "claim_eligible": False,
+        },
+    )
+
+
+def _assert_backend_shape_provenance_contracts(module: Any) -> None:
+    assert (
+        getattr(module, "BACKEND_SHAPE_PROVENANCE_SCHEMA_VERSION", None)
+        == "g1.physx.backend_shape_provenance.v1"
+    )
+    assert (
+        getattr(module, "BACKEND_SHAPE_ACCUMULATOR_SCHEMA_VERSION", None)
+        == "g1.physx.backend_shape_provenance_accumulator.v1"
+    )
+    evaluate = getattr(module, "evaluate_backend_shape_provenance", None)
+    validate = getattr(
+        module,
+        "validate_backend_shape_provenance_record",
+        None,
+    )
+    digest = getattr(module, "backend_shape_provenance_sha256", None)
+    accumulator_type = getattr(
+        module,
+        "BackendShapeProvenanceAccumulator",
+        None,
+    )
+    classify = getattr(
+        module,
+        "classify_cylinder_rotation_interpretation",
+        None,
+    )
+    error_type = getattr(module, "BackendShapeProvenanceError", None)
+    assert callable(evaluate)
+    assert callable(validate)
+    assert callable(digest)
+    assert accumulator_type is not None
+    assert callable(classify)
+    assert error_type is not None
+
+    raw_inputs = _backend_provenance_raw_inputs(module)
+    assert callable(getattr(raw_inputs, "to_mapping", None))
+    raw_projection = raw_inputs.to_mapping()
+    raw_projection["runtime_authority"]["stage_identifier"] = 999
+    assert raw_inputs.to_mapping()["runtime_authority"][
+        "stage_identifier"
+    ] == 731
+    evaluation = evaluate(raw_inputs)
+    record = evaluation.to_record()
+    assert record["schema_version"] == (
+        "g1.physx.backend_shape_provenance.v1"
+    )
+    assert record["acquisition_status"] == "PARTIAL"
+    assert record["interpretation"]["rotation_interpretation"] == (
+        "REPRESENTATION_ONLY"
+    )
+    assert record["interpretation"]["claim_eligible"] is False
+    assert record["backend_authority"][
+        "primitive_representation_transform"
+    ]["rotation_xyzw"] == pytest.approx(
+        [0.0, -math.sqrt(0.5), 0.0, math.sqrt(0.5)],
+        abs=0.0,
+    )
+    assert record["backend_authority"][
+        "backend_shape_handle_exposed"
+    ] is False
+    assert record["backend_authority"]["backend_shape_handle"] is None
+    assert record["backend_authority"]["backend_shape_type"] is None
+    assert record["backend_authority"]["backend_scale"] is None
+    assert record["backend_authority"]["backend_approximation"] is None
+    assert record["backend_authority"][
+        "backend_narrowphase_pose"
+    ] is None
+    assert record["one_to_one_binding"][
+        "usd_to_query_binding_valid"
+    ] is True
+    assert record["one_to_one_binding"][
+        "query_to_backend_binding_valid"
+    ] is False
+    assert record["one_to_one_binding"][
+        "backend_shape_match_count"
+    ] is None
+    assert record["safety_boundary"] == {
+        "read_only_acquisition": True,
+        "actuation_performed": False,
+        "controller_command_count": 0,
+        "readiness_sample_count": 0,
+        "selected_pose_id": None,
+        "selected_pose_sha256": None,
+        "selected_command_cap_m": None,
+        "post_abort_actuation_count": 0,
+        "force_vector_valid": False,
+        "wrench_valid": False,
+        "raw_impulse_used_as_force": False,
+        "claim_eligible": False,
+    }
+    assert any(
+        item["field_path"]
+        == "backend_authority.backend_narrowphase_pose"
+        for item in record["field_diagnostics"]
+    )
+    assert digest(record) == record["record_sha256"]
+    assert validate(record) == record
+    projection = evaluation.to_record()
+    projection["runtime_authority"]["query_api_version"] = "forged"
+    assert evaluation.to_record() == record
+    assert evaluation.canonical_json() == evaluation.canonical_json()
+
+    accumulator = accumulator_type(run_id="backend-provenance-test")
+    accumulator.append(evaluation)
+    snapshot = accumulator.seal()
+    assert snapshot["record_count"] == 1
+    assert snapshot["records"][0]["record_id"] == record["record_id"]
+    assert snapshot["records"][0]["record_sha256"] == (
+        record["record_sha256"]
+    )
+    assert module.canonical_sha256(
+        {
+            key: value
+            for key, value in snapshot.items()
+            if key != "accumulator_sha256"
+        }
+    ) == snapshot["accumulator_sha256"]
+
+    strict_result = {
+        "schema_version": "g1.full_robot.geometry_comparison_result.v1",
+        "agreement": False,
+        "record_sha256": "f" * 64,
+    }
+    before = deepcopy(strict_result)
+    _ = evaluation.to_record()
+    assert strict_result == before
+
+    representation = classify(
+        usd_axis_token="Z",
+        approximate_cylinders_setting=False,
+        observed_local_rotation_xyzw=[
+            0.0,
+            -math.sqrt(0.5),
+            0.0,
+            math.sqrt(0.5),
+        ],
+        backend_placement_rotation_exposed=False,
+        backend_placement_rotation_xyzw=None,
+    )
+    placement = classify(
+        usd_axis_token="X",
+        approximate_cylinders_setting=False,
+        observed_local_rotation_xyzw=[
+            0.0,
+            -math.sqrt(0.5),
+            0.0,
+            math.sqrt(0.5),
+        ],
+        backend_placement_rotation_exposed=True,
+        backend_placement_rotation_xyzw=[
+            0.0,
+            -math.sqrt(0.5),
+            0.0,
+            math.sqrt(0.5),
+        ],
+    )
+    both = classify(
+        usd_axis_token="Z",
+        approximate_cylinders_setting=False,
+        observed_local_rotation_xyzw=[0.0, -1.0, 0.0, 0.0],
+        backend_placement_rotation_exposed=True,
+        backend_placement_rotation_xyzw=[
+            0.0,
+            -math.sqrt(0.5),
+            0.0,
+            math.sqrt(0.5),
+        ],
+    )
+    unresolved = classify(
+        usd_axis_token=None,
+        approximate_cylinders_setting=False,
+        observed_local_rotation_xyzw=[0.0, 0.0, 0.0, 1.0],
+        backend_placement_rotation_exposed=False,
+        backend_placement_rotation_xyzw=None,
+    )
+    assert (
+        representation,
+        placement,
+        both,
+        unresolved,
+    ) == (
+        "REPRESENTATION_ONLY",
+        "PLACEMENT_ONLY",
+        "REPRESENTATION_AND_PLACEMENT",
+        "UNRESOLVED",
+    )
+
+    for mutation, expected_field in (
+        (
+            lambda value: value.one_to_one_binding[
+                "binding_candidates"
+            ].clear(),
+            "one_to_one_binding.binding_candidates",
+        ),
+        (
+            lambda value: value.one_to_one_binding[
+                "binding_candidates"
+            ].append(
+                deepcopy(
+                    value.one_to_one_binding["binding_candidates"][0]
+                )
+            ),
+            "one_to_one_binding.binding_candidates",
+        ),
+        (
+            lambda value: value.property_query_binding.__setitem__(
+                "query_shape_identity_source",
+                "PYTHON_ID",
+            ),
+            "property_query_binding.query_shape_identity_source",
+        ),
+        (
+            lambda value: value.property_query_binding.__setitem__(
+                "query_local_pose_frame",
+                None,
+            ),
+            "property_query_binding.query_local_pose_frame",
+        ),
+        (
+            lambda value: value.usd_binding.__setitem__(
+                "stage_meters_per_unit",
+                None,
+            ),
+            "usd_binding.stage_meters_per_unit",
+        ),
+        (
+            lambda value: value.property_query_binding.__setitem__(
+                "query_actor_or_body_identity",
+                "/World/Other",
+            ),
+            "property_query_binding.query_actor_or_body_identity",
+        ),
+    ):
+        raw_type = type(_backend_provenance_raw_inputs(module))
+        raw_mapping = (
+            _backend_provenance_raw_inputs(module).to_mapping()
+        )
+        mutable = types.SimpleNamespace(**raw_mapping)
+        mutation(mutable)
+        failed = evaluate(raw_type(**vars(mutable))).to_record()
+        assert failed["acquisition_status"] == "PARTIAL"
+        assert failed["interpretation"]["claim_eligible"] is False
+        assert any(
+            item["field_path"] == expected_field
+            for item in failed["field_diagnostics"]
+        )
+
+    raw_type = type(_backend_provenance_raw_inputs(module))
+    raw_mapping = _backend_provenance_raw_inputs(module).to_mapping()
+    raw_mapping["backend_authority"]["backend_shape_type_exposed"] = True
+    raw_mapping["backend_authority"]["backend_shape_type"] = None
+    with pytest.raises(
+        error_type,
+        match="backend_shape_type",
+    ):
+        evaluate(raw_type(**raw_mapping))
+
+    raw_mapping = _backend_provenance_raw_inputs(module).to_mapping()
+    raw_mapping["backend_authority"]["backend_scale_exposed"] = True
+    raw_mapping["backend_authority"]["backend_scale"] = None
+    with pytest.raises(error_type, match="backend_scale"):
+        evaluate(raw_type(**raw_mapping))
+
+    raw_mapping = _backend_provenance_raw_inputs(module).to_mapping()
+    raw_mapping["backend_authority"][
+        "backend_approximation_exposed"
+    ] = True
+    raw_mapping["backend_authority"]["backend_approximation"] = None
+    with pytest.raises(error_type, match="backend_approximation"):
+        evaluate(raw_type(**raw_mapping))
+
+    raw_mapping = _backend_provenance_raw_inputs(module).to_mapping()
+    raw_mapping["backend_authority"][
+        "canonical_primitive_axis_exposed"
+    ] = True
+    raw_mapping["backend_authority"]["canonical_primitive_axis"] = None
+    with pytest.raises(error_type, match="canonical_primitive_axis"):
+        evaluate(raw_type(**raw_mapping))
+
+    raw_mapping = _backend_provenance_raw_inputs(module).to_mapping()
+    raw_mapping["backend_authority"][
+        "backend_local_pose_exposed"
+    ] = True
+    raw_mapping["backend_authority"]["backend_local_pose"] = _backend_pose(
+        from_frame="/World/PressButton/Button",
+        to_frame="/World/PressButton/Button",
+    )
+    raw_mapping["property_query_binding"]["query_local_pose"] = _backend_pose(
+        from_frame="/World/PressButton/Button",
+        to_frame="/World/PressButton/Button",
+        rotation_xyzw=(0.0, 0.0, 1.0, 0.0),
+    )
+    differing = evaluate(raw_type(**raw_mapping)).to_record()
+    assert differing["backend_authority"]["backend_local_pose"] != (
+        differing["property_query_binding"]["query_local_pose"]
+    )
+
+    raw_mapping = _backend_provenance_raw_inputs(module).to_mapping()
+    raw_mapping["backend_authority"]["cooking_source"][
+        "source_visibility"
+    ] = (
+        "PRIVATE_INTERNAL_API"
+    )
+    private = evaluate(raw_type(**raw_mapping)).to_record()
+    assert private["interpretation"]["claim_eligible"] is False
+    assert any(
+        item["field_path"]
+        == "backend_authority.cooking_source.source_visibility"
+        for item in private["field_diagnostics"]
+    )
 
 
 def _option_d_collider(
@@ -2299,6 +2844,21 @@ def test_c2a_runtime_runner_exposes_executable_cli_and_real_factory_seams() -> N
     runner = _runner()
     for name in ("parse_args", "main", "orchestrate_c2a_real_runtime", "build_real_c2a_scene_factory"):
         _capability(runner, name)
+    backend_runner = _backend_provenance_runner()
+    for name in (
+        "parse_args",
+        "main",
+        "orchestrate_backend_provenance",
+        "write_backend_shape_provenance_evidence",
+    ):
+        _capability(backend_runner, name)
+    assert callable(
+        getattr(
+            _real_runtime_module().C2ARealSceneFactory,
+            "acquire_backend_shape_provenance",
+            None,
+        )
+    )
 
 
 def test_c2a_future_factory_seams_require_task_card_provenance() -> None:
@@ -2583,6 +3143,8 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
     option_d = _option_d_module()
     _assert_option_d_inventory_contracts(option_d)
     _assert_option_a_disagreement_contracts(option_d)
+    backend_provenance = _backend_provenance_module()
+    _assert_backend_shape_provenance_contracts(backend_provenance)
 
     real_runtime = _real_runtime_module()
     query_source = inspect.getsource(
@@ -2628,6 +3190,23 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
     assert "record_id" in tracking_factory_source
     assert "record_sha256" in tracking_factory_source
     assert "receipt_validation_error" not in tracking_factory_source
+    acquire_source = inspect.getsource(
+        real_runtime.PhysxResolvedOffsetAdapter.acquire_backend_shape_provenance
+    )
+    assert "self._query_colliders(" in acquire_source
+    assert "evaluate_backend_shape_provenance(" in acquire_source
+    assert "accumulator.append(" in acquire_source
+    assert "accumulator.seal()" in acquire_source
+    assert acquire_source.index("accumulator.append(") < (
+        acquire_source.index("accumulator.seal()")
+    )
+    for forbidden in (
+        "validate_property_query_geometry_binding(",
+        "certify_articulated_sweep(",
+        "send_position_targets(",
+        "set_joint_position_target(",
+    ):
+        assert forbidden not in acquire_source
     tensors = types.ModuleType("omni.physics.tensors")
 
     def require_stage_bound_view(backend_name: str, **kwargs: Any) -> None:
@@ -3004,6 +3583,81 @@ def test_c2a_runtime_failure_preserves_exact_code_message_writes_before_shutdown
     assert disagreement_path.name in checksum_names
     assert factory.events.index("write-evidence") < factory.events.index("factory-close:1")
     assert factory.close_codes == [1]
+
+    backend_module = _backend_provenance_module()
+    evaluation = backend_module.evaluate_backend_shape_provenance(
+        _backend_provenance_raw_inputs(backend_module)
+    )
+    accumulator = backend_module.BackendShapeProvenanceAccumulator(
+        run_id="backend-writer-test"
+    )
+    accumulator.append(evaluation)
+    snapshot = accumulator.seal()
+    backend_runner = _backend_provenance_runner()
+    events: list[str] = []
+
+    class BackendFactory:
+        runtime_metadata = {
+            "simulator": "6.0.1",
+            "python": "3.12",
+            "observed_driver": "550.144.03",
+            "driver_validation": "UNVALIDATED",
+            "physics_device": "cpu",
+            "broadphase_type": "MBP",
+            "gpu_dynamics_enabled": False,
+        }
+
+        def acquire_backend_shape_provenance(self) -> dict[str, Any]:
+            events.append("acquire")
+            return {
+                "snapshot": snapshot,
+                "lifecycle_records": [],
+                "lifecycle_audit": {
+                    "schema_version": "g1.scene.lifecycle.audit.v1",
+                    "all_allocations_closed": True,
+                },
+            }
+
+        def close(self, *, exit_code: int) -> None:
+            events.append(f"close:{exit_code}")
+
+    real_writer = backend_runner.write_backend_shape_provenance_evidence
+
+    def backend_writer(**payload: Any) -> dict[str, Any]:
+        events.append("write")
+        return real_writer(**payload)
+
+    backend_output = tmp_path / "backend"
+    backend_outcome = backend_runner.orchestrate_backend_provenance(
+        output=backend_output,
+        repository_commit="c" * 40,
+        command=[sys.executable, str(BACKEND_PROVENANCE_RUNNER_PATH)],
+        factory_builder=BackendFactory,
+        evidence_writer=backend_writer,
+    )
+    assert backend_outcome["exit_code"] == 0
+    assert events == ["acquire", "write", "close:0"]
+    backend_report = json.loads(
+        (backend_output / "report.json").read_text(encoding="utf-8")
+    )
+    assert backend_report["backend_record_count"] == 1
+    assert backend_report["readiness_sample_count"] == 0
+    assert backend_report["controller_command_count"] == 0
+    assert backend_report["actuation_performed"] is False
+    assert backend_report["selected_pose_id"] is None
+    assert backend_report["selected_command_cap_m"] is None
+    assert backend_report["post_abort_actuation_count"] == 0
+    assert backend_report["force_vector_valid"] is False
+    assert backend_report["wrench_valid"] is False
+    assert backend_report["raw_impulse_used_as_force"] is False
+    backend_manifest = json.loads(
+        (backend_output / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert backend_manifest["evidence_finished_before_shutdown"] is True
+    backend_checksums = (
+        backend_output / "checksums.sha256"
+    ).read_text(encoding="utf-8")
+    assert "backend_shape_provenance.jsonl" in backend_checksums
 
 
 def test_c2a_offline_validation_failure_retains_all_raw_lula_records_for_evidence(tmp_path: Path) -> None:
@@ -3523,6 +4177,29 @@ def test_c2a_real_runtime_modules_are_import_safe_and_real_factory_is_lazy() -> 
     assert "from pxr" not in option_top_level
     assert "import omni" not in option_top_level
     assert "from isaacsim" not in option_top_level
+    backend_module = _backend_provenance_module()
+    backend_source = Path(backend_module.__file__).read_text(
+        encoding="utf-8"
+    )
+    backend_top_level = "\n".join(
+        line
+        for line in backend_source.splitlines()
+        if not line.startswith(" ")
+    )
+    assert "from pxr" not in backend_top_level
+    assert "import omni" not in backend_top_level
+    assert "from isaacsim" not in backend_top_level
+    backend_runner_source = BACKEND_PROVENANCE_RUNNER_PATH.read_text(
+        encoding="utf-8"
+    )
+    backend_runner_top_level = "\n".join(
+        line
+        for line in backend_runner_source.splitlines()
+        if not line.startswith(" ")
+    )
+    assert "from pxr" not in backend_runner_top_level
+    assert "import omni" not in backend_runner_top_level
+    assert "from isaacsim" not in backend_runner_top_level
 
 
 def test_c2a_cli_subprocess_failure_is_nonzero_without_importing_isaac(tmp_path: Path) -> None:
