@@ -14,6 +14,7 @@ from pathlib import Path
 import platform
 import subprocess
 import time
+import tomllib
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -64,6 +65,54 @@ def _read_yaml(path: Path) -> dict[str, Any]:
 def _resolve(root: Path, path: str | Path) -> Path:
     candidate = Path(path)
     return candidate if candidate.is_absolute() else (root / candidate).resolve()
+
+
+def _physx_extension_package_provenance(physx_module: Any) -> dict[str, Any]:
+    """Read installed package/stub identity without claiming source equivalence."""
+
+    module_paths = [
+        Path(value).resolve()
+        for value in getattr(physx_module, "__path__", ())
+    ]
+    if len(module_paths) != 1:
+        _fail(
+            "G1_BACKEND_SHAPE_PROVENANCE_INVALID",
+            "installed omni.physx package root is ambiguous",
+        )
+    module_path = module_paths[0]
+    if module_path.name != "physx" or module_path.parent.name != "omni":
+        _fail(
+            "G1_BACKEND_SHAPE_PROVENANCE_INVALID",
+            "installed omni.physx package root is unexpected",
+        )
+    extension_root = module_path.parents[1]
+    extension_toml = extension_root / "config" / "extension.toml"
+    generated_toml = extension_root / "config" / "extension.gen.toml"
+    stub_path = module_path / "bindings" / "_physx.pyi"
+    for required in (extension_toml, generated_toml, stub_path):
+        if not required.is_file():
+            _fail(
+                "G1_BACKEND_SHAPE_PROVENANCE_INVALID",
+                f"installed PhysX provenance file is missing: {required}",
+            )
+    package = tomllib.loads(extension_toml.read_text(encoding="utf-8"))[
+        "package"
+    ]
+    generated = tomllib.loads(generated_toml.read_text(encoding="utf-8"))[
+        "package"
+    ]
+    published = generated["publish"]
+    metadata_digest = hashlib.sha256(
+        extension_toml.read_bytes() + generated_toml.read_bytes()
+    ).hexdigest()
+    return {
+        "physx_extension_version": str(package["version"]),
+        "physx_extension_build": str(published["buildNumber"]),
+        "kit_version": str(published["kitVersion"]).split("+", 1)[0],
+        "installed_stub_sha256": sha256_file(stub_path),
+        "installed_extension_metadata_sha256": metadata_digest,
+        "extension_root_name": extension_root.name,
+    }
 
 
 def _matrix_to_list(matrix: Any) -> list[list[float]]:
@@ -219,6 +268,29 @@ def _option_a_pose_record(
         ),
         "quaternion_order": "xyzw",
         "scale_xyz": [float(component) for component in scale],
+    }
+
+
+def _backend_pose_projection(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Project an Option A pose without changing its numerical values."""
+
+    return {
+        "from_frame": str(value["from_frame"]),
+        "to_frame": str(value["to_frame"]),
+        "translation_m": [
+            float(component) for component in value["translation_m"]
+        ],
+        "rotation_xyzw": [
+            float(component) for component in value["rotation_xyzw"]
+        ],
+        "quaternion_order": str(value["quaternion_order"]),
+        "scale": [
+            float(component) for component in value["scale_xyz"]
+        ],
+        "matrix_row_major_4x4": [
+            [float(component) for component in row]
+            for row in value["matrix_row_major_4x4"]
+        ],
     }
 
 
@@ -740,6 +812,485 @@ class PhysxResolvedOffsetAdapter:
                 collider["property_query_ordinal"]
             )
         return colliders
+
+    def acquire_backend_shape_provenance(
+        self,
+        *,
+        stage: Any,
+        collider_body_paths: Mapping[str, str],
+        stage_lifecycle_token: str,
+        lifecycle_record: Mapping[str, Any],
+        runtime_metadata: Mapping[str, Any],
+        physics_policy: Mapping[str, Any],
+        accumulator: Any,
+    ) -> dict[str, Any]:
+        """Retain public query/source provenance without deciding authority."""
+
+        import carb  # type: ignore
+        import omni.physx  # type: ignore
+        from pxr import Usd, UsdGeom  # type: ignore
+
+        from isaac_tactile_libero.runtime.g1_backend_shape_provenance import (
+            BackendShapeProvenanceAccumulator,
+            BackendShapeProvenanceRawInputs,
+            canonical_sha256,
+            evaluate_backend_shape_provenance,
+        )
+
+        if not isinstance(accumulator, BackendShapeProvenanceAccumulator):
+            _fail(
+                "G1_BACKEND_SHAPE_PROVENANCE_INVALID",
+                "backend provenance lacks its run-owned accumulator",
+            )
+        lifecycle_token = str(stage_lifecycle_token)
+        lifecycle = dict(lifecycle_record)
+        if (
+            len(lifecycle_token) != 64
+            or lifecycle.get("stage_lifecycle_token") != lifecycle_token
+            or not lifecycle.get("lifecycle_record_sha256")
+        ):
+            _fail(
+                "G1_BACKEND_SHAPE_PROVENANCE_INVALID",
+                "backend provenance lifecycle identity is unavailable",
+            )
+        if (
+            str(physics_policy.get("physics_device")) != "cpu"
+            or str(physics_policy.get("broadphase_type")) != "MBP"
+            or physics_policy.get("gpu_dynamics_enabled") is not False
+        ):
+            _fail(
+                "G1_BACKEND_SHAPE_PROVENANCE_INVALID",
+                "backend provenance physics policy is not CPU/MBP/GPU-off",
+            )
+        settings = carb.settings.get_settings()
+        approximate_setting = settings.get(
+            "/physics/collisionApproximateCylinders"
+        )
+        if not isinstance(approximate_setting, bool):
+            _fail(
+                "G1_BACKEND_SHAPE_PROVENANCE_INVALID",
+                "collisionApproximateCylinders setting is unavailable",
+            )
+        package = _physx_extension_package_provenance(omni.physx)
+        by_body: dict[str, list[str]] = {}
+        for collider_path, body_path in collider_body_paths.items():
+            by_body.setdefault(str(body_path), []).append(
+                str(collider_path)
+            )
+        world_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+        for body_path in sorted(by_body):
+            queried = self._query_colliders(
+                stage,
+                body_path,
+                query_operation_index=0,
+            )
+            repeated = self._query_colliders(
+                stage,
+                body_path,
+                query_operation_index=1,
+            )
+            comparable = lambda record: {
+                key: value
+                for key, value in record.items()
+                if key != "query_operation_index"
+            }
+            if [comparable(value) for value in queried] != [
+                comparable(value) for value in repeated
+            ]:
+                _fail(
+                    "G1_BACKEND_SHAPE_PROVENANCE_INVALID",
+                    f"property-query result is unstable for {body_path}",
+                )
+            expected_paths = sorted(by_body[body_path])
+            queried_paths = sorted(
+                str(value["collider_prim_path"]) for value in queried
+            )
+            if queried_paths != expected_paths:
+                _fail(
+                    "G1_BACKEND_SHAPE_PROVENANCE_INVALID",
+                    f"property-query path set differs for {body_path}",
+                )
+            body_prim = stage.GetPrimAtPath(body_path)
+            if body_prim is None or not body_prim.IsValid():
+                _fail(
+                    "G1_BACKEND_SHAPE_PROVENANCE_INVALID",
+                    f"queried rigid body is invalid: {body_path}",
+                )
+            body_world = np.asarray(
+                _gf_matrix_to_column_major_list(
+                    world_cache.GetLocalToWorldTransform(body_prim)
+                ),
+                dtype=np.float64,
+            )
+            repeated_by_path = {
+                str(value["collider_prim_path"]): value
+                for value in repeated
+            }
+            for query in queried:
+                collider_path = str(query["collider_prim_path"])
+                repeated_query = repeated_by_path[collider_path]
+                collider_prim = stage.GetPrimAtPath(collider_path)
+                if collider_prim is None or not collider_prim.IsValid():
+                    _fail(
+                        "G1_BACKEND_SHAPE_PROVENANCE_INVALID",
+                        f"query collider is invalid: {collider_path}",
+                    )
+                collider_world = np.asarray(
+                    _gf_matrix_to_column_major_list(
+                        world_cache.GetLocalToWorldTransform(
+                            collider_prim
+                        )
+                    ),
+                    dtype=np.float64,
+                )
+                relative = np.linalg.inv(body_world) @ collider_world
+                local_transform, local_scale = _matrix_without_scale(
+                    relative.tolist()
+                )
+                (
+                    collider_type,
+                    approximation,
+                    shape_parameters,
+                ) = _collider_shape_record(collider_prim, 1.0)
+                meters_per_unit = float(
+                    UsdGeom.GetStageMetersPerUnit(stage)
+                )
+                usd_provenance = _extract_usd_xform_provenance(
+                    stage=stage,
+                    geometry_prim=collider_prim,
+                    rigid_body_prim=body_prim,
+                    meters_per_unit=meters_per_unit,
+                )
+                query_local = np.eye(4, dtype=np.float64)
+                query_local[:3, :3] = np.asarray(
+                    _rotation_matrix_from_xyzw(
+                        query[
+                            "property_query_local_rotation_xyzw"
+                        ]
+                    ),
+                    dtype=np.float64,
+                )
+                query_local[:3, 3] = np.asarray(
+                    query["property_query_local_position"],
+                    dtype=np.float64,
+                )
+                query_world = body_world @ query_local
+                query_pose = _backend_pose_projection(
+                    _option_a_pose_record(
+                        matrix=query_local,
+                        from_frame=collider_path,
+                        to_frame=body_path,
+                        meters_per_unit=meters_per_unit,
+                    )
+                )
+                query_world_pose = _backend_pose_projection(
+                    _option_a_pose_record(
+                        matrix=query_world,
+                        from_frame=collider_path,
+                        to_frame="world",
+                        meters_per_unit=meters_per_unit,
+                    )
+                )
+                query_min = [
+                    float(value) * meters_per_unit
+                    for value in query[
+                        "property_query_local_aabb_min"
+                    ]
+                ]
+                query_max = [
+                    float(value) * meters_per_unit
+                    for value in query[
+                        "property_query_local_aabb_max"
+                    ]
+                ]
+                query_extent = (
+                    np.asarray(query_max, dtype=np.float64)
+                    - np.asarray(query_min, dtype=np.float64)
+                ).tolist()
+                query_dimensions = {
+                    "local_aabb_extent_m": query_extent,
+                    "volume_m3": float(query["property_query_volume"])
+                    * meters_per_unit**3,
+                }
+                query_observation = {
+                    "stage_identifier": int(
+                        query["property_query_stage_identifier"]
+                    ),
+                    "stage_lifecycle_token": lifecycle_token,
+                    "rigid_body_prim_path": body_path,
+                    "collider_prim_path": collider_path,
+                    "query_local_pose": query_pose,
+                    "query_bounds": {
+                        "local_aabb_min_m": query_min,
+                        "local_aabb_max_m": query_max,
+                    },
+                    "query_dimensions": query_dimensions,
+                    "query_path_identifier": int(
+                        query["property_query_path_identifier"]
+                    ),
+                }
+                query_identity = canonical_sha256(query_observation)
+                repeated_observation = {
+                    **query_observation,
+                    "query_local_pose": _backend_pose_projection(
+                        _option_a_pose_record(
+                            matrix=np.block(
+                                [
+                                    [
+                                        np.asarray(
+                                            _rotation_matrix_from_xyzw(
+                                                repeated_query[
+                                                    "property_query_local_rotation_xyzw"
+                                                ]
+                                            ),
+                                            dtype=np.float64,
+                                        ),
+                                        np.asarray(
+                                            repeated_query[
+                                                "property_query_local_position"
+                                            ],
+                                            dtype=np.float64,
+                                        ).reshape(3, 1),
+                                    ],
+                                    [
+                                        np.zeros((1, 3), dtype=np.float64),
+                                        np.ones((1, 1), dtype=np.float64),
+                                    ],
+                                ]
+                            ).tolist(),
+                            from_frame=collider_path,
+                            to_frame=body_path,
+                            meters_per_unit=meters_per_unit,
+                        )
+                    ),
+                }
+                repeated_identity = canonical_sha256(
+                    repeated_observation
+                )
+                axis_token = shape_parameters.get("axis")
+                if axis_token is not None:
+                    axis_token = str(axis_token).upper()
+                analytic_cylinder = (
+                    collider_type == "cylinder"
+                    and approximation == "analytic"
+                    and approximate_setting is False
+                )
+                usd_local_pose = _backend_pose_projection(
+                    usd_provenance["usd_local_to_rigid_body_pose"]
+                )
+                usd_world_pose = _backend_pose_projection(
+                    usd_provenance["usd_world_pose"]
+                )
+                usd_dimensions = {
+                    key: value
+                    for key, value in dict(shape_parameters).items()
+                    if key != "axis"
+                }
+                usd_prim_digest = canonical_sha256(
+                    {
+                        "body_prim_path": body_path,
+                        "collider_prim_path": collider_path,
+                        "geometry_type": str(
+                            collider_prim.GetTypeName()
+                        ),
+                        "axis": axis_token,
+                        "dimensions": usd_dimensions,
+                        "scale": local_scale,
+                        "approximation": approximation,
+                        "local_pose": usd_local_pose,
+                    }
+                )
+                runtime_authority = {
+                    "isaac_sim_version": str(
+                        runtime_metadata.get("simulator", "6.0.1")
+                    ),
+                    **{
+                        key: package[key]
+                        for key in (
+                            "physx_extension_version",
+                            "physx_extension_build",
+                            "kit_version",
+                            "installed_stub_sha256",
+                            "installed_extension_metadata_sha256",
+                        )
+                    },
+                    "backend_name": "physx",
+                    "query_api": (
+                        "omni.physx.IPhysxPropertyQuery.query_prim"
+                    ),
+                    "query_api_version": package[
+                        "physx_extension_version"
+                    ],
+                    "query_api_visibility": "PUBLIC",
+                    "stage_identifier": int(
+                        query["property_query_stage_identifier"]
+                    ),
+                    "stage_lifecycle_token": lifecycle_token,
+                    "physics_scene_path": "/World/PhysicsScene",
+                    "physics_device": "cpu",
+                    "broadphase_type": "MBP",
+                    "gpu_dynamics_enabled": False,
+                    "native_gpu_contact_enabled": False,
+                    "approximate_cylinders_setting": approximate_setting,
+                    "source_repository": "NVIDIA-Omniverse/PhysX",
+                    "source_commit": (
+                        "b4b286abff6f2b3debd1d1acb120dc428765cf2e"
+                    ),
+                    "source_binary_match": "UNPROVEN",
+                }
+                backend_authority = {
+                    "backend_shape_handle_exposed": False,
+                    "backend_shape_handle": None,
+                    "backend_shape_handle_stability": "UNAVAILABLE",
+                    "backend_shape_type_exposed": False,
+                    "backend_shape_type": None,
+                    "backend_geometry_exposed": False,
+                    "backend_scale_exposed": False,
+                    "backend_scale": None,
+                    "backend_approximation_exposed": False,
+                    "backend_approximation": None,
+                    "backend_local_pose_exposed": False,
+                    "backend_local_pose": None,
+                    "backend_world_pose_exposed": False,
+                    "backend_world_pose": None,
+                    "backend_narrowphase_pose_exposed": False,
+                    "backend_narrowphase_pose": None,
+                    "canonical_primitive_axis_exposed": (
+                        analytic_cylinder
+                    ),
+                    "canonical_primitive_axis": (
+                        "X" if analytic_cylinder else None
+                    ),
+                    "primitive_representation_transform": None,
+                    "cooking_source": {
+                        "repository": "NVIDIA-Omniverse/PhysX",
+                        "commit": (
+                            "b4b286abff6f2b3debd1d1acb120dc428765cf2e"
+                        ),
+                        "source_visibility": (
+                            "OFFICIAL_PUBLIC_SOURCE"
+                        ),
+                        "installed_binary_match": "UNPROVEN",
+                        "analytic_branch": analytic_cylinder,
+                    },
+                    "cooked_data_identifier": None,
+                }
+                evaluation = evaluate_backend_shape_provenance(
+                    BackendShapeProvenanceRawInputs(
+                        runtime_authority=runtime_authority,
+                        usd_binding={
+                            "rigid_body_prim_path": body_path,
+                            "collider_prim_path": collider_path,
+                            "geometry_prim_path": collider_path,
+                            "usd_geometry_type": str(
+                                collider_prim.GetTypeName()
+                            ),
+                            "usd_axis_token": axis_token,
+                            "usd_dimensions": usd_dimensions,
+                            "usd_scale": [
+                                float(value) for value in local_scale
+                            ],
+                            "usd_approximation": approximation,
+                            "usd_local_pose": usd_local_pose,
+                            "usd_local_pose_frame": body_path,
+                            "usd_world_pose": usd_world_pose,
+                            "usd_prim_digest": usd_prim_digest,
+                            "stage_meters_per_unit": meters_per_unit,
+                            "stage_up_axis": str(
+                                UsdGeom.GetStageUpAxis(stage)
+                            ),
+                        },
+                        property_query_binding={
+                            "operation_index": int(
+                                query["query_operation_index"]
+                            ),
+                            "property_index": int(
+                                query["property_query_ordinal"]
+                            ),
+                            "property_count": int(
+                                query["query_property_count"]
+                            ),
+                            "shape_index": int(
+                                query["query_shape_index"]
+                            ),
+                            "query_actor_or_body_identity": body_path,
+                            "query_shape_identity": query_identity,
+                            "query_shape_identity_source": (
+                                "STAGE_LIFECYCLE_USD_PATH_QUERY_OBSERVATION"
+                            ),
+                            "query_local_pose": query_pose,
+                            "query_local_pose_frame": (
+                                "property_query_mass_information_local"
+                            ),
+                            "query_world_pose": query_world_pose,
+                            "query_bounds": {
+                                "local_aabb_min_m": query_min,
+                                "local_aabb_max_m": query_max,
+                            },
+                            "query_dimensions": query_dimensions,
+                            "query_scale": None,
+                            "query_geometry_type": None,
+                            "query_approximation": None,
+                            "query_path_identifier": int(
+                                query[
+                                    "property_query_path_identifier"
+                                ]
+                            ),
+                            "query_stage_identifier": int(
+                                query[
+                                    "property_query_stage_identifier"
+                                ]
+                            ),
+                        },
+                        backend_authority=backend_authority,
+                        one_to_one_binding={
+                            "binding_candidates": [
+                                {
+                                    "rigid_body_prim_path": body_path,
+                                    "collider_prim_path": collider_path,
+                                    "stage_collider_match_count": (
+                                        expected_paths.count(
+                                            collider_path
+                                        )
+                                    ),
+                                    "query_path_match_count": (
+                                        queried_paths.count(
+                                            collider_path
+                                        )
+                                    ),
+                                    "query_shape_identity": (
+                                        query_identity
+                                    ),
+                                    "repeated_query_shape_identity": (
+                                        repeated_identity
+                                    ),
+                                }
+                            ],
+                            "binding_method": (
+                                "STAGE_LIFECYCLE_PLUS_DECODED_QUERY_PATH"
+                            ),
+                            "binding_authority": (
+                                "PUBLIC_PROPERTY_QUERY_PATH_ID"
+                            ),
+                        },
+                        safety_boundary={
+                            "read_only_acquisition": True,
+                            "actuation_performed": False,
+                            "controller_command_count": 0,
+                            "readiness_sample_count": 0,
+                            "selected_pose_id": None,
+                            "selected_pose_sha256": None,
+                            "selected_command_cap_m": None,
+                            "post_abort_actuation_count": 0,
+                            "force_vector_valid": False,
+                            "wrench_valid": False,
+                            "raw_impulse_used_as_force": False,
+                            "claim_eligible": False,
+                        },
+                    )
+                )
+                accumulator.append(evaluation)
+        return accumulator.seal()
 
     def resolve(
         self,
@@ -2031,11 +2582,18 @@ class C2ARealSceneFactory:
             GeometryAgreementAccumulator,
             SceneLifecycleAuthority,
         )
+        from isaac_tactile_libero.runtime.g1_backend_shape_provenance import (
+            BackendShapeProvenanceAccumulator,
+        )
 
         self.lifecycle_authority = SceneLifecycleAuthority(run_id=str(run_id))
         self.geometry_comparison_accumulator = (
             GeometryAgreementAccumulator(run_id=str(run_id))
         )
+        self.backend_shape_provenance_accumulator = (
+            BackendShapeProvenanceAccumulator(run_id=str(run_id))
+        )
+        self._backend_provenance_acquired = False
         self.lifecycle_records: list[dict[str, Any]] = []
         self.lifecycle_close_records: list[dict[str, Any]] = []
         self.scene_creation_failures: list[dict[str, Any]] = []
@@ -2635,6 +3193,201 @@ class C2ARealSceneFactory:
                     f"{cleanup_error['message']}"
                 )
             raise error
+
+    def acquire_backend_shape_provenance(self) -> dict[str, Any]:
+        """Acquire one read-only stage/query provenance snapshot."""
+
+        if self._backend_provenance_acquired:
+            _fail(
+                "G1_BACKEND_SHAPE_PROVENANCE_INVALID",
+                "backend provenance acquisition is single-use",
+            )
+        self._backend_provenance_acquired = True
+        allocation = self.lifecycle_authority.allocate(
+            trial_id="backend-shape-provenance-diagnostic",
+            planned_fresh_scene_token=(
+                f"backend-shape-provenance-{self.seed}"
+            ),
+        )
+        runtime: Any | None = None
+        latch: FR3PositionTargetLatch | None = None
+        lifecycle_record: dict[str, Any] | None = None
+        snapshot: dict[str, Any] | None = None
+        error: BaseException | None = None
+        try:
+            runtime, _mechanism, capture = self._build_runtime(
+                candidate=None,
+                authoring_record=None,
+                lifecycle_allocation=allocation,
+            )
+            joint = runtime.read_joint_state()
+            if tuple(joint.joint_names) != C2A_ARTICULATION_JOINT_NAMES:
+                _fail(
+                    "G1_BACKEND_SHAPE_PROVENANCE_INVALID",
+                    "diagnostic articulation joint order differs",
+                )
+            articulation = (
+                runtime.ik_runtime.ee_controller.controller.articulation
+            )
+            target_reader = getattr(
+                articulation,
+                "get_dof_position_targets",
+                None,
+            )
+            if not callable(target_reader):
+                _fail(
+                    "G1_BACKEND_SHAPE_PROVENANCE_INVALID",
+                    "diagnostic target reader is unavailable",
+                )
+            target = np.asarray(
+                target_reader(),
+                dtype=np.float64,
+            ).reshape(-1)
+            if target.shape != (9,) or not np.all(np.isfinite(target)):
+                _fail(
+                    "G1_BACKEND_SHAPE_PROVENANCE_INVALID",
+                    "diagnostic authored target is invalid",
+                )
+            latch = FR3PositionTargetLatch(
+                dof_names=joint.joint_names,
+                scene_token=str(
+                    allocation["planned_fresh_scene_token"]
+                ),
+                prim_path=runtime.articulation_root_path,
+                articulation_object_id=id(articulation),
+                stage_lifecycle_token=str(
+                    capture["stage_lifecycle_token"]
+                ),
+            )
+            latch.seed(
+                target,
+                dof_names=joint.joint_names,
+                scene_token=str(
+                    allocation["planned_fresh_scene_token"]
+                ),
+                source="backend_provenance_read_only_target_observation",
+                prim_path=runtime.articulation_root_path,
+                articulation_object_id=id(articulation),
+            )
+            lifecycle_record = self.lifecycle_authority.finalize(
+                allocation,
+                stage_lifecycle_token=str(
+                    capture["stage_lifecycle_token"]
+                ),
+                articulation_root_path=runtime.articulation_root_path,
+                articulation_joint_names=joint.joint_names,
+                preplay_authored_map_sha256=str(
+                    capture["preplay_authored_map_sha256"]
+                ),
+                latch_generation=int(
+                    latch.provenance["latch_generation"]
+                ),
+            )
+            self.lifecycle_records.append(dict(lifecycle_record))
+            stage = runtime.ik_runtime.ee_controller.controller.stage
+            collider_body_paths = discover_full_robot_collider_body_paths(
+                stage
+            )
+            snapshot = PhysxResolvedOffsetAdapter(
+                simulation_app=self.simulation_app
+            ).acquire_backend_shape_provenance(
+                stage=stage,
+                collider_body_paths=collider_body_paths,
+                stage_lifecycle_token=str(
+                    lifecycle_record["stage_lifecycle_token"]
+                ),
+                lifecycle_record=lifecycle_record,
+                runtime_metadata=self.runtime_metadata,
+                physics_policy={
+                    "physics_device": "cpu",
+                    "broadphase_type": "MBP",
+                    "gpu_dynamics_enabled": False,
+                },
+                accumulator=self.backend_shape_provenance_accumulator,
+            )
+        except BaseException as caught:
+            error = caught
+        finally:
+            if lifecycle_record is not None and latch is not None:
+                try:
+                    self.lifecycle_close_records.append(
+                        self.lifecycle_authority.close_scene(
+                            lifecycle_record,
+                            stage_lifecycle_token=str(
+                                lifecycle_record[
+                                    "stage_lifecycle_token"
+                                ]
+                            ),
+                            latch_invalidator=lambda: latch.invalidate(
+                                "backend provenance scene closed"
+                            ),
+                        )
+                    )
+                except BaseException as close_error:
+                    if error is None:
+                        error = close_error
+                    else:
+                        error.add_note(
+                            "backend provenance lifecycle close failed: "
+                            f"{type(close_error).__name__}: {close_error}"
+                        )
+            elif lifecycle_record is None:
+                try:
+                    self.lifecycle_close_records.append(
+                        self.lifecycle_authority.abandon_scene(
+                            allocation,
+                            reason=(
+                                f"{type(error).__name__}: {error}"
+                                if error is not None
+                                else "backend provenance lifecycle unavailable"
+                            ),
+                        )
+                    )
+                except BaseException as abandon_error:
+                    if error is None:
+                        error = abandon_error
+                    else:
+                        error.add_note(
+                            "backend provenance lifecycle abandon failed: "
+                            f"{type(abandon_error).__name__}: "
+                            f"{abandon_error}"
+                        )
+            if runtime is not None:
+                try:
+                    runtime.close()
+                except BaseException as runtime_close_error:
+                    if error is None:
+                        error = runtime_close_error
+                    else:
+                        error.add_note(
+                            "backend provenance runtime close failed: "
+                            f"{type(runtime_close_error).__name__}: "
+                            f"{runtime_close_error}"
+                        )
+            self._stop_timeline()
+        lifecycle_audit = self.finalize_lifecycle_audit()
+        if error is not None:
+            setattr(
+                error,
+                "backend_provenance_snapshot",
+                self.backend_shape_provenance_accumulator.snapshot(),
+            )
+            raise error
+        if snapshot is None:
+            _fail(
+                "G1_BACKEND_SHAPE_PROVENANCE_INVALID",
+                "backend provenance snapshot is unavailable",
+            )
+        return {
+            "snapshot": snapshot,
+            "lifecycle_records": [
+                dict(record) for record in self.lifecycle_records
+            ],
+            "lifecycle_close_records": [
+                dict(record) for record in self.lifecycle_close_records
+            ],
+            "lifecycle_audit": lifecycle_audit,
+        }
 
     def finalize_lifecycle_audit(self) -> dict[str, Any]:
         if self.lifecycle_audit is not None:
