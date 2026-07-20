@@ -428,9 +428,11 @@ def _assert_option_a_disagreement_contracts(module: Any) -> None:
         None,
     )
     compare = getattr(module, "compare_geometry_poses_same_frame", None)
+    build = getattr(module, "build_geometry_disagreement_record", None)
     assert callable(validate)
     assert callable(finalize)
     assert callable(compare)
+    assert callable(build)
 
     record = _option_a_disagreement_record(module)
     validated = validate(record)
@@ -456,6 +458,65 @@ def _assert_option_a_disagreement_contracts(module: Any) -> None:
     assert validated["scale_bound"] is None
     assert validated["translation_residual_vector_m"] == [0.025, 0.0, 0.0]
     assert validated["translation_residual_norm_m"] == 0.025
+
+    float32_query = _option_a_disagreement_inputs(module)
+    raw_quaternion = [0.0, 0.0, 0.70710677, 0.70710677]
+    round_trip_quaternion = (
+        0.0,
+        0.0,
+        0.7071067811865476,
+        0.7071067811865475,
+    )
+    query_pose = _option_a_pose(
+        from_frame=float32_query["collider"]["collider_prim_path"],
+        to_frame=float32_query["collider"]["rigid_body_prim_path"],
+        translation=(0.025, 0.0, 0.0),
+        rotation_xyzw=round_trip_quaternion,
+    )
+    query_world_pose = _option_a_pose(
+        from_frame=float32_query["collider"]["collider_prim_path"],
+        to_frame="world",
+        translation=(0.525, 0.0, 0.5),
+        rotation_xyzw=round_trip_quaternion,
+    )
+    float32_query["query"]["query_local_pose_raw"][
+        "rotation_xyzw"
+    ] = raw_quaternion
+    float32_query["query"]["query_local_to_rigid_body_pose"] = query_pose
+    float32_query["query"]["query_world_pose"] = query_world_pose
+    float32_query["comparison"] = compare(
+        usd_pose_in_comparison_frame=float32_query["usd"][
+            "usd_local_to_rigid_body_pose"
+        ],
+        query_pose_in_comparison_frame=query_pose,
+        query_local_rotation_xyzw=raw_quaternion,
+        query_scale=None,
+        usd_shape_dimensions=float32_query["query"][
+            "query_shape_dimensions"
+        ],
+        query_shape_dimensions=float32_query["query"][
+            "query_shape_dimensions"
+        ],
+    )
+    try:
+        round_trip_record = build(**float32_query)
+    except Exception as error:
+        pytest.fail(
+            "equivalent raw/composed property-query rotation was rejected "
+            f"before disagreement retention: {error}"
+        )
+    assert (
+        round_trip_record["query_local_pose_raw"]["rotation_xyzw"]
+        == raw_quaternion
+    )
+    assert round_trip_record["agreement"] is False
+
+    different_rotation = deepcopy(float32_query)
+    different_rotation["query"]["query_local_pose_raw"][
+        "rotation_xyzw"
+    ] = [0.0, 0.0, 0.0, 1.0]
+    with pytest.raises(Exception):
+        build(**different_rotation)
 
     identity_fields = (
         "schema_version",
