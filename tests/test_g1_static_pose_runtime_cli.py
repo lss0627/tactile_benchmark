@@ -712,6 +712,7 @@ def _assert_option_a_disagreement_contracts(module: Any) -> None:
         **other_usd,
         "body_prim_path": record["rigid_body_prim_path"],
         "collider_prim_path": record["collider_prim_path"],
+        "geometry_type": "Cube",
         "scale": [1.0, 2.0, 0.5],
     }
     with pytest.raises(Exception) as stale_shape_receipt:

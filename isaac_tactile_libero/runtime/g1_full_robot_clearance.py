@@ -2846,6 +2846,8 @@ def validate_property_query_geometry_binding(
                 != list(usd_geometry.get("scale", ()))
                 or receipt["collider_type"]
                 != usd_geometry.get("collider_type")
+                or receipt["geometry_type"]
+                != usd_geometry.get("geometry_type")
                 or receipt["approximation"]
                 != usd_geometry.get("approximation")
                 or receipt["mesh_or_primitive_authority"]

@@ -907,6 +907,9 @@ class PhysxResolvedOffsetAdapter:
                     "local_transform": local_transform,
                     "scale": local_scale,
                     "collider_type": collider_type,
+                    "geometry_type": str(
+                        collider_prim.GetTypeName()
+                    ),
                     "approximation": approximation,
                     "shape_parameters": shape_parameters,
                 }
