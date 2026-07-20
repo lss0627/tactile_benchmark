@@ -418,7 +418,13 @@ def _option_a_disagreement_record(module: Any) -> dict[str, Any]:
 
 def _option_a_round_trip_receipt_binding_inputs(
     module: Any,
-) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], float]:
+) -> tuple[
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any],
+    float,
+    dict[str, Any],
+]:
     inputs = _option_a_disagreement_inputs(module)
     body = inputs["collider"]["rigid_body_prim_path"]
     collider = inputs["collider"]["collider_prim_path"]
@@ -513,6 +519,7 @@ def _option_a_round_trip_receipt_binding_inputs(
     inputs["query"]["query_world_pose"] = deepcopy(query_pose)
     inputs["query"]["query_world_pose"]["to_frame"] = "world"
     inputs["query"]["query_shape_dimensions"] = query_dimensions
+    inputs["usd"]["usd_shape_dimensions"] = usd_dimensions
     support_points = np.asarray(
         [
             [x, y, z]
@@ -559,7 +566,36 @@ def _option_a_round_trip_receipt_binding_inputs(
             )
         )
     )
-    return property_query, usd_geometry, record, strict_rotation_residual
+    return (
+        property_query,
+        usd_geometry,
+        record,
+        strict_rotation_residual,
+        inputs,
+    )
+
+
+def _option_a_canonical_evaluation(module: Any) -> Any:
+    raw_type = getattr(module, "GeometryAgreementRawInputs", None)
+    evaluate = getattr(module, "evaluate_geometry_agreement", None)
+    assert raw_type is not None, "missing immutable geometry raw-input model"
+    assert callable(evaluate), "missing single canonical geometry evaluator"
+    (
+        property_query,
+        usd_geometry,
+        _legacy_record,
+        _strict_rotation_residual,
+        inputs,
+    ) = _option_a_round_trip_receipt_binding_inputs(module)
+    raw_inputs = raw_type(
+        identity=deepcopy(inputs["identity"]),
+        collider=deepcopy(inputs["collider"]),
+        usd=deepcopy(inputs["usd"]),
+        query=deepcopy(inputs["query"]),
+        usd_geometry=deepcopy(usd_geometry),
+        property_query_record=deepcopy(property_query),
+    )
+    return evaluate(raw_inputs)
 
 
 def _assert_option_a_disagreement_contracts(module: Any) -> None:
@@ -669,6 +705,7 @@ def _assert_option_a_disagreement_contracts(module: Any) -> None:
         round_trip_usd,
         round_trip_receipt,
         strict_rotation_residual,
+        round_trip_inputs,
     ) = _option_a_round_trip_receipt_binding_inputs(module)
     assert (
         round_trip_receipt["bound_authority"][
@@ -676,20 +713,167 @@ def _assert_option_a_disagreement_contracts(module: Any) -> None:
         ]
         != strict_rotation_residual
     )
-    with pytest.raises(Exception) as retained_round_trip_receipt:
-        module.validate_property_query_geometry_binding(
-            property_query_record=round_trip_query,
-            usd_geometry=round_trip_usd,
-            disagreement_record=round_trip_receipt,
-        )
+    assert (
+        getattr(module, "GEOMETRY_COMPARISON_SCHEMA_VERSION", None)
+        == "g1.full_robot.geometry_comparison_result.v1"
+    )
+    assert (
+        getattr(module, "GEOMETRY_ACCUMULATOR_SCHEMA_VERSION", None)
+        == "g1.full_robot.geometry_comparison_accumulator.v1"
+    )
+    raw_type = getattr(module, "GeometryAgreementRawInputs", None)
+    evaluation_type = getattr(module, "GeometryAgreementEvaluation", None)
+    accumulator_type = getattr(module, "GeometryAgreementAccumulator", None)
+    evaluate = getattr(module, "evaluate_geometry_agreement", None)
+    assert raw_type is not None
+    assert evaluation_type is not None
+    assert accumulator_type is not None
+    assert callable(evaluate)
+    round_trip_raw = raw_type(
+        identity=deepcopy(round_trip_inputs["identity"]),
+        collider=deepcopy(round_trip_inputs["collider"]),
+        usd=deepcopy(round_trip_inputs["usd"]),
+        query=deepcopy(round_trip_inputs["query"]),
+        usd_geometry=deepcopy(round_trip_usd),
+        property_query_record=deepcopy(round_trip_query),
+    )
+    evaluation = evaluate(round_trip_raw)
+    assert isinstance(evaluation, evaluation_type)
+    assert evaluation.agreement is False
+    canonical_record = evaluation.to_record()
+    assert (
+        canonical_record["schema_version"]
+        == "g1.full_robot.geometry_comparison_result.v1"
+    )
+    assert canonical_record["evaluation_status"] == "complete"
+    assert canonical_record["binding_valid"] is True
+    assert canonical_record["binding_mismatches"] == []
+    assert canonical_record["field_diagnostics"] == []
+    assert canonical_record["record_id"] == evaluation.record_id
+    assert canonical_record["record_sha256"] == evaluation.record_sha256
+    assert evaluation.canonical_json() == module.canonical_json_bytes(
+        canonical_record
+    )
+    repeated_projection = evaluation.to_record()
+    repeated_projection["query_local_pose_raw"][
+        "translation_stage_units"
+    ][0] = 999.0
+    assert evaluation.to_record() == canonical_record
+    assert evaluation.canonical_json() == module.canonical_json_bytes(
+        canonical_record
+    )
+    with pytest.raises((AttributeError, TypeError)):
+        evaluation.agreement = True
+
+    gate_signature = inspect.signature(
+        module.validate_property_query_geometry_binding
+    )
+    assert tuple(gate_signature.parameters) == ("evaluation",)
+    original_compare = module.compare_geometry_poses_same_frame
+
+    def recomputation_forbidden(**_payload: Any) -> dict[str, Any]:
+        raise AssertionError("gate recomputed canonical geometry residuals")
+
+    module.compare_geometry_poses_same_frame = recomputation_forbidden
+    try:
+        with pytest.raises(Exception) as retained_round_trip_receipt:
+            module.validate_property_query_geometry_binding(
+                evaluation=evaluation
+            )
+    finally:
+        module.compare_geometry_poses_same_frame = original_compare
     assert (
         str(retained_round_trip_receipt.value)
         == "property-query local pose differs from USD geometry"
     )
     assert (
         getattr(retained_round_trip_receipt.value, "receipt", None)
-        == round_trip_receipt
+        == canonical_record
     )
+    assert (
+        getattr(retained_round_trip_receipt.value, "record_id", None)
+        == evaluation.record_id
+    )
+    assert (
+        getattr(retained_round_trip_receipt.value, "record_sha256", None)
+        == evaluation.record_sha256
+    )
+
+    accumulator = accumulator_type(run_id="option-a-run")
+    accumulator.append(evaluation)
+    partial = accumulator.seal_partial()
+    assert partial["sealed"] is True
+    assert partial["record_count"] == 1
+    assert partial["record_ids"] == [evaluation.record_id]
+    assert partial["record_sha256s"] == [evaluation.record_sha256]
+    assert partial["records"] == [canonical_record]
+    assert partial["accumulator_sha256"] == module.canonical_sha256(
+        partial,
+        exclude_fields=("accumulator_sha256",),
+    )
+    assert accumulator.snapshot() == partial
+    with pytest.raises(Exception):
+        accumulator.append(evaluation)
+
+    mismatched_query = deepcopy(round_trip_query)
+    mismatched_query["property_query_path_identifier"] = 992
+    mismatched_raw = raw_type(
+        identity=deepcopy(round_trip_inputs["identity"]),
+        collider=deepcopy(round_trip_inputs["collider"]),
+        usd=deepcopy(round_trip_inputs["usd"]),
+        query=deepcopy(round_trip_inputs["query"]),
+        usd_geometry=deepcopy(round_trip_usd),
+        property_query_record=mismatched_query,
+    )
+    mismatch_evaluation = evaluate(mismatched_raw)
+    mismatch_record = mismatch_evaluation.to_record()
+    assert mismatch_record["agreement"] is False
+    assert mismatch_record["binding_valid"] is False
+    assert mismatch_record["binding_mismatches"] == sorted(
+        mismatch_record["binding_mismatches"],
+        key=lambda item: (item["field_path"], item["mismatch_kind"]),
+    )
+    assert mismatch_record["binding_mismatches"] == [
+        {
+            "field_path": (
+                "query_local_pose_raw.path_id_from_response"
+            ),
+            "strict_value": 992,
+            "receipt_value": 991,
+            "mismatch_kind": "identity",
+        }
+    ]
+    assert mismatch_record["record_sha256"] == module.canonical_sha256(
+        mismatch_record,
+        exclude_fields=("record_sha256",),
+    )
+
+    malformed_query = deepcopy(round_trip_query)
+    malformed_query["property_query_local_position"] = [
+        float("nan"),
+        0.0,
+        0.0,
+    ]
+    malformed_raw = raw_type(
+        identity=deepcopy(round_trip_inputs["identity"]),
+        collider=deepcopy(round_trip_inputs["collider"]),
+        usd=deepcopy(round_trip_inputs["usd"]),
+        query=deepcopy(round_trip_inputs["query"]),
+        usd_geometry=deepcopy(round_trip_usd),
+        property_query_record=malformed_query,
+    )
+    malformed_evaluation = evaluate(malformed_raw)
+    malformed_record = malformed_evaluation.to_record()
+    assert malformed_record["evaluation_status"] == "minimal_safe_failure"
+    assert malformed_record["agreement"] is False
+    assert malformed_record["field_diagnostics"]
+    assert malformed_record["translation_residual_vector_m"] is None
+    assert malformed_record["selected_command_cap_m"] is None
+    assert malformed_record["actuation_performed"] is False
+    assert malformed_record["post_abort_actuation_count"] == 0
+    assert malformed_record["force_vector_valid"] is False
+    assert malformed_record["wrench_valid"] is False
+    assert malformed_record["raw_impulse_used_as_force"] is False
 
     identity_fields = (
         "schema_version",
@@ -1891,9 +2075,22 @@ class _CandidateOutcomeFactory(_FakeFactory):
 
 
 class _GeometryDisagreementFactory(_FakeFactory):
-    def __init__(self, record: dict[str, Any]) -> None:
+    def __init__(self, evaluation: Any) -> None:
         super().__init__()
-        self.record = deepcopy(record)
+        option_d = _option_d_module()
+        assert isinstance(
+            evaluation,
+            option_d.GeometryAgreementEvaluation,
+        )
+        self.evaluation = evaluation
+        self.record = evaluation.to_record()
+        self.geometry_comparison_accumulator = (
+            option_d.GeometryAgreementAccumulator(
+                run_id=str(self.record["run_id"])
+            )
+        )
+        self.geometry_comparison_accumulator.append(evaluation)
+        self.geometry_comparison_accumulator.seal_partial()
         self.scene_creation_failures: list[dict[str, Any]] = []
         self.lifecycle_records: list[dict[str, Any]] = []
         self.lifecycle_close_records: list[dict[str, Any]] = []
@@ -1923,7 +2120,11 @@ class _GeometryDisagreementFactory(_FakeFactory):
                 "offset_authority_records": [],
                 "initial_swept_clearance": None,
                 "command_bound_route_diagnostics": None,
-                "geometry_disagreement_record": deepcopy(self.record),
+                "geometry_disagreement_record": None,
+                "geometry_comparison_record_id": self.evaluation.record_id,
+                "geometry_comparison_record_sha256": (
+                    self.evaluation.record_sha256
+                ),
                 "failure_code": "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
                 "failure_message": (
                     "property-query local pose differs from USD geometry"
@@ -1934,11 +2135,13 @@ class _GeometryDisagreementFactory(_FakeFactory):
             }
         )
         option_d = _option_d_module()
-        raise option_d.G1FullRobotClearanceError(
+        error = option_d.G1FullRobotClearanceError(
             "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
             "property-query local pose differs from USD geometry",
-            receipt=self.record,
         )
+        error.record_id = self.evaluation.record_id
+        error.record_sha256 = self.evaluation.record_sha256
+        raise error
 
     def finalize_lifecycle_audit(self) -> dict[str, Any]:
         return {
@@ -2262,11 +2465,26 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
         real_runtime.PhysxResolvedOffsetAdapter._query_colliders
     )
     assert "response.stage_id" in query_source
+    resolve_source = inspect.getsource(
+        real_runtime.PhysxResolvedOffsetAdapter.resolve
+    )
+    assert "evaluate_geometry_agreement(" in resolve_source
+    assert "geometry_comparison_accumulator.append(" in resolve_source
+    assert (
+        resolve_source.index("geometry_comparison_accumulator.append(")
+        < resolve_source.index(
+            "validate_property_query_geometry_binding("
+        )
+    )
+    assert "build_geometry_disagreement_record(" not in resolve_source
+    assert "compare_geometry_poses_same_frame(" not in resolve_source
     factory_source = inspect.getsource(
         real_runtime.C2ARealSceneFactory.create_static_scene
     )
-    assert "G1_C2A_GEOMETRY_DISAGREEMENT_RECORD_INVALID" in factory_source
-    assert "receipt_validation_error" in factory_source
+    assert "geometry_comparison_accumulator.snapshot()" in factory_source
+    assert "record_id" in factory_source
+    assert "record_sha256" in factory_source
+    assert "receipt_validation_error" not in factory_source
     tracking_source = (ROOT / "scripts/run_g1_tracking_envelope.py").read_text(
         encoding="utf-8"
     )
@@ -2600,8 +2818,9 @@ def test_c2a_real_readiness_enforces_existing_send_penetration_joint_velocity_an
 
 def test_c2a_runtime_failure_preserves_exact_code_message_writes_before_shutdown(tmp_path: Path) -> None:
     runner = _runner()
-    record = _option_a_disagreement_record(_option_d_module())
-    factory = _GeometryDisagreementFactory(record)
+    factory = _GeometryDisagreementFactory(
+        _option_a_canonical_evaluation(_option_d_module())
+    )
     write = _capability(runner, "write_c2a_static_evidence")
     output = tmp_path / "c2a"
 
@@ -3057,7 +3276,7 @@ def test_c2a_candidate_local_rejection_writer_failure_has_no_pseudo_valid_manife
     tmp_path: Path,
 ) -> None:
     factory = _GeometryDisagreementFactory(
-        _option_a_disagreement_record(_option_d_module())
+        _option_a_canonical_evaluation(_option_d_module())
     )
     output = tmp_path / "c2a"
 
@@ -3067,7 +3286,10 @@ def test_c2a_candidate_local_rejection_writer_failure_has_no_pseudo_valid_manife
         assert len(payload["readiness_samples"]) == 0
         assert payload["static_scenes"][0][
             "geometry_disagreement_record"
-        ]["agreement"] is False
+        ] is None
+        assert payload["runtime_metadata"][
+            "factory_geometry_comparison_snapshot"
+        ]["records"][0]["agreement"] is False
         factory.events.append("write-evidence")
         raise OSError("injected evidence writer failure")
 
