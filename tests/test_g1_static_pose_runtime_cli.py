@@ -737,6 +737,19 @@ def _assert_option_a_disagreement_contracts(module: Any) -> None:
         usd_geometry=deepcopy(round_trip_usd),
         property_query_record=deepcopy(round_trip_query),
     )
+    raw_identity_projection = round_trip_raw.identity
+    raw_identity_projection["run_id"] = "mutated-after-construction"
+    assert round_trip_raw.identity["run_id"] == "option-a-run"
+    raw_query_projection = round_trip_raw.query
+    raw_query_projection["query_local_pose_raw"][
+        "translation_stage_units"
+    ][0] = 999.0
+    assert (
+        round_trip_raw.query["query_local_pose_raw"][
+            "translation_stage_units"
+        ][0]
+        == 0.025
+    )
     evaluation = evaluate(round_trip_raw)
     assert isinstance(evaluation, evaluation_type)
     assert evaluation.agreement is False
@@ -882,6 +895,13 @@ def _assert_option_a_disagreement_contracts(module: Any) -> None:
     assert malformed_record["force_vector_valid"] is False
     assert malformed_record["wrench_valid"] is False
     assert malformed_record["raw_impulse_used_as_force"] is False
+    resigned_minimal = deepcopy(malformed_record)
+    resigned_minimal["record_id"] = "f" * 64
+    resigned_minimal["record_sha256"] = (
+        module.geometry_comparison_record_sha256(resigned_minimal)
+    )
+    with pytest.raises(Exception):
+        module.validate_geometry_comparison_result(resigned_minimal)
 
     agreeing_inputs = deepcopy(round_trip_inputs)
     agreeing_query = deepcopy(round_trip_query)
@@ -933,6 +953,51 @@ def _assert_option_a_disagreement_contracts(module: Any) -> None:
             }
         )
     )
+    original_offset_builder = (
+        module._build_offset_agreement_from_canonical_record
+    )
+
+    def retained_offset_failure(_record: Mapping[str, Any]) -> dict[str, Any]:
+        raise module.G1FullRobotClearanceError(
+            "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+            "offset receipt diagnostic failed",
+        )
+
+    module._build_offset_agreement_from_canonical_record = (
+        retained_offset_failure
+    )
+    try:
+        retained_evaluation = evaluate(
+            raw_type(
+                identity=deepcopy(agreeing_inputs["identity"]),
+                collider=deepcopy(agreeing_inputs["collider"]),
+                usd=deepcopy(agreeing_inputs["usd"]),
+                query=deepcopy(agreeing_inputs["query"]),
+                usd_geometry=deepcopy(round_trip_usd),
+                property_query_record=deepcopy(agreeing_query),
+            )
+        )
+    finally:
+        module._build_offset_agreement_from_canonical_record = (
+            original_offset_builder
+        )
+    retained_record = retained_evaluation.to_record()
+    assert retained_record["evaluation_status"] == "complete"
+    assert retained_record["agreement"] is False
+    assert retained_record["field_diagnostics"] == [
+        {
+            "field_path": "offset_agreement",
+            "available": False,
+            "error_code": "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+            "message": "offset receipt diagnostic failed",
+        }
+    ]
+    assert retained_record["rigid_body_prim_path"] == agreeing_inputs[
+        "collider"
+    ]["rigid_body_prim_path"]
+    assert retained_record["query_local_pose_raw"] == agreeing_inputs[
+        "query"
+    ]["query_local_pose_raw"]
 
     identity_fields = (
         "schema_version",
@@ -2559,7 +2624,10 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
         tracking_source.index("class _IsaacSceneFactory") :
         tracking_source.index("def _repository_commit")
     ]
-    assert "receipt_validation_error" in tracking_factory_source
+    assert "geometry_comparison_accumulator.snapshot()" in tracking_factory_source
+    assert "record_id" in tracking_factory_source
+    assert "record_sha256" in tracking_factory_source
+    assert "receipt_validation_error" not in tracking_factory_source
     tensors = types.ModuleType("omni.physics.tensors")
 
     def require_stage_bound_view(backend_name: str, **kwargs: Any) -> None:
