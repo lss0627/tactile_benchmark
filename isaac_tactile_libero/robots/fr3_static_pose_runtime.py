@@ -106,6 +106,41 @@ def _rotation_matrix_to_xyzw(rotation: Sequence[Sequence[float]]) -> list[float]
     return (quaternion / norm).tolist()
 
 
+def _rotation_matrix_from_xyzw(
+    rotation_xyzw: Sequence[float],
+) -> list[list[float]]:
+    quaternion = np.asarray(rotation_xyzw, dtype=np.float64)
+    if quaternion.shape != (4,) or not np.all(np.isfinite(quaternion)):
+        _fail(
+            "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+            "property-query quaternion is invalid",
+        )
+    norm = float(np.linalg.norm(quaternion))
+    if norm <= 0.0:
+        _fail(
+            "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+            "property-query quaternion is degenerate",
+        )
+    x, y, z, w = (quaternion / norm).tolist()
+    return [
+        [
+            1.0 - 2.0 * (y * y + z * z),
+            2.0 * (x * y - z * w),
+            2.0 * (x * z + y * w),
+        ],
+        [
+            2.0 * (x * y + z * w),
+            1.0 - 2.0 * (x * x + z * z),
+            2.0 * (y * z - x * w),
+        ],
+        [
+            2.0 * (x * z - y * w),
+            2.0 * (y * z + x * w),
+            1.0 - 2.0 * (x * x + y * y),
+        ],
+    ]
+
+
 def _observed_driver() -> str:
     try:
         result = subprocess.run(
@@ -154,6 +189,175 @@ def _matrix_without_scale(matrix: Sequence[Sequence[float]]) -> tuple[list[list[
     rigid[:3, :3] = rotation
     rigid[:3, 3] = value[:3, 3]
     return rigid.tolist(), scale.tolist()
+
+
+def _option_a_pose_record(
+    *,
+    matrix: Sequence[Sequence[float]],
+    from_frame: str,
+    to_frame: str,
+    meters_per_unit: float,
+) -> dict[str, Any]:
+    value = np.asarray(matrix, dtype=np.float64)
+    rigid, scale = _matrix_without_scale(value.tolist())
+    rigid_value = np.asarray(rigid, dtype=np.float64)
+    translation_stage_units = rigid_value[:3, 3].tolist()
+    return {
+        "from_frame": str(from_frame),
+        "to_frame": str(to_frame),
+        "matrix_convention": (
+            "row_major_storage_column_vector_semantics"
+        ),
+        "matrix_row_major_4x4": rigid_value.tolist(),
+        "translation_stage_units": translation_stage_units,
+        "translation_m": [
+            float(component) * float(meters_per_unit)
+            for component in translation_stage_units
+        ],
+        "rotation_xyzw": _rotation_matrix_to_xyzw(
+            rigid_value[:3, :3].tolist()
+        ),
+        "quaternion_order": "xyzw",
+        "scale_xyz": [float(component) for component in scale],
+    }
+
+
+def _serialize_usd_xform_value(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, str, int, float)):
+        return value
+    if hasattr(value, "GetReal") and hasattr(value, "GetImaginary"):
+        return [
+            float(value.GetReal()),
+            *(float(item) for item in value.GetImaginary()),
+        ]
+    try:
+        array = np.asarray(value, dtype=np.float64)
+    except (TypeError, ValueError):
+        return str(value)
+    if array.ndim == 0:
+        return float(array)
+    return array.tolist()
+
+
+def _extract_usd_xform_provenance(
+    *,
+    stage: Any,
+    geometry_prim: Any,
+    rigid_body_prim: Any,
+    meters_per_unit: float,
+) -> dict[str, Any]:
+    """Retain raw ordered USD ops and composed poses without choosing authority."""
+
+    from pxr import Usd, UsdGeom  # type: ignore
+
+    geometry_path = str(geometry_prim.GetPath())
+    body_path = str(rigid_body_prim.GetPath())
+    parent_prim = geometry_prim.GetParent()
+    parent_path = str(parent_prim.GetPath())
+    records: list[dict[str, Any]] = []
+    cursor = geometry_prim
+    while cursor and cursor.IsValid() and str(cursor.GetPath()) != body_path:
+        xformable = UsdGeom.Xformable(cursor)
+        ordered_ops = []
+        if xformable:
+            for index, operation in enumerate(
+                xformable.GetOrderedXformOps()
+            ):
+                attribute = operation.GetAttr()
+                ordered_ops.append(
+                    {
+                        "order_index": index,
+                        "op_name": str(operation.GetName()),
+                        "op_type": str(operation.GetOpType()),
+                        "precision": str(operation.GetPrecision()),
+                        "is_inverse_op": bool(operation.IsInverseOp()),
+                        "value_type_name": str(
+                            attribute.GetTypeName()
+                        ),
+                        "authored": bool(
+                            attribute.HasAuthoredValueOpinion()
+                        ),
+                        "value": _serialize_usd_xform_value(
+                            operation.Get(Usd.TimeCode.Default())
+                        ),
+                    }
+                )
+            reset = bool(xformable.GetResetXformStack())
+        else:
+            reset = False
+        records.append(
+            {
+                "prim_path": str(cursor.GetPath()),
+                "parent_prim_path": str(cursor.GetParent().GetPath()),
+                "reset_xform_stack": reset,
+                "ordered_ops": ordered_ops,
+            }
+        )
+        cursor = cursor.GetParent()
+    if not cursor or not cursor.IsValid() or str(cursor.GetPath()) != body_path:
+        _fail(
+            "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+            f"geometry is outside queried rigid body: {geometry_path}",
+        )
+    world_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    geometry_world = np.asarray(
+        _gf_matrix_to_column_major_list(
+            world_cache.GetLocalToWorldTransform(geometry_prim)
+        ),
+        dtype=np.float64,
+    )
+    body_world = np.asarray(
+        _gf_matrix_to_column_major_list(
+            world_cache.GetLocalToWorldTransform(rigid_body_prim)
+        ),
+        dtype=np.float64,
+    )
+    parent_world = np.asarray(
+        _gf_matrix_to_column_major_list(
+            world_cache.GetLocalToWorldTransform(parent_prim)
+        ),
+        dtype=np.float64,
+    )
+    local_raw = np.linalg.inv(parent_world) @ geometry_world
+    local_to_body = np.linalg.inv(body_world) @ geometry_world
+    return {
+        "usd_xform_op_count": sum(
+            len(record["ordered_ops"]) for record in records
+        ),
+        "usd_xform_ops": records,
+        "usd_reset_xform_stack": any(
+            record["reset_xform_stack"] for record in records
+        ),
+        "usd_local_pose_raw": _option_a_pose_record(
+            matrix=local_raw,
+            from_frame=geometry_path,
+            to_frame=parent_path,
+            meters_per_unit=meters_per_unit,
+        ),
+        "usd_local_pose_frame": "immediate_usd_parent",
+        "usd_local_to_rigid_body_pose": _option_a_pose_record(
+            matrix=local_to_body,
+            from_frame=geometry_path,
+            to_frame=body_path,
+            meters_per_unit=meters_per_unit,
+        ),
+        "usd_world_pose": _option_a_pose_record(
+            matrix=geometry_world,
+            from_frame=geometry_path,
+            to_frame="world",
+            meters_per_unit=meters_per_unit,
+        ),
+        "usd_parent_prim_path": parent_path,
+        "usd_parent_world_pose": _option_a_pose_record(
+            matrix=parent_world,
+            from_frame=parent_path,
+            to_frame="world",
+            meters_per_unit=meters_per_unit,
+        ),
+        "stage_meters_per_unit": float(meters_per_unit),
+        "stage_up_axis": str(UsdGeom.GetStageUpAxis(stage)),
+        "_body_world_matrix": body_world.tolist(),
+    }
 
 
 def _physics_frame_matrix(position: Any, rotation: Any) -> list[list[float]]:
@@ -414,7 +618,11 @@ class PhysxResolvedOffsetAdapter:
             _fail("G1_FULL_ROBOT_OFFSET_UNRESOLVED", "offset-query timeout is invalid")
 
     def _query_colliders(
-        self, stage: Any, body_path: str
+        self,
+        stage: Any,
+        body_path: str,
+        *,
+        query_operation_index: int,
     ) -> list[dict[str, Any]]:
         import omni.physx  # type: ignore
         from omni.physx.bindings._physx import (  # type: ignore
@@ -458,6 +666,13 @@ class PhysxResolvedOffsetAdapter:
                         float(value) for value in response.local_rot
                     ],
                     "property_query_volume": float(response.volume),
+                    "property_query_stage_identifier": int(stage_id),
+                    "property_query_path_identifier": int(
+                        response.path_id
+                    ),
+                    "query_operation_index": int(
+                        query_operation_index
+                    ),
                 }
             )
 
@@ -493,6 +708,12 @@ class PhysxResolvedOffsetAdapter:
                 "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
                 f"PhysX property query failed for {body_path}: {failures}",
             )
+        property_count = len(colliders)
+        for collider in colliders:
+            collider["query_property_count"] = property_count
+            collider["query_shape_index"] = int(
+                collider["property_query_ordinal"]
+            )
         return colliders
 
     def resolve(
@@ -502,6 +723,8 @@ class PhysxResolvedOffsetAdapter:
         collider_body_paths: Mapping[str, str],
         stage_lifecycle_token: str,
         physics_policy: Mapping[str, Any],
+        diagnostic_identity: Mapping[str, Any] | None = None,
+        lifecycle_record: Mapping[str, Any] | None = None,
     ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
         """Return path-keyed resolved offsets plus independently hashed receipts."""
 
@@ -510,8 +733,11 @@ class PhysxResolvedOffsetAdapter:
         from pxr import Usd, UsdGeom  # type: ignore
 
         from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
+            build_geometry_disagreement_record,
             bind_backend_shape_offsets_without_slot_guessing,
             canonical_sha256,
+            compare_geometry_poses_same_frame,
+            _declared_local_bounds_and_volume,
             validate_collision_offset_authority_record,
             validate_property_query_geometry_binding,
         )
@@ -550,9 +776,31 @@ class PhysxResolvedOffsetAdapter:
         resolved: dict[str, dict[str, Any]] = {}
         authority_records: list[dict[str, Any]] = []
         for body_path in sorted(by_body):
-            queried = self._query_colliders(stage, body_path)
-            repeated = self._query_colliders(stage, body_path)
-            if queried != repeated:
+            queried = self._query_colliders(
+                stage,
+                body_path,
+                query_operation_index=0,
+            )
+            repeated = self._query_colliders(
+                stage,
+                body_path,
+                query_operation_index=1,
+            )
+            if [
+                {
+                    key: value
+                    for key, value in record.items()
+                    if key != "query_operation_index"
+                }
+                for record in queried
+            ] != [
+                {
+                    key: value
+                    for key, value in record.items()
+                    if key != "query_operation_index"
+                }
+                for record in repeated
+            ]:
                 _fail(
                     "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
                     f"property-query collider enumeration is unstable for {body_path}",
@@ -640,10 +888,347 @@ class PhysxResolvedOffsetAdapter:
                 usd_geometry_binding_sha256 = canonical_sha256(
                     usd_geometry
                 )
+                usd_provenance = _extract_usd_xform_provenance(
+                    stage=stage,
+                    geometry_prim=collider_prim,
+                    rigid_body_prim=body_prim,
+                    meters_per_unit=float(
+                        UsdGeom.GetStageMetersPerUnit(stage)
+                    ),
+                )
+                query_local = np.eye(4, dtype=np.float64)
+                query_local[:3, :3] = np.asarray(
+                    _rotation_matrix_from_xyzw(
+                        query[
+                            "property_query_local_rotation_xyzw"
+                        ]
+                    ),
+                    dtype=np.float64,
+                )
+                query_local[:3, 3] = np.asarray(
+                    query["property_query_local_position"],
+                    dtype=np.float64,
+                )
+                query_world = (
+                    np.asarray(
+                        usd_provenance["_body_world_matrix"],
+                        dtype=np.float64,
+                    )
+                    @ query_local
+                )
+                query_dimensions = {
+                    "local_aabb_min_stage_units": list(
+                        query["property_query_local_aabb_min"]
+                    ),
+                    "local_aabb_max_stage_units": list(
+                        query["property_query_local_aabb_max"]
+                    ),
+                    "local_aabb_extent_stage_units": (
+                        np.asarray(
+                            query[
+                                "property_query_local_aabb_max"
+                            ],
+                            dtype=np.float64,
+                        )
+                        - np.asarray(
+                            query[
+                                "property_query_local_aabb_min"
+                            ],
+                            dtype=np.float64,
+                        )
+                    ).tolist(),
+                    "local_aabb_min_m": [
+                        float(value)
+                        * float(UsdGeom.GetStageMetersPerUnit(stage))
+                        for value in query[
+                            "property_query_local_aabb_min"
+                        ]
+                    ],
+                    "local_aabb_max_m": [
+                        float(value)
+                        * float(UsdGeom.GetStageMetersPerUnit(stage))
+                        for value in query[
+                            "property_query_local_aabb_max"
+                        ]
+                    ],
+                    "local_aabb_extent_m": [
+                        float(value)
+                        * float(UsdGeom.GetStageMetersPerUnit(stage))
+                        for value in (
+                            np.asarray(
+                                query[
+                                    "property_query_local_aabb_max"
+                                ],
+                                dtype=np.float64,
+                            )
+                            - np.asarray(
+                                query[
+                                    "property_query_local_aabb_min"
+                                ],
+                                dtype=np.float64,
+                            )
+                        ).tolist()
+                    ],
+                    "volume_stage_units_cubed": float(
+                        query["property_query_volume"]
+                    ),
+                    "volume_m3": float(
+                        query["property_query_volume"]
+                    )
+                    * float(UsdGeom.GetStageMetersPerUnit(stage))
+                    ** 3,
+                }
+                declared_min, declared_max, declared_volume, _model = (
+                    _declared_local_bounds_and_volume(usd_geometry)
+                )
+                usd_dimensions = {
+                    "local_aabb_min_stage_units": declared_min,
+                    "local_aabb_max_stage_units": declared_max,
+                    "local_aabb_extent_stage_units": (
+                        np.asarray(declared_max, dtype=np.float64)
+                        - np.asarray(declared_min, dtype=np.float64)
+                    ).tolist(),
+                    "local_aabb_min_m": [
+                        float(value)
+                        * float(UsdGeom.GetStageMetersPerUnit(stage))
+                        for value in declared_min
+                    ],
+                    "local_aabb_max_m": [
+                        float(value)
+                        * float(UsdGeom.GetStageMetersPerUnit(stage))
+                        for value in declared_max
+                    ],
+                    "local_aabb_extent_m": [
+                        float(value)
+                        * float(UsdGeom.GetStageMetersPerUnit(stage))
+                        for value in (
+                            np.asarray(declared_max, dtype=np.float64)
+                            - np.asarray(declared_min, dtype=np.float64)
+                        ).tolist()
+                    ],
+                    "volume_stage_units_cubed": (
+                        float(declared_volume)
+                        if declared_volume is not None
+                        else None
+                    ),
+                    "volume_m3": (
+                        None
+                        if declared_volume is None
+                        else float(declared_volume)
+                        * float(UsdGeom.GetStageMetersPerUnit(stage))
+                        ** 3
+                    ),
+                }
+                query_local_pose = _option_a_pose_record(
+                    matrix=query_local,
+                    from_frame=collider_path,
+                    to_frame=body_path,
+                    meters_per_unit=float(
+                        UsdGeom.GetStageMetersPerUnit(stage)
+                    ),
+                )
+                query_world_pose = _option_a_pose_record(
+                    matrix=query_world,
+                    from_frame=collider_path,
+                    to_frame="world",
+                    meters_per_unit=float(
+                        UsdGeom.GetStageMetersPerUnit(stage)
+                    ),
+                )
+                comparison = compare_geometry_poses_same_frame(
+                    usd_pose_in_comparison_frame=usd_provenance[
+                        "usd_local_to_rigid_body_pose"
+                    ],
+                    query_pose_in_comparison_frame=query_local_pose,
+                    query_local_rotation_xyzw=query[
+                        "property_query_local_rotation_xyzw"
+                    ],
+                    query_scale=None,
+                    usd_shape_dimensions=usd_dimensions,
+                    query_shape_dimensions=query_dimensions,
+                )
+                support_min = np.asarray(
+                    query_dimensions["local_aabb_min_m"],
+                    dtype=np.float64,
+                )
+                support_max = np.asarray(
+                    query_dimensions["local_aabb_max_m"],
+                    dtype=np.float64,
+                )
+                query_raw = {
+                    "translation_stage_units": list(
+                        query["property_query_local_position"]
+                    ),
+                    "rotation_xyzw": list(
+                        query[
+                            "property_query_local_rotation_xyzw"
+                        ]
+                    ),
+                    "quaternion_order": "xyzw",
+                    "stage_id_from_response": int(
+                        query["property_query_stage_identifier"]
+                    ),
+                    "path_id_from_response": int(
+                        query["property_query_path_identifier"]
+                    ),
+                }
+                cooked_identifier = canonical_sha256(
+                    {
+                        "stage_identifier": stage_id,
+                        "rigid_body_prim_path": body_path,
+                        "collider_prim_path": collider_path,
+                        "query_operation_index": int(
+                            query["query_operation_index"]
+                        ),
+                        "query_shape_index": int(
+                            query["query_shape_index"]
+                        ),
+                        "query_local_pose_raw": query_raw,
+                        "query_shape_dimensions": query_dimensions,
+                    }
+                )
+                identity = dict(diagnostic_identity or {})
+                lifecycle = dict(lifecycle_record or {})
+                disagreement_context = None
+                if not comparison["agreement"]:
+                    required_identity = {
+                        "run_id",
+                        "trial_id",
+                        "candidate_id",
+                        "scene_id",
+                        "scene_index",
+                    }
+                    if (
+                        not required_identity.issubset(identity)
+                        or lifecycle.get(
+                            "stage_lifecycle_token"
+                        )
+                        != lifecycle_token
+                        or not lifecycle.get(
+                            "lifecycle_record_sha256"
+                        )
+                    ):
+                        _fail(
+                            "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+                            "geometry disagreement diagnostic identity is unavailable",
+                        )
+                    usd_record = dict(usd_provenance)
+                    usd_record.pop("_body_world_matrix")
+                    disagreement_context = build_geometry_disagreement_record(
+                        identity={
+                            **{
+                                field: identity[field]
+                                for field in required_identity
+                            },
+                            "lifecycle_record_sha256": lifecycle[
+                                "lifecycle_record_sha256"
+                            ],
+                            "stage_lifecycle_token": lifecycle_token,
+                            "stage_identifier": stage_id,
+                        },
+                        collider={
+                            "rigid_body_prim_path": body_path,
+                            "collider_prim_path": collider_path,
+                            "geometry_prim_path": collider_path,
+                            "collider_type": collider_type,
+                            "geometry_type": str(
+                                collider_prim.GetTypeName()
+                            ),
+                            "collision_enabled": True,
+                            "approximation": approximation,
+                            "mesh_or_primitive_authority": (
+                                "usd_mesh_points_faces_and_approximation"
+                                if collider_type == "mesh"
+                                else "usd_analytic_primitive_schema"
+                            ),
+                        },
+                        usd=usd_record,
+                        query={
+                            "query_api_name": (
+                                "omni.physx.IPhysxPropertyQuery.query_prim"
+                            ),
+                            "query_backend": "physx",
+                            "query_operation_index": int(
+                                query["query_operation_index"]
+                            ),
+                            "query_property_count": int(
+                                query["query_property_count"]
+                            ),
+                            "query_shape_index": int(
+                                query["query_shape_index"]
+                            ),
+                            "query_local_pose_raw": query_raw,
+                            "query_local_pose_frame": (
+                                "queried_rigid_body_actor"
+                            ),
+                            "query_local_to_rigid_body_pose": (
+                                query_local_pose
+                            ),
+                            "query_world_pose": query_world_pose,
+                            "query_shape_type": None,
+                            "query_shape_dimensions": query_dimensions,
+                            "query_scale": None,
+                            "query_convex_or_mesh_approximation": None,
+                            "query_support_radius_or_bounds": {
+                                "local_bounds_min_m": (
+                                    support_min.tolist()
+                                ),
+                                "local_bounds_max_m": (
+                                    support_max.tolist()
+                                ),
+                                "support_radius_m": float(
+                                    np.max(
+                                        np.linalg.norm(
+                                            np.asarray(
+                                                [
+                                                    [x, y, z]
+                                                    for x in (
+                                                        support_min[0],
+                                                        support_max[0],
+                                                    )
+                                                    for y in (
+                                                        support_min[1],
+                                                        support_max[1],
+                                                    )
+                                                    for z in (
+                                                        support_min[2],
+                                                        support_max[2],
+                                                    )
+                                                ],
+                                                dtype=np.float64,
+                                            ),
+                                            axis=1,
+                                        )
+                                    )
+                                ),
+                            },
+                            "cooked_shape_identifier": cooked_identifier,
+                            "cooked_shape_provenance": {
+                                "identifier_kind": (
+                                    "canonical_property_query_shape_observation_sha256"
+                                ),
+                                "backend_handle_exposed": False,
+                                "shape_type_exposed": False,
+                                "shape_scale_exposed": False,
+                                "shape_approximation_exposed": False,
+                                "query_api_name": (
+                                    "omni.physx.IPhysxPropertyQuery.query_prim"
+                                ),
+                                "query_mode": (
+                                    "QUERY_RIGID_BODY_WITH_COLLIDERS"
+                                ),
+                                "source_version": (
+                                    "Isaac Sim 6.0.1 / omni.physx 110.1.13"
+                                ),
+                            },
+                        },
+                        comparison=comparison,
+                    )
                 geometry_agreement = (
                     validate_property_query_geometry_binding(
                         property_query_record=query,
                         usd_geometry=usd_geometry,
+                        disagreement_record=disagreement_context,
                     )
                 )
                 contact_value = float(
@@ -1891,6 +2476,16 @@ class C2ARealSceneFactory:
             )
             return scene
         except Exception as error:
+            geometry_disagreement_record = None
+            retained_receipt = getattr(error, "receipt", None)
+            if isinstance(retained_receipt, Mapping):
+                from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
+                    validate_geometry_disagreement_record,
+                )
+
+                geometry_disagreement_record = (
+                    validate_geometry_disagreement_record(retained_receipt)
+                )
             cleanup_errors: list[dict[str, str]] = []
             if (
                 getattr(scene, "lifecycle_record", None) is not None
@@ -1962,6 +2557,9 @@ class C2ARealSceneFactory:
                         scene,
                         "command_bound_route_diagnostics",
                         None,
+                    ),
+                    "geometry_disagreement_record": (
+                        geometry_disagreement_record
                     ),
                     "failure_code": str(
                         getattr(
@@ -2139,6 +2737,14 @@ class C2ARealStaticScene:
                 "broadphase_type": "MBP",
                 "gpu_dynamics_enabled": False,
             },
+            diagnostic_identity={
+                "run_id": owner.lifecycle_authority.run_id,
+                "trial_id": self.lifecycle_record["trial_id"],
+                "candidate_id": self.candidate["candidate_id"],
+                "scene_id": self.spec["scene_id"],
+                "scene_index": int(self.spec["scene_index"]),
+            },
+            lifecycle_record=self.lifecycle_record,
         )
         self.collision_snapshot = extract_full_robot_collision_snapshot(
             stage=stage,

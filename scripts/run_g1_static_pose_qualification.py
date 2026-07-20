@@ -883,6 +883,7 @@ def write_c2a_static_evidence(
         encoding="utf-8",
     )
     option_d_paths: list[Path] = []
+    geometry_disagreements: list[dict[str, Any]] = []
     if option_d:
         lifecycle_audit_path = destination / "lifecycle_audit.json"
         lifecycle_audit_path.write_text(
@@ -913,6 +914,49 @@ def write_c2a_static_evidence(
                     "factory_scene_creation_failures",
                     (),
                 )
+            ),
+            encoding="utf-8",
+        )
+        from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
+            GEOMETRY_DISAGREEMENT_SCHEMA_VERSION,
+            finalize_geometry_disagreement_for_evidence,
+        )
+
+        retained_disagreements: dict[str, dict[str, Any]] = {}
+        for failure in metadata.get(
+            "factory_scene_creation_failures",
+            (),
+        ):
+            if not isinstance(failure, Mapping):
+                continue
+            retained = failure.get("geometry_disagreement_record")
+            if not isinstance(retained, Mapping):
+                continue
+            finalized = finalize_geometry_disagreement_for_evidence(
+                retained,
+                shutdown_exit_code=1,
+            )
+            retained_disagreements[str(finalized["record_id"])] = finalized
+        for scene in static_scenes:
+            retained = scene.get("geometry_disagreement_record")
+            if not isinstance(retained, Mapping):
+                continue
+            finalized = finalize_geometry_disagreement_for_evidence(
+                retained,
+                shutdown_exit_code=1,
+            )
+            retained_disagreements[str(finalized["record_id"])] = finalized
+        geometry_disagreements = [
+            retained_disagreements[record_id]
+            for record_id in sorted(retained_disagreements)
+        ]
+        geometry_disagreement_path = (
+            destination / "geometry_disagreements.jsonl"
+        )
+        geometry_disagreement_path.write_text(
+            "".join(
+                json.dumps(_jsonable(record), sort_keys=True) + "\n"
+                for record in geometry_disagreements
             ),
             encoding="utf-8",
         )
@@ -995,6 +1039,7 @@ def write_c2a_static_evidence(
                 lifecycle_audit_path,
                 lifecycle_close_path,
                 creation_failure_path,
+                geometry_disagreement_path,
                 collision_path,
                 lifecycle_path,
                 offset_path,
@@ -1088,6 +1133,17 @@ def write_c2a_static_evidence(
         "gate_status_updated": False,
         "t070_completed": False,
     }
+    if option_d:
+        report.update(
+            geometry_disagreement_count=len(geometry_disagreements),
+            geometry_disagreement_record_sha256s=[
+                record["record_sha256"]
+                for record in geometry_disagreements
+            ],
+            geometry_disagreement_schema_version=(
+                GEOMETRY_DISAGREEMENT_SCHEMA_VERSION
+            ),
+        )
     report_path = destination / "report.json"
     _write_json(report_path, report)
     artifact_paths = (
