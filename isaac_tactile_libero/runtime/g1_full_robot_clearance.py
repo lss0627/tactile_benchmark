@@ -2888,15 +2888,23 @@ def validate_property_query_geometry_binding(
                     "translation_component_max_abs_m"
                 ]
                 != position_residual
-                or receipt["bound_authority"][
-                    "rotation_matrix_component_max_abs"
-                ]
-                != rotation_residual
             ):
                 _fail(
                     "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
                     "geometry disagreement receipt differs from strict gate",
                 )
+            _require_composed_pose_agreement(
+                left=np.asarray(
+                    [
+                        receipt["bound_authority"][
+                            "rotation_matrix_component_max_abs"
+                        ]
+                    ],
+                    dtype=np.float64,
+                ),
+                right=np.asarray([rotation_residual], dtype=np.float64),
+                field="receipt strict-gate rotation residual",
+            )
         _fail(
             "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
             "property-query local pose differs from USD geometry",
