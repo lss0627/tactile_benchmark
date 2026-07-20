@@ -15,6 +15,9 @@ from typing import Any, Callable, Mapping, Sequence
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 DEFAULT_TASK_CONFIG = "configs/tasks/press_button_physical.yaml"
 DEFAULT_ROBOT_CONFIG = "configs/robots/fr3_press_button_safe.yaml"
 DEFAULT_TASK_CARD = "configs/tasks/cards/press_button.v1.yaml"
