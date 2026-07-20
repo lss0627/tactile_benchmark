@@ -724,6 +724,69 @@ def _assert_option_a_disagreement_contracts(module: Any) -> None:
             "receipt_not_bound_to_query_shape_and_path_identity"
         )
 
+    negative_sign_record = deepcopy(record)
+    negative_sign_record["query_local_pose_raw"]["rotation_xyzw"] = [
+        0.0,
+        0.0,
+        0.0,
+        -1.0,
+    ]
+    negative_sign_record["cooked_shape_identifier"] = (
+        module.canonical_sha256(
+            {
+                "stage_identifier": negative_sign_record[
+                    "stage_identifier"
+                ],
+                "rigid_body_prim_path": negative_sign_record[
+                    "rigid_body_prim_path"
+                ],
+                "collider_prim_path": negative_sign_record[
+                    "collider_prim_path"
+                ],
+                "query_operation_index": negative_sign_record[
+                    "query_operation_index"
+                ],
+                "query_shape_index": negative_sign_record[
+                    "query_shape_index"
+                ],
+                "query_local_pose_raw": negative_sign_record[
+                    "query_local_pose_raw"
+                ],
+                "query_shape_dimensions": negative_sign_record[
+                    "query_shape_dimensions"
+                ],
+            }
+        )
+    )
+    negative_sign_record["record_sha256"] = module.canonical_sha256(
+        negative_sign_record,
+        exclude_fields=("record_sha256",),
+    )
+    validate(negative_sign_record)
+    equivalent_sign_query = {
+        "collider_prim_path": record["collider_prim_path"],
+        "property_query_local_aabb_min": [-1.0, -1.0, -1.0],
+        "property_query_local_aabb_max": [1.0, 1.0, 1.0],
+        "property_query_local_position": [0.025, 0.0, 0.0],
+        "property_query_local_rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        "property_query_volume": 8.0,
+        "property_query_stage_identifier": 731,
+        "property_query_path_identifier": 991,
+        "query_operation_index": 0,
+        "query_property_count": 1,
+        "query_shape_index": 0,
+    }
+    with pytest.raises(Exception) as equivalent_sign_receipt:
+        binding(
+            property_query_record=equivalent_sign_query,
+            usd_geometry=stale_shape_usd,
+            disagreement_record=negative_sign_record,
+        )
+    if getattr(equivalent_sign_receipt.value, "receipt", None) is None:
+        accepted_invalid_records.append(
+            "equivalent_quaternion_sign_rejected_receipt_identity"
+        )
+
     assert accepted_invalid_records == [], (
         "Option A validator accepted unbound diagnostic facts: "
         f"{accepted_invalid_records}"
