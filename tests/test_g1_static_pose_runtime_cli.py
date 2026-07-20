@@ -4263,6 +4263,26 @@ def test_c2a_real_runtime_modules_are_import_safe_and_real_factory_is_lazy() -> 
     assert "from pxr" not in backend_runner_top_level
     assert "import omni" not in backend_runner_top_level
     assert "from isaacsim" not in backend_runner_top_level
+    isolated_probe = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            (
+                "import runpy,sys;"
+                f"scope=runpy.run_path({str(BACKEND_PROVENANCE_RUNNER_PATH)!r},"
+                "run_name='backend_runner_import_probe');"
+                "expected=str(scope['ROOT']);"
+                "assert sys.path[0] == expected, (expected,sys.path)"
+            ),
+        ],
+        cwd="/tmp",
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert isolated_probe.returncode == 0, isolated_probe.stderr
 
 
 def test_c2a_cli_subprocess_failure_is_nonzero_without_importing_isaac(tmp_path: Path) -> None:
