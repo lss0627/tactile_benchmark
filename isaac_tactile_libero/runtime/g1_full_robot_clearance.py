@@ -1788,6 +1788,25 @@ def build_geometry_disagreement_record(
         "shutdown_started": False,
         "shutdown_exit_code": None,
     }
+    record["cooked_shape_identifier"] = canonical_sha256(
+        {
+            "stage_identifier": record.get("stage_identifier"),
+            "rigid_body_prim_path": record.get(
+                "rigid_body_prim_path"
+            ),
+            "collider_prim_path": record.get("collider_prim_path"),
+            "query_operation_index": record.get(
+                "query_operation_index"
+            ),
+            "query_shape_index": record.get("query_shape_index"),
+            "query_local_pose_raw": record.get(
+                "query_local_pose_raw"
+            ),
+            "query_shape_dimensions": record.get(
+                "query_shape_dimensions"
+            ),
+        }
+    )
     record["record_id"] = canonical_sha256(
         {
             field: record.get(field)
@@ -1993,6 +2012,26 @@ def validate_geometry_disagreement_record(
             _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
             "USD resetXformStack aggregate is invalid",
         )
+    geometry_path = str(value["geometry_prim_path"])
+    if ops:
+        if (
+            ops[0]["prim_path"] != geometry_path
+            or any(
+                current["parent_prim_path"]
+                != following["prim_path"]
+                for current, following in zip(ops, ops[1:])
+            )
+            or ops[-1]["parent_prim_path"] != body_path
+        ):
+            _fail(
+                _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+                "USD xform provenance is not a geometry-to-body chain",
+            )
+    elif geometry_path != body_path:
+        _fail(
+            _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+            "USD xform provenance omitted the geometry-to-body chain",
+        )
     if value["usd_local_pose_frame"] != "immediate_usd_parent":
         _fail(
             _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
@@ -2099,6 +2138,19 @@ def validate_geometry_disagreement_record(
             _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
             "property-query composed pose frame is invalid",
         )
+    if (
+        list(raw_query["translation_stage_units"])
+        != query_local_to_body["translation_stage_units"]
+        or _canonical_quaternion_xyzw(
+            raw_query["rotation_xyzw"],
+            "query_local_pose_raw.rotation_xyzw",
+        )
+        != query_local_to_body["rotation_xyzw"]
+    ):
+        _fail(
+            _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+            "raw and composed property-query local poses disagree",
+        )
     if value["query_shape_type"] is not None and (
         not isinstance(value["query_shape_type"], str)
         or not value["query_shape_type"]
@@ -2117,7 +2169,33 @@ def validate_geometry_disagreement_record(
             _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
             "query approximation is invalid",
         )
-    _validate_query_shape_dimensions(value["query_shape_dimensions"])
+    query_dimensions = _validate_query_shape_dimensions(
+        value["query_shape_dimensions"]
+    )
+    for stage_field, metre_field in (
+        ("local_aabb_min_stage_units", "local_aabb_min_m"),
+        ("local_aabb_max_stage_units", "local_aabb_max_m"),
+        (
+            "local_aabb_extent_stage_units",
+            "local_aabb_extent_m",
+        ),
+    ):
+        if query_dimensions[metre_field] != [
+            component * meters_per_unit
+            for component in query_dimensions[stage_field]
+        ]:
+            _fail(
+                _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+                f"query shape unit conversion changed: {metre_field}",
+            )
+    if query_dimensions["volume_m3"] != (
+        query_dimensions["volume_stage_units_cubed"]
+        * meters_per_unit**3
+    ):
+        _fail(
+            _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+            "query shape volume unit conversion changed",
+        )
     support = value["query_support_radius_or_bounds"]
     if not isinstance(support, Mapping) or set(support) != {
         "local_bounds_min_m",
@@ -2134,6 +2212,16 @@ def validate_geometry_disagreement_record(
         _fail(
             _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
             "query support radius is invalid",
+        )
+    if (
+        list(support["local_bounds_min_m"])
+        != query_dimensions["local_aabb_min_m"]
+        or list(support["local_bounds_max_m"])
+        != query_dimensions["local_aabb_max_m"]
+    ):
+        _fail(
+            _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+            "query support bounds differ from the retained local AABB",
         )
     cooked = value["cooked_shape_provenance"]
     if not isinstance(cooked, Mapping) or set(cooked) != {
@@ -2169,6 +2257,47 @@ def validate_geometry_disagreement_record(
             _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
             "cooked-shape provenance is invalid",
         )
+    expected_cooked_identifier = canonical_sha256(
+        {
+            "stage_identifier": value["stage_identifier"],
+            "rigid_body_prim_path": value[
+                "rigid_body_prim_path"
+            ],
+            "collider_prim_path": value["collider_prim_path"],
+            "query_operation_index": value[
+                "query_operation_index"
+            ],
+            "query_shape_index": value["query_shape_index"],
+            "query_local_pose_raw": value["query_local_pose_raw"],
+            "query_shape_dimensions": value[
+                "query_shape_dimensions"
+            ],
+        }
+    )
+    if value["cooked_shape_identifier"] != expected_cooked_identifier:
+        _fail(
+            _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+            "cooked-shape observation identifier changed",
+        )
+    for pose_field in (
+        "usd_local_pose_raw",
+        "usd_local_to_rigid_body_pose",
+        "usd_world_pose",
+        "usd_parent_world_pose",
+        "query_local_to_rigid_body_pose",
+        "query_world_pose",
+        "usd_pose_in_comparison_frame",
+        "query_pose_in_comparison_frame",
+    ):
+        pose = value[pose_field]
+        if pose["translation_m"] != [
+            component * meters_per_unit
+            for component in pose["translation_stage_units"]
+        ]:
+            _fail(
+                _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+                f"{pose_field} stage-unit conversion changed",
+            )
     comparison_frame = _validate_absolute_prim_path(
         value["comparison_frame"],
         "comparison_frame",
