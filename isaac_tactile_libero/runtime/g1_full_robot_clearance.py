@@ -2769,6 +2769,14 @@ def validate_property_query_geometry_binding(
                 != property_query_record.get("query_operation_index")
                 or receipt["query_shape_index"]
                 != property_query_record.get("query_shape_index")
+                or receipt["query_property_count"]
+                != property_query_record.get("query_property_count")
+                or receipt["query_local_pose_raw"][
+                    "path_id_from_response"
+                ]
+                != property_query_record.get(
+                    "property_query_path_identifier"
+                )
                 or receipt["query_local_pose_raw"][
                     "translation_stage_units"
                 ]
@@ -2786,6 +2794,28 @@ def validate_property_query_geometry_binding(
                     ),
                     "property-query local rotation",
                 )
+                or receipt["query_shape_dimensions"][
+                    "local_aabb_min_stage_units"
+                ]
+                != list(
+                    property_query_record.get(
+                        "property_query_local_aabb_min",
+                        (),
+                    )
+                )
+                or receipt["query_shape_dimensions"][
+                    "local_aabb_max_stage_units"
+                ]
+                != list(
+                    property_query_record.get(
+                        "property_query_local_aabb_max",
+                        (),
+                    )
+                )
+                or receipt["query_shape_dimensions"][
+                    "volume_stage_units_cubed"
+                ]
+                != property_query_record.get("property_query_volume")
                 or receipt["usd_pose_in_comparison_frame"][
                     "matrix_row_major_4x4"
                 ]
