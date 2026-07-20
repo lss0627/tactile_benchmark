@@ -666,7 +666,9 @@ class PhysxResolvedOffsetAdapter:
                         float(value) for value in response.local_rot
                     ],
                     "property_query_volume": float(response.volume),
-                    "property_query_stage_identifier": int(stage_id),
+                    "property_query_stage_identifier": int(
+                        response.stage_id
+                    ),
                     "property_query_path_identifier": int(
                         response.path_id
                     ),
@@ -710,6 +712,11 @@ class PhysxResolvedOffsetAdapter:
             )
         property_count = len(colliders)
         for collider in colliders:
+            if collider["property_query_stage_identifier"] != int(stage_id):
+                _fail(
+                    "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+                    "PhysX property-query response stage differs from request",
+                )
             collider["query_property_count"] = property_count
             collider["query_shape_index"] = int(
                 collider["property_query_ordinal"]
@@ -2486,6 +2493,20 @@ class C2ARealSceneFactory:
                 geometry_disagreement_record = (
                     validate_geometry_disagreement_record(retained_receipt)
                 )
+            elif (
+                str(getattr(error, "code", ""))
+                == "G1_FULL_ROBOT_OFFSET_UNRESOLVED"
+                and str(error)
+                == "property-query local pose differs from USD geometry"
+            ):
+                from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
+                    G1FullRobotClearanceError,
+                )
+
+                error = G1FullRobotClearanceError(
+                    "G1_C2A_GEOMETRY_DISAGREEMENT_RECORD_INVALID",
+                    "strict geometry disagreement lacked a complete retained record",
+                )
             cleanup_errors: list[dict[str, str]] = []
             if (
                 getattr(scene, "lifecycle_record", None) is not None
@@ -2581,7 +2602,7 @@ class C2ARealSceneFactory:
                     f"{cleanup_error['error_type']}: "
                     f"{cleanup_error['message']}"
                 )
-            raise
+            raise error
 
     def finalize_lifecycle_audit(self) -> dict[str, Any]:
         if self.lifecycle_audit is not None:

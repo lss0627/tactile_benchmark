@@ -1378,6 +1378,39 @@ def _validate_geometry_pose(
         pose["rotation_xyzw"],
         f"{field}.rotation_xyzw",
     )
+    matrix_rotation = np.asarray(matrix[:3, :3], dtype=np.float64)
+    column_norms = np.linalg.norm(matrix_rotation, axis=0)
+    if np.any(column_norms <= 0.0):
+        _fail(
+            _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+            f"{field} matrix rotation is degenerate",
+        )
+    normalized_matrix_rotation = matrix_rotation / column_norms
+    quaternion_rotation = _quaternion_rotation_matrix_xyzw(
+        quaternion,
+        f"{field}.rotation_xyzw",
+    )
+    pose_operation_bound = 1024
+    pose_unit_roundoff = float(np.finfo(np.float32).eps) / 2.0
+    pose_gamma = (
+        pose_operation_bound
+        * pose_unit_roundoff
+        / (1.0 - pose_operation_bound * pose_unit_roundoff)
+    )
+    encoding_magnitude = max(
+        1.0,
+        float(np.linalg.norm(normalized_matrix_rotation, ord=np.inf)),
+        float(np.linalg.norm(quaternion_rotation, ord=np.inf)),
+    )
+    if float(
+        np.max(
+            np.abs(normalized_matrix_rotation - quaternion_rotation)
+        )
+    ) > pose_gamma * encoding_magnitude:
+        _fail(
+            _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+            f"{field} matrix and quaternion disagree",
+        )
     scale = _finite_vector(
         pose["scale_xyz"],
         3,
@@ -1452,6 +1485,46 @@ def _validate_query_shape_dimensions(
                 "query shape volume is invalid",
             )
     return dict(dimensions)
+
+
+def _geometry_pose_affine_matrix(pose: Mapping[str, Any]) -> np.ndarray:
+    rotation = _quaternion_rotation_matrix_xyzw(
+        pose["rotation_xyzw"],
+        "geometry pose rotation_xyzw",
+    )
+    scale = np.asarray(pose["scale_xyz"], dtype=np.float64)
+    matrix = np.eye(4, dtype=np.float64)
+    matrix[:3, :3] = rotation @ np.diag(scale)
+    matrix[:3, 3] = np.asarray(
+        pose["translation_stage_units"],
+        dtype=np.float64,
+    )
+    return matrix
+
+
+def _require_composed_pose_agreement(
+    *,
+    left: np.ndarray,
+    right: np.ndarray,
+    field: str,
+) -> None:
+    operation_count = 1024
+    unit_roundoff = float(np.finfo(np.float32).eps) / 2.0
+    gamma = (
+        operation_count
+        * unit_roundoff
+        / (1.0 - operation_count * unit_roundoff)
+    )
+    magnitude = max(
+        1.0,
+        float(np.linalg.norm(left, ord=np.inf)),
+        float(np.linalg.norm(right, ord=np.inf)),
+    )
+    if float(np.max(np.abs(left - right))) > gamma * magnitude:
+        _fail(
+            _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+            f"{field} transform chain disagrees",
+        )
 
 
 def compare_geometry_poses_same_frame(
@@ -1625,6 +1698,7 @@ def compare_geometry_poses_same_frame(
         "comparison_frame": str(usd_pose["to_frame"]),
         "usd_pose_in_comparison_frame": usd_pose,
         "query_pose_in_comparison_frame": query_pose,
+        "usd_shape_dimensions": usd_dimensions,
         "translation_residual_vector_m": [
             float(item) for item in translation_residual.tolist()
         ],
@@ -1878,6 +1952,7 @@ def validate_geometry_disagreement_record(
         "comparison_frame",
         "usd_pose_in_comparison_frame",
         "query_pose_in_comparison_frame",
+        "usd_shape_dimensions",
         "translation_residual_vector_m",
         "translation_residual_norm_m",
         "orientation_residual_rad",
@@ -2151,23 +2226,20 @@ def validate_geometry_disagreement_record(
             _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
             "raw and composed property-query local poses disagree",
         )
-    if value["query_shape_type"] is not None and (
-        not isinstance(value["query_shape_type"], str)
-        or not value["query_shape_type"]
-    ):
+    if value["query_shape_type"] is not None:
         _fail(
             _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
-            "query shape type is invalid",
+            "property-query did not expose a shape type",
         )
     if value["query_scale"] is not None:
-        _finite_vector(value["query_scale"], 3, "query_scale")
-    if value["query_convex_or_mesh_approximation"] is not None and (
-        not isinstance(value["query_convex_or_mesh_approximation"], str)
-        or not value["query_convex_or_mesh_approximation"]
-    ):
         _fail(
             _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
-            "query approximation is invalid",
+            "property-query did not expose a shape scale",
+        )
+    if value["query_convex_or_mesh_approximation"] is not None:
+        _fail(
+            _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+            "property-query did not expose a shape approximation",
         )
     query_dimensions = _validate_query_shape_dimensions(
         value["query_shape_dimensions"]
@@ -2208,7 +2280,11 @@ def validate_geometry_disagreement_record(
         )
     _finite_vector(support["local_bounds_min_m"], 3, "query bounds min")
     _finite_vector(support["local_bounds_max_m"], 3, "query bounds max")
-    if _finite_float(support["support_radius_m"], "support radius") <= 0.0:
+    support_radius = _finite_float(
+        support["support_radius_m"],
+        "support radius",
+    )
+    if support_radius <= 0.0:
         _fail(
             _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
             "query support radius is invalid",
@@ -2222,6 +2298,20 @@ def validate_geometry_disagreement_record(
         _fail(
             _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
             "query support bounds differ from the retained local AABB",
+        )
+    expected_support_radius = math.sqrt(
+        sum(
+            max(abs(lower), abs(upper)) ** 2
+            for lower, upper in zip(
+                query_dimensions["local_aabb_min_m"],
+                query_dimensions["local_aabb_max_m"],
+            )
+        )
+    )
+    if support_radius != expected_support_radius:
+        _fail(
+            _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+            "query support radius differs from the retained local AABB",
         )
     cooked = value["cooked_shape_provenance"]
     if not isinstance(cooked, Mapping) or set(cooked) != {
@@ -2250,8 +2340,13 @@ def validate_geometry_disagreement_record(
                 "shape_approximation_exposed",
             )
         )
+        or value["query_api_name"]
+        != "omni.physx.IPhysxPropertyQuery.query_prim"
+        or value["query_backend"] != "physx"
         or cooked["query_api_name"] != value["query_api_name"]
         or cooked["query_mode"] != "QUERY_RIGID_BODY_WITH_COLLIDERS"
+        or cooked["source_version"]
+        != "Isaac Sim 6.0.1 / omni.physx 110.1.13"
     ):
         _fail(
             _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
@@ -2307,6 +2402,83 @@ def validate_geometry_disagreement_record(
             _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
             "comparison frame is not the retained rigid body",
         )
+    if (
+        value["usd_pose_in_comparison_frame"]
+        != value["usd_local_to_rigid_body_pose"]
+        or value["query_pose_in_comparison_frame"]
+        != value["query_local_to_rigid_body_pose"]
+    ):
+        _fail(
+            _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+            "comparison poses differ from retained collider-to-body poses",
+        )
+    usd_local_raw_matrix = _geometry_pose_affine_matrix(usd_local_raw)
+    usd_local_to_body_matrix = _geometry_pose_affine_matrix(
+        usd_local_to_body
+    )
+    usd_world_matrix = _geometry_pose_affine_matrix(usd_world)
+    usd_parent_world_matrix = _geometry_pose_affine_matrix(
+        usd_parent_world
+    )
+    query_local_to_body_matrix = _geometry_pose_affine_matrix(
+        query_local_to_body
+    )
+    query_world_matrix = _geometry_pose_affine_matrix(query_world)
+    _require_composed_pose_agreement(
+        left=usd_parent_world_matrix @ usd_local_raw_matrix,
+        right=usd_world_matrix,
+        field="USD parent/local/world",
+    )
+    try:
+        body_world_matrix = (
+            usd_world_matrix @ np.linalg.inv(usd_local_to_body_matrix)
+        )
+    except np.linalg.LinAlgError as error:
+        _fail(
+            _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+            f"USD collider-to-body transform is singular: {error}",
+        )
+    _require_composed_pose_agreement(
+        left=body_world_matrix @ query_local_to_body_matrix,
+        right=query_world_matrix,
+        field="property-query body/local/world",
+    )
+    usd_dimensions = _validate_query_shape_dimensions(
+        value["usd_shape_dimensions"],
+        allow_null_volume=True,
+    )
+    for stage_field, metre_field in (
+        ("local_aabb_min_stage_units", "local_aabb_min_m"),
+        ("local_aabb_max_stage_units", "local_aabb_max_m"),
+        ("local_aabb_extent_stage_units", "local_aabb_extent_m"),
+    ):
+        if usd_dimensions[metre_field] != [
+            component * meters_per_unit
+            for component in usd_dimensions[stage_field]
+        ]:
+            _fail(
+                _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+                f"USD shape unit conversion changed: {metre_field}",
+            )
+    if (
+        usd_dimensions["volume_m3"] is None
+    ) != (
+        usd_dimensions["volume_stage_units_cubed"] is None
+    ):
+        _fail(
+            _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+            "USD shape volume nullability changed",
+        )
+    if (
+        usd_dimensions["volume_m3"] is not None
+        and usd_dimensions["volume_m3"]
+        != usd_dimensions["volume_stage_units_cubed"]
+        * meters_per_unit**3
+    ):
+        _fail(
+            _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+            "USD shape volume unit conversion changed",
+        )
     comparison = compare_geometry_poses_same_frame(
         usd_pose_in_comparison_frame=value[
             "usd_pose_in_comparison_frame"
@@ -2316,17 +2488,19 @@ def validate_geometry_disagreement_record(
         ],
         query_local_rotation_xyzw=raw_query["rotation_xyzw"],
         query_scale=value["query_scale"],
-        usd_shape_dimensions=value["query_shape_dimensions"],
+        usd_shape_dimensions=usd_dimensions,
         query_shape_dimensions=value["query_shape_dimensions"],
     )
     for field in (
         "comparison_frame",
         "usd_pose_in_comparison_frame",
         "query_pose_in_comparison_frame",
+        "usd_shape_dimensions",
         "translation_residual_vector_m",
         "translation_residual_norm_m",
         "orientation_residual_rad",
         "scale_residual",
+        "shape_dimension_residual",
         "translation_bound_m",
         "orientation_bound_rad",
         "scale_bound",
@@ -2583,6 +2757,40 @@ def validate_property_query_geometry_binding(
                 disagreement_record
             )
             if (
+                receipt["stage_identifier"]
+                != property_query_record.get(
+                    "property_query_stage_identifier"
+                )
+                or receipt["rigid_body_prim_path"]
+                != usd_geometry.get("body_prim_path")
+                or receipt["collider_prim_path"] != query_path
+                or receipt["geometry_prim_path"] != usd_path
+                or receipt["query_operation_index"]
+                != property_query_record.get("query_operation_index")
+                or receipt["query_shape_index"]
+                != property_query_record.get("query_shape_index")
+                or receipt["query_local_pose_raw"][
+                    "translation_stage_units"
+                ]
+                != list(
+                    property_query_record.get(
+                        "property_query_local_position",
+                        (),
+                    )
+                )
+                or receipt["query_local_pose_raw"]["rotation_xyzw"]
+                != _canonical_quaternion_xyzw(
+                    property_query_record.get(
+                        "property_query_local_rotation_xyzw",
+                        (),
+                    ),
+                    "property-query local rotation",
+                )
+                or receipt["usd_pose_in_comparison_frame"][
+                    "matrix_row_major_4x4"
+                ]
+                != local_matrix.tolist()
+                or
                 receipt["translation_bound_m"]
                 != pose_residual_bound
                 or receipt["bound_authority"][
