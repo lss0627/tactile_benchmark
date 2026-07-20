@@ -787,6 +787,48 @@ def _assert_option_a_disagreement_contracts(module: Any) -> None:
             "equivalent_quaternion_sign_rejected_receipt_identity"
         )
 
+    different_declared_shape = {
+        **stale_shape_usd,
+        "shape_parameters": {"size_m": 4.0},
+    }
+    with pytest.raises(Exception) as declared_shape_receipt:
+        binding(
+            property_query_record=equivalent_sign_query,
+            usd_geometry=different_declared_shape,
+            disagreement_record=record,
+        )
+    if getattr(declared_shape_receipt.value, "receipt", None) is not None:
+        accepted_invalid_records.append(
+            "receipt_not_bound_to_current_usd_shape_dimensions"
+        )
+
+    unsupported_descendant_claim = deepcopy(record)
+    unsupported_descendant_claim["mesh_or_primitive_authority"] = (
+        "usd_collision_xform_with_descendant_geometry"
+    )
+    accepted_after_resigning(
+        "unimplemented_descendant_geometry_claim_accepted",
+        unsupported_descendant_claim,
+    )
+
+    reset_record = deepcopy(record)
+    reset_record["usd_xform_ops"][0]["reset_xform_stack"] = True
+    reset_record["usd_reset_xform_stack"] = True
+    reset_record["usd_local_pose_frame"] = "reset_world"
+    reset_record["usd_local_pose_raw"] = deepcopy(
+        reset_record["usd_world_pose"]
+    )
+    reset_record["record_sha256"] = module.canonical_sha256(
+        reset_record,
+        exclude_fields=("record_sha256",),
+    )
+    try:
+        validate(reset_record)
+    except Exception:
+        accepted_invalid_records.append(
+            "reset_xform_stack_raw_world_semantics_rejected"
+        )
+
     assert accepted_invalid_records == [], (
         "Option A validator accepted unbound diagnostic facts: "
         f"{accepted_invalid_records}"
@@ -1963,6 +2005,7 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
         real_runtime.C2ARealSceneFactory.create_static_scene
     )
     assert "G1_C2A_GEOMETRY_DISAGREEMENT_RECORD_INVALID" in factory_source
+    assert "receipt_validation_error" in factory_source
     tracking_source = (ROOT / "scripts/run_g1_tracking_envelope.py").read_text(
         encoding="utf-8"
     )
@@ -1974,6 +2017,11 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
     ]
     assert "diagnostic_identity=" in tracking_resolve
     assert "lifecycle_record=" in tracking_resolve
+    tracking_factory_source = tracking_source[
+        tracking_source.index("class _IsaacSceneFactory") :
+        tracking_source.index("def _repository_commit")
+    ]
+    assert "receipt_validation_error" in tracking_factory_source
     tensors = types.ModuleType("omni.physics.tensors")
 
     def require_stage_bound_view(backend_name: str, **kwargs: Any) -> None:
