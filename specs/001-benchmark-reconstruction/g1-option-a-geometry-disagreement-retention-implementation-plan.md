@@ -202,7 +202,7 @@ table says nullable.
 | `usd_xform_ops` | array described below | no |
 | `usd_reset_xform_stack` | boolean | no |
 | `usd_local_pose_raw` | pose mapping | no |
-| `usd_local_pose_frame` | `"immediate_usd_parent"` | no |
+| `usd_local_pose_frame` | `"immediate_usd_parent"` or `"reset_world"` | no |
 | `usd_local_to_rigid_body_pose` | pose mapping | no |
 | `usd_world_pose` | pose mapping | no |
 | `usd_parent_prim_path` | absolute prim path | no |
@@ -259,11 +259,13 @@ table says nullable.
 ```text
 usd_analytic_primitive_schema
 usd_mesh_points_faces_and_approximation
-usd_collision_xform_with_descendant_geometry
 ```
 
-The third value records a collision Xform whose geometry source is an exact
-descendant path. It does not authorize a query-side or USD-side preference.
+Schema v1 requires `geometry_prim_path == collider_prim_path`; the real
+adapter supports the analytic and mesh geometry prims present in the
+approved stage. A collision Xform with descendant geometry fails closed as
+unsupported instead of claiming a provenance branch the adapter cannot
+extract.
 
 ### 3.3 USD xform-op array
 
@@ -289,6 +291,12 @@ ordered_ops:
 `usd_reset_xform_stack` is true exactly when any listed prim resets its stack.
 An omitted ordered op, reordered index or changed raw value invalidates the
 record digest.
+
+When the geometry prim itself has `resetXformStack`, its raw local pose uses
+`usd_local_pose_frame="reset_world"` and `to_frame="world"`; validation
+compares that authored local transform directly with the composed world
+transform. Otherwise it uses `immediate_usd_parent` and validates
+`parent_world @ local_raw == world`.
 
 ### 3.4 Raw property-query and cooked-shape fields
 
