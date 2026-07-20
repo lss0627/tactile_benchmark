@@ -165,7 +165,12 @@ values are retained without sign rewriting in `query_local_pose_raw`.
 
 USD `Gf.Matrix4d` uses row-vector semantics. The adapter transposes it once
 at serialization to the convention above. No later layer transposes it
-again.
+again. `matrix_row_major_4x4` contains rigid rotation and translation;
+`scale_xyz` separately retains signed column scale. Validation normalizes
+the matrix columns and binds their rotation to `rotation_xyzw` under the
+unchanged `gamma_n_float32_query_pose_binding` bound. Parent/local/world and
+body/query/world chains are composed from quaternion, scale and translation
+and checked under the same bound.
 
 ### 3.2 Root fields and types
 
@@ -213,16 +218,17 @@ table says nullable.
 | `query_local_pose_frame` | `"queried_rigid_body_actor"` | no |
 | `query_local_to_rigid_body_pose` | pose mapping | no |
 | `query_world_pose` | pose mapping | no |
-| `query_shape_type` | string | yes |
+| `query_shape_type` | null because API does not expose it | yes, must be null |
 | `query_shape_dimensions` | mapping described below | no |
-| `query_scale` | finite length-3 array | yes |
-| `query_convex_or_mesh_approximation` | string | yes |
+| `query_scale` | null because API does not expose it | yes, must be null |
+| `query_convex_or_mesh_approximation` | null because API does not expose it | yes, must be null |
 | `query_support_radius_or_bounds` | mapping described below | no |
 | `cooked_shape_identifier` | 64-lowercase-hex string | no |
 | `cooked_shape_provenance` | mapping described below | no |
 | `comparison_frame` | exact rigid-body absolute path | no |
 | `usd_pose_in_comparison_frame` | pose mapping | no |
 | `query_pose_in_comparison_frame` | pose mapping | no |
+| `usd_shape_dimensions` | mapping described below | no |
 | `translation_residual_vector_m` | finite length-3 array | no |
 | `translation_residual_norm_m` | finite non-negative float | no |
 | `orientation_residual_rad` | finite float in `[0, π]` | no |
@@ -296,7 +302,10 @@ stage_id_from_response: integer >= 0
 path_id_from_response: integer
 ```
 
-Isaac 6.0.1's shipped `PhysxPropertyQueryInterface` tests prove that
+Isaac 6.0.1's shipped bindings expose
+`PhysxPropertyQueryColliderResponse.stage_id`; the callback retains that
+response value and rejects it when it differs from the requested stage.
+The shipped `PhysxPropertyQueryInterface` tests also prove that
 `local_pos/local_rot` are the composed collider pose relative to the rigid
 body supplied to
 `QUERY_RIGID_BODY_WITH_COLLIDERS`. The binding stub names them only “Local
@@ -316,6 +325,12 @@ local_aabb_extent_m: finite positive length-3 array
 volume_stage_units_cubed: finite positive float
 volume_m3: finite positive float
 ```
+
+`usd_shape_dimensions` uses the same field names and unit conversion. Its
+two volume fields are jointly nullable only when declared USD mesh geometry
+does not provide an exact analytic volume. Retaining both source mappings
+makes every `shape_dimension_residual` and float32 ULP distance independently
+recomputable.
 
 `query_support_radius_or_bounds` is:
 
