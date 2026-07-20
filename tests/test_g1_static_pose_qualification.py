@@ -447,3 +447,7 @@ def test_c2a_evidence_is_preliminary_hashed_and_carries_all_no_claim_flags(
     manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["repository"]["commit"] == "a" * 40
     assert (output / "checksums.sha256").read_text(encoding="utf-8").strip()
+    assert not (output / "geometry_disagreements.jsonl").exists(), (
+        "legacy C2a v2 evidence must not synthesize an Option A disagreement "
+        "record"
+    )

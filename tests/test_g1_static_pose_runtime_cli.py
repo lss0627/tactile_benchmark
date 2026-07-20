@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import importlib.util
 import importlib
 import hashlib
@@ -179,6 +180,395 @@ def _option_d_collision_snapshot_fixture() -> dict[str, Any]:
         "subject_inventory": subject,
         "obstacle_inventory": obstacle,
     }
+
+
+def _option_a_pose(
+    *,
+    from_frame: str,
+    to_frame: str,
+    translation: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    rotation_xyzw: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
+    scale: tuple[float, float, float] = (1.0, 1.0, 1.0),
+) -> dict[str, Any]:
+    x, y, z, w = rotation_xyzw
+    norm = math.sqrt(x * x + y * y + z * z + w * w)
+    x, y, z, w = (value / norm for value in (x, y, z, w))
+    rotation = [
+        [
+            1.0 - 2.0 * (y * y + z * z),
+            2.0 * (x * y - z * w),
+            2.0 * (x * z + y * w),
+        ],
+        [
+            2.0 * (x * y + z * w),
+            1.0 - 2.0 * (x * x + z * z),
+            2.0 * (y * z - x * w),
+        ],
+        [
+            2.0 * (x * z - y * w),
+            2.0 * (y * z + x * w),
+            1.0 - 2.0 * (x * x + y * y),
+        ],
+    ]
+    matrix = [
+        [rotation[row][column] * scale[column] for column in range(3)]
+        + [translation[row]]
+        for row in range(3)
+    ]
+    matrix.append([0.0, 0.0, 0.0, 1.0])
+    return {
+        "from_frame": from_frame,
+        "to_frame": to_frame,
+        "matrix_convention": (
+            "row_major_storage_column_vector_semantics"
+        ),
+        "matrix_row_major_4x4": matrix,
+        "translation_stage_units": list(translation),
+        "translation_m": list(translation),
+        "rotation_xyzw": [x, y, z, w],
+        "quaternion_order": "xyzw",
+        "scale_xyz": list(scale),
+    }
+
+
+def _option_a_disagreement_inputs(module: Any) -> dict[str, Any]:
+    compare = getattr(module, "compare_geometry_poses_same_frame", None)
+    assert callable(compare), "Option A missing same-frame comparison capability"
+    body = "/World/FR3/fr3_rightfinger"
+    collider = f"{body}/collisions/mesh_0"
+    parent = f"{body}/collisions"
+    usd_pose = _option_a_pose(from_frame=collider, to_frame=body)
+    query_pose = _option_a_pose(
+        from_frame=collider,
+        to_frame=body,
+        translation=(0.025, 0.0, 0.0),
+    )
+    dimensions = {
+        "local_aabb_min_stage_units": [-1.0, -1.0, -1.0],
+        "local_aabb_max_stage_units": [1.0, 1.0, 1.0],
+        "local_aabb_extent_stage_units": [2.0, 2.0, 2.0],
+        "local_aabb_min_m": [-1.0, -1.0, -1.0],
+        "local_aabb_max_m": [1.0, 1.0, 1.0],
+        "local_aabb_extent_m": [2.0, 2.0, 2.0],
+        "volume_stage_units_cubed": 8.0,
+        "volume_m3": 8.0,
+    }
+    comparison = compare(
+        usd_pose_in_comparison_frame=usd_pose,
+        query_pose_in_comparison_frame=query_pose,
+        query_local_rotation_xyzw=[0.0, 0.0, 0.0, 1.0],
+        query_scale=None,
+        usd_shape_dimensions=dimensions,
+        query_shape_dimensions=dimensions,
+    )
+    return {
+        "identity": {
+            "run_id": "option-a-run",
+            "trial_id": "task-ready-z-0p55-scene-0",
+            "candidate_id": "task-ready-z-0p55",
+            "scene_id": "task-ready-z-0p55-scene-0",
+            "scene_index": 0,
+            "lifecycle_record_sha256": "b" * 64,
+            "stage_lifecycle_token": "a" * 64,
+            "stage_identifier": 731,
+        },
+        "collider": {
+            "rigid_body_prim_path": body,
+            "collider_prim_path": collider,
+            "geometry_prim_path": collider,
+            "collider_type": "cube",
+            "geometry_type": "Cube",
+            "collision_enabled": True,
+            "approximation": "analytic",
+            "mesh_or_primitive_authority": (
+                "usd_analytic_primitive_schema"
+            ),
+        },
+        "usd": {
+            "usd_xform_op_count": 3,
+            "usd_xform_ops": [
+                {
+                    "prim_path": collider,
+                    "parent_prim_path": parent,
+                    "reset_xform_stack": False,
+                    "ordered_ops": [
+                        {
+                            "order_index": 0,
+                            "op_name": "xformOp:translate",
+                            "op_type": "translate",
+                            "precision": "double",
+                            "is_inverse_op": False,
+                            "value_type_name": "double3",
+                            "authored": True,
+                            "value": [0.0, 0.0, 0.0],
+                        },
+                        {
+                            "order_index": 1,
+                            "op_name": "xformOp:orient",
+                            "op_type": "orient",
+                            "precision": "double",
+                            "is_inverse_op": False,
+                            "value_type_name": "quatd",
+                            "authored": True,
+                            "value": [1.0, 0.0, 0.0, 0.0],
+                        },
+                    ],
+                },
+                {
+                    "prim_path": parent,
+                    "parent_prim_path": body,
+                    "reset_xform_stack": False,
+                    "ordered_ops": [
+                        {
+                            "order_index": 0,
+                            "op_name": "xformOp:scale",
+                            "op_type": "scale",
+                            "precision": "double",
+                            "is_inverse_op": False,
+                            "value_type_name": "double3",
+                            "authored": True,
+                            "value": [1.0, 2.0, 0.5],
+                        }
+                    ],
+                },
+            ],
+            "usd_reset_xform_stack": False,
+            "usd_local_pose_raw": _option_a_pose(
+                from_frame=collider,
+                to_frame=parent,
+            ),
+            "usd_local_pose_frame": "immediate_usd_parent",
+            "usd_local_to_rigid_body_pose": usd_pose,
+            "usd_world_pose": _option_a_pose(
+                from_frame=collider,
+                to_frame="world",
+                translation=(0.5, 0.0, 0.5),
+            ),
+            "usd_parent_prim_path": parent,
+            "usd_parent_world_pose": _option_a_pose(
+                from_frame=parent,
+                to_frame="world",
+                translation=(0.5, 0.0, 0.5),
+                rotation_xyzw=(0.0, 0.0, 0.382683432365, 0.923879532511),
+                scale=(1.0, 2.0, 0.5),
+            ),
+            "stage_meters_per_unit": 1.0,
+            "stage_up_axis": "Z",
+        },
+        "query": {
+            "query_api_name": "omni.physx.IPhysxPropertyQuery.query_prim",
+            "query_backend": "physx",
+            "query_operation_index": 0,
+            "query_property_count": 1,
+            "query_shape_index": 0,
+            "query_local_pose_raw": {
+                "translation_stage_units": [0.025, 0.0, 0.0],
+                "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                "quaternion_order": "xyzw",
+                "stage_id_from_response": 731,
+                "path_id_from_response": 991,
+            },
+            "query_local_pose_frame": "queried_rigid_body_actor",
+            "query_local_to_rigid_body_pose": query_pose,
+            "query_world_pose": _option_a_pose(
+                from_frame=collider,
+                to_frame="world",
+                translation=(0.525, 0.0, 0.5),
+            ),
+            "query_shape_type": None,
+            "query_shape_dimensions": dimensions,
+            "query_scale": None,
+            "query_convex_or_mesh_approximation": None,
+            "query_support_radius_or_bounds": {
+                "local_bounds_min_m": [-1.0, -1.0, -1.0],
+                "local_bounds_max_m": [1.0, 1.0, 1.0],
+                "support_radius_m": math.sqrt(3.0),
+            },
+            "cooked_shape_identifier": "c" * 64,
+            "cooked_shape_provenance": {
+                "identifier_kind": (
+                    "canonical_property_query_shape_observation_sha256"
+                ),
+                "backend_handle_exposed": False,
+                "shape_type_exposed": False,
+                "shape_scale_exposed": False,
+                "shape_approximation_exposed": False,
+                "query_api_name": (
+                    "omni.physx.IPhysxPropertyQuery.query_prim"
+                ),
+                "query_mode": "QUERY_RIGID_BODY_WITH_COLLIDERS",
+                "source_version": (
+                    "Isaac Sim 6.0.1 / omni.physx 110.1.13"
+                ),
+            },
+        },
+        "comparison": comparison,
+    }
+
+
+def _option_a_disagreement_record(module: Any) -> dict[str, Any]:
+    build = getattr(module, "build_geometry_disagreement_record", None)
+    assert callable(build), "Option A missing canonical disagreement builder"
+    return build(**_option_a_disagreement_inputs(module))
+
+
+def _assert_option_a_disagreement_contracts(module: Any) -> None:
+    assert (
+        getattr(module, "GEOMETRY_DISAGREEMENT_SCHEMA_VERSION", None)
+        == "g1.full_robot.geometry_disagreement.v1"
+    )
+    validate = getattr(module, "validate_geometry_disagreement_record", None)
+    finalize = getattr(
+        module,
+        "finalize_geometry_disagreement_for_evidence",
+        None,
+    )
+    compare = getattr(module, "compare_geometry_poses_same_frame", None)
+    assert callable(validate)
+    assert callable(finalize)
+    assert callable(compare)
+
+    record = _option_a_disagreement_record(module)
+    validated = validate(record)
+    assert validated["agreement"] is False
+    assert validated["blocker_code"] == "G1_FULL_ROBOT_OFFSET_UNRESOLVED"
+    assert (
+        validated["blocker_message"]
+        == "property-query local pose differs from USD geometry"
+    )
+    assert validated["selected_command_cap_m"] is None
+    assert validated["claim_eligible"] is False
+    assert validated["actuation_performed"] is False
+    assert validated["post_abort_actuation_count"] == 0
+    assert validated["force_vector_valid"] is False
+    assert validated["wrench_valid"] is False
+    assert validated["raw_impulse_used_as_force"] is False
+    assert validated["usd_xform_op_count"] == 3
+    assert len(validated["usd_xform_ops"]) == 2
+    assert validated["query_shape_type"] is None
+    assert validated["query_scale"] is None
+    assert validated["query_convex_or_mesh_approximation"] is None
+    assert validated["orientation_bound_rad"] is None
+    assert validated["scale_bound"] is None
+    assert validated["translation_residual_vector_m"] == [0.025, 0.0, 0.0]
+    assert validated["translation_residual_norm_m"] == 0.025
+
+    identity_fields = (
+        "schema_version",
+        "run_id",
+        "trial_id",
+        "candidate_id",
+        "scene_id",
+        "scene_index",
+        "lifecycle_record_sha256",
+        "stage_lifecycle_token",
+        "stage_identifier",
+        "rigid_body_prim_path",
+        "collider_prim_path",
+        "geometry_prim_path",
+        "query_operation_index",
+        "query_shape_index",
+    )
+    assert validated["record_id"] == module.canonical_sha256(
+        {field: validated[field] for field in identity_fields}
+    )
+    assert validated["record_sha256"] == module.canonical_sha256(
+        validated,
+        exclude_fields=("record_sha256",),
+    )
+    finalized = finalize(validated, shutdown_exit_code=1)
+    assert finalized["evidence_write_started"] is True
+    assert finalized["evidence_write_finished"] is True
+    assert finalized["shutdown_started"] is False
+    assert finalized["shutdown_exit_code"] == 1
+    assert finalized["record_sha256"] == module.canonical_sha256(
+        finalized,
+        exclude_fields=("record_sha256",),
+    )
+
+    for field in (
+        "rigid_body_prim_path",
+        "collider_prim_path",
+        "geometry_prim_path",
+        "usd_local_pose_raw",
+        "query_local_pose_raw",
+        "comparison_frame",
+        "bound_authority",
+    ):
+        invalid = deepcopy(record)
+        invalid.pop(field)
+        with pytest.raises(Exception):
+            validate(invalid)
+    mutations = [
+        ("rigid_body_prim_path", "World/FR3"),
+        ("usd_local_pose_frame", "unknown"),
+        ("query_local_pose_frame", "unknown"),
+        ("comparison_frame", "/World/Other"),
+        ("query_property_count", 0),
+        ("query_shape_index", 1),
+        ("stage_lifecycle_token", "f" * 64),
+        ("claim_eligible", True),
+        ("post_abort_actuation_count", 1),
+    ]
+    for field, value in mutations:
+        invalid = deepcopy(record)
+        invalid[field] = value
+        with pytest.raises(Exception):
+            validate(invalid)
+    invalid_pose = deepcopy(record)
+    invalid_pose["query_local_pose_raw"]["quaternion_order"] = "wxyz"
+    with pytest.raises(Exception):
+        validate(invalid_pose)
+    invalid_pose = deepcopy(record)
+    invalid_pose["query_local_pose_raw"]["rotation_xyzw"][0] = math.nan
+    with pytest.raises(Exception):
+        validate(invalid_pose)
+    invalid_pose = deepcopy(record)
+    invalid_pose["usd_world_pose"]["translation_m"][0] = math.inf
+    with pytest.raises(Exception):
+        validate(invalid_pose)
+    invalid_ops = deepcopy(record)
+    invalid_ops["usd_xform_ops"][0]["ordered_ops"].pop()
+    with pytest.raises(Exception):
+        validate(invalid_ops)
+    invalid_digest = deepcopy(record)
+    invalid_digest["record_sha256"] = "0" * 64
+    with pytest.raises(Exception):
+        validate(invalid_digest)
+
+    body = "/World/FR3/fr3_rightfinger"
+    collider = f"{body}/collisions/mesh_0"
+    equal_usd = _option_a_pose(from_frame=collider, to_frame=body)
+    equal_query = _option_a_pose(
+        from_frame=collider,
+        to_frame=body,
+        rotation_xyzw=(0.0, 0.0, 0.0, -1.0),
+    )
+    dimensions = _option_a_disagreement_inputs(module)["query"][
+        "query_shape_dimensions"
+    ]
+    equal = compare(
+        usd_pose_in_comparison_frame=equal_usd,
+        query_pose_in_comparison_frame=equal_query,
+        query_local_rotation_xyzw=[0.0, 0.0, 0.0, -1.0],
+        query_scale=None,
+        usd_shape_dimensions=dimensions,
+        query_shape_dimensions=dimensions,
+    )
+    assert equal["agreement"] is True
+    assert equal["orientation_residual_rad"] == 0.0
+
+    different_frames = deepcopy(equal_query)
+    different_frames["to_frame"] = "/World/Other"
+    with pytest.raises(Exception):
+        compare(
+            usd_pose_in_comparison_frame=equal_usd,
+            query_pose_in_comparison_frame=different_frames,
+            query_local_rotation_xyzw=[0.0, 0.0, 0.0, 1.0],
+            query_scale=None,
+            usd_shape_dimensions=dimensions,
+            query_shape_dimensions=dimensions,
+        )
 
 
 def _assert_option_d_inventory_contracts(module: Any) -> None:
@@ -941,6 +1331,67 @@ class _CandidateOutcomeFactory(_FakeFactory):
         return scene
 
 
+class _GeometryDisagreementFactory(_FakeFactory):
+    def __init__(self, record: dict[str, Any]) -> None:
+        super().__init__()
+        self.record = deepcopy(record)
+        self.scene_creation_failures: list[dict[str, Any]] = []
+        self.lifecycle_records: list[dict[str, Any]] = []
+        self.lifecycle_close_records: list[dict[str, Any]] = []
+        self.create_count = 0
+
+    def create_static_scene(self, **spec: Any) -> _FakeScene:
+        self.create_count += 1
+        self.events.append(f"create:{spec['scene_id']}")
+        self.scene_creation_failures.append(
+            {
+                "schema_version": "g1.c2a.static.v3.creation_failure",
+                "candidate_id": spec["candidate_id"],
+                "scene_id": spec["scene_id"],
+                "fresh_scene_token": spec["fresh_scene_token"],
+                "scene_index": int(spec["scene_index"]),
+                "lifecycle_allocation": {
+                    "stage_lifecycle_token": self.record[
+                        "stage_lifecycle_token"
+                    ],
+                },
+                "lifecycle_record": {
+                    "lifecycle_record_sha256": self.record[
+                        "lifecycle_record_sha256"
+                    ],
+                },
+                "collision_snapshot": None,
+                "offset_authority_records": [],
+                "initial_swept_clearance": None,
+                "command_bound_route_diagnostics": None,
+                "geometry_disagreement_record": deepcopy(self.record),
+                "failure_code": "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+                "failure_message": (
+                    "property-query local pose differs from USD geometry"
+                ),
+                "cleanup_errors": [],
+                "claim_eligible": False,
+                "post_abort_actuation_count": 0,
+            }
+        )
+        option_d = _option_d_module()
+        raise option_d.G1FullRobotClearanceError(
+            "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+            "property-query local pose differs from USD geometry",
+            receipt=self.record,
+        )
+
+    def finalize_lifecycle_audit(self) -> dict[str, Any]:
+        return {
+            "schema_version": "g1.scene.lifecycle.audit.v1",
+            "run_id": "option-a-run",
+            "factory_session_token": "d" * 64,
+            "allocated_scene_count": 1,
+            "closed_scene_count": 1,
+            "factory_closed": True,
+        }
+
+
 def _orchestrate(runner: Any, tmp_path: Path, factory: _FakeFactory, **changes: Any):
     call = _capability(runner, "orchestrate_c2a_real_runtime")
     payload = {
@@ -1243,7 +1694,9 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
     assert all(scene["physics_device"] == "cpu" for scene in scenes)
     assert all(scene["broadphase_type"] == "MBP" for scene in scenes)
     assert all(scene["gpu_dynamics_enabled"] is False for scene in scenes)
-    _assert_option_d_inventory_contracts(_option_d_module())
+    option_d = _option_d_module()
+    _assert_option_d_inventory_contracts(option_d)
+    _assert_option_a_disagreement_contracts(option_d)
 
     real_runtime = _real_runtime_module()
     tensors = types.ModuleType("omni.physics.tensors")
@@ -1562,20 +2015,54 @@ def test_c2a_real_readiness_enforces_existing_send_penetration_joint_velocity_an
 
 
 def test_c2a_runtime_failure_preserves_exact_code_message_writes_before_shutdown(tmp_path: Path) -> None:
-    factory = _FakeFactory(fail_at=0)
-    writes: list[dict[str, Any]] = []
+    runner = _runner()
+    record = _option_a_disagreement_record(_option_d_module())
+    factory = _GeometryDisagreementFactory(record)
+    write = _capability(runner, "write_c2a_static_evidence")
+    output = tmp_path / "c2a"
 
     def writer(**payload: Any) -> dict[str, Any]:
-        writes.append(payload)
         factory.events.append("write-evidence")
-        return {"systemic_failure": True}
+        return write(**payload)
 
-    outcome = _orchestrate(_runner(), tmp_path, factory, evidence_writer=writer)
+    outcome = _orchestrate(runner, tmp_path, factory, evidence_writer=writer)
     assert outcome["exit_code"] == 1
-    assert outcome["systemic_failure_code"] == "G1_C2A_PENETRATION_PROVENANCE"
-    assert outcome["systemic_failure_message"]
-    assert writes[0]["systemic_failure_code"] == outcome["systemic_failure_code"]
-    assert writes[0]["systemic_failure_message"] == outcome["systemic_failure_message"]
+    assert outcome["systemic_failure_code"] == "G1_FULL_ROBOT_OFFSET_UNRESOLVED"
+    assert outcome["systemic_failure_message"] == (
+        "property-query local pose differs from USD geometry"
+    )
+    assert factory.create_count == 1
+    assert not any(event.startswith("step:") for event in factory.events)
+    assert outcome["selected_pose_id"] is None
+    assert outcome["selected_pose_sha256"] is None
+    assert outcome["report"]["selected_command_cap_m"] is None
+    assert outcome["report"]["claim_eligible"] is False
+    disagreement_path = output / "geometry_disagreements.jsonl"
+    retained = [
+        json.loads(line)
+        for line in disagreement_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(retained) == 1
+    retained_record = retained[0]
+    assert retained_record["agreement"] is False
+    assert retained_record["evidence_write_started"] is True
+    assert retained_record["evidence_write_finished"] is True
+    assert retained_record["shutdown_started"] is False
+    assert retained_record["shutdown_exit_code"] == 1
+    assert retained_record["actuation_performed"] is False
+    assert retained_record["post_abort_actuation_count"] == 0
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["geometry_disagreement_count"] == 1
+    assert manifest["geometry_disagreement_record_sha256s"] == [
+        retained_record["record_sha256"]
+    ]
+    checksum_names = {
+        line.split("  ", 1)[1]
+        for line in (output / "checksums.sha256")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    }
+    assert disagreement_path.name in checksum_names
     assert factory.events.index("write-evidence") < factory.events.index("factory-close:1")
     assert factory.close_codes == [1]
 
@@ -1985,13 +2472,18 @@ def test_c2a_candidate_local_rejection_static_failure_skips_selection_and_contin
 def test_c2a_candidate_local_rejection_writer_failure_has_no_pseudo_valid_manifest(
     tmp_path: Path,
 ) -> None:
-    factory = _CandidateOutcomeFactory(("valid", "failed", "failed"))
+    factory = _GeometryDisagreementFactory(
+        _option_a_disagreement_record(_option_d_module())
+    )
     output = tmp_path / "c2a"
 
     def failing_writer(**payload: Any) -> dict[str, Any]:
         assert len(payload["offline_candidates"]) == 3
-        assert len(payload["static_scenes"]) == 3
-        assert len(payload["readiness_samples"]) == 192
+        assert len(payload["static_scenes"]) == 1
+        assert len(payload["readiness_samples"]) == 0
+        assert payload["static_scenes"][0][
+            "geometry_disagreement_record"
+        ]["agreement"] is False
         factory.events.append("write-evidence")
         raise OSError("injected evidence writer failure")
 
@@ -2002,7 +2494,9 @@ def test_c2a_candidate_local_rejection_writer_failure_has_no_pseudo_valid_manife
     assert factory.events.index("write-evidence") < factory.events.index("factory-close:1")
     assert factory.close_codes == [1]
     assert not (output / "manifest.json").exists()
-    assert all(sample["post_abort_actuation_count"] == 0 for sample in outcome["result"]["readiness_samples"])
+    assert not (output / "checksums.sha256").exists()
+    assert factory.create_count == 1
+    assert not outcome["result"]["readiness_samples"]
 
 
 def test_c2a_runtime_success_selects_highest_pose_but_retains_all_no_claim_flags(tmp_path: Path) -> None:
