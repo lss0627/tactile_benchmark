@@ -2786,7 +2786,10 @@ def validate_property_query_geometry_binding(
                         (),
                     )
                 )
-                or receipt["query_local_pose_raw"]["rotation_xyzw"]
+                or _canonical_quaternion_xyzw(
+                    receipt["query_local_pose_raw"]["rotation_xyzw"],
+                    "receipt property-query local rotation",
+                )
                 != _canonical_quaternion_xyzw(
                     property_query_record.get(
                         "property_query_local_rotation_xyzw",
