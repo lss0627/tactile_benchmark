@@ -237,7 +237,11 @@ def _option_a_disagreement_inputs(module: Any) -> dict[str, Any]:
     body = "/World/FR3/fr3_rightfinger"
     collider = f"{body}/collisions/mesh_0"
     parent = f"{body}/collisions"
-    usd_pose = _option_a_pose(from_frame=collider, to_frame=body)
+    usd_pose = _option_a_pose(
+        from_frame=collider,
+        to_frame=body,
+        scale=(1.0, 2.0, 0.5),
+    )
     query_pose = _option_a_pose(
         from_frame=collider,
         to_frame=body,
@@ -343,13 +347,13 @@ def _option_a_disagreement_inputs(module: Any) -> dict[str, Any]:
                 from_frame=collider,
                 to_frame="world",
                 translation=(0.5, 0.0, 0.5),
+                scale=(1.0, 2.0, 0.5),
             ),
             "usd_parent_prim_path": parent,
             "usd_parent_world_pose": _option_a_pose(
                 from_frame=parent,
                 to_frame="world",
                 translation=(0.5, 0.0, 0.5),
-                rotation_xyzw=(0.0, 0.0, 0.382683432365, 0.923879532511),
                 scale=(1.0, 2.0, 0.5),
             ),
             "stage_meters_per_unit": 1.0,
@@ -578,6 +582,19 @@ def _assert_option_a_disagreement_contracts(module: Any) -> None:
     accepted_after_resigning(
         "matrix_not_bound_to_quaternion",
         matrix_quaternion_mismatch,
+    )
+
+    broken_transform_chain = deepcopy(record)
+    broken_transform_chain["usd_world_pose"][
+        "translation_stage_units"
+    ][0] = 0.6
+    broken_transform_chain["usd_world_pose"]["translation_m"][0] = 0.6
+    broken_transform_chain["usd_world_pose"][
+        "matrix_row_major_4x4"
+    ][0][3] = 0.6
+    accepted_after_resigning(
+        "usd_local_parent_world_chain_not_bound",
+        broken_transform_chain,
     )
 
     fabricated_dimension_residual = deepcopy(record)
