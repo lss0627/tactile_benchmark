@@ -12,6 +12,17 @@ from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
+from isaac_tactile_libero.runtime.g1_analytic_primitive_representation import (
+    AnalyticPrimitiveRepresentationRawInputs,
+    PrimitivePose,
+    SOURCE_BACKEND,
+    SOURCE_BACKEND_VERSION,
+    SOURCE_CANONICAL_AXIS,
+    SOURCE_PRIMITIVE_TYPE,
+    evaluate_analytic_cylinder_representation,
+    validate_analytic_primitive_representation,
+)
+
 
 LIFECYCLE_SCHEMA_VERSION = "g1.scene.lifecycle.v1"
 COLLISION_SNAPSHOT_SCHEMA_VERSION = "g1.full_robot.collision_snapshot.v1"
@@ -22,10 +33,10 @@ GEOMETRY_DISAGREEMENT_SCHEMA_VERSION = (
     "g1.full_robot.geometry_disagreement.v1"
 )
 GEOMETRY_COMPARISON_SCHEMA_VERSION = (
-    "g1.full_robot.geometry_comparison_result.v1"
+    "g1.full_robot.geometry_comparison_result.v2"
 )
 GEOMETRY_ACCUMULATOR_SCHEMA_VERSION = (
-    "g1.full_robot.geometry_comparison_accumulator.v1"
+    "g1.full_robot.geometry_comparison_accumulator.v2"
 )
 _GEOMETRY_COMPARISON_DIGEST_EXCLUDED_FIELDS = (
     "record_sha256",
@@ -3085,11 +3096,11 @@ def _comparison_binding_mismatches(
             "value",
         ),
         (
-            "usd_pose_in_comparison_frame.matrix_row_major_4x4",
+            "usd_local_to_rigid_body_pose.matrix_row_major_4x4",
             usd_geometry.get("local_transform"),
             (
                 record.get(
-                    "usd_pose_in_comparison_frame",
+                    "usd_local_to_rigid_body_pose",
                     {},
                 )
                 or {}
@@ -3097,11 +3108,11 @@ def _comparison_binding_mismatches(
             "value",
         ),
         (
-            "usd_pose_in_comparison_frame.scale_xyz",
+            "usd_local_to_rigid_body_pose.scale_xyz",
             usd_geometry.get("scale"),
             (
                 record.get(
-                    "usd_pose_in_comparison_frame",
+                    "usd_local_to_rigid_body_pose",
                     {},
                 )
                 or {}
@@ -3203,6 +3214,7 @@ def _minimal_geometry_evaluation(
         "scale_bound": None,
         "dimension_bound": None,
         "bound_authority": None,
+        "analytic_primitive_representation": None,
         "blocker_code": _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
         "blocker_message": str(error) or type(error).__name__,
         "selected_command_cap_m": None,
@@ -3281,6 +3293,7 @@ def validate_geometry_comparison_result(
             "binding_valid",
             "binding_mismatches",
             "field_diagnostics",
+            "analytic_primitive_representation",
             "agreement",
             "blocker_code",
             "blocker_message",
@@ -3312,6 +3325,25 @@ def validate_geometry_comparison_result(
                 _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
                 "geometry comparison record identity changed",
             )
+        representation = value["analytic_primitive_representation"]
+        if representation is not None:
+            validated_representation = (
+                validate_analytic_primitive_representation(
+                    representation
+                )
+            )
+            if validated_representation != representation:
+                _fail(
+                    _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+                    "analytic representation projection changed",
+                )
+            if value["agreement"] and not validated_representation[
+                "strict_placement_agreement"
+            ]:
+                _fail(
+                    _GEOMETRY_DISAGREEMENT_BLOCKER_CODE,
+                    "geometry agreement bypassed analytic representation",
+                )
     else:
         if not value["field_diagnostics"]:
             _fail(
@@ -3651,6 +3683,95 @@ def _build_offset_agreement_from_canonical_record(
     return agreement
 
 
+def _representation_pose(
+    pose: Mapping[str, Any],
+) -> PrimitivePose:
+    value = _validate_geometry_pose(pose, "analytic representation pose")
+    return PrimitivePose(
+        translation_m=tuple(value["translation_m"]),
+        rotation_xyzw=tuple(value["rotation_xyzw"]),
+        scale_xyz=tuple(value["scale_xyz"]),
+        frame=str(value["to_frame"]),
+    )
+
+
+def _geometry_pose_with_representation(
+    base_pose: Mapping[str, Any],
+    representation_pose: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project one normalized orientation without changing pose placement."""
+
+    base = _validate_geometry_pose(base_pose, "raw geometry pose")
+    if (
+        representation_pose.get("frame") != base["to_frame"]
+        or representation_pose.get("translation_m") != base["translation_m"]
+        or representation_pose.get("scale_xyz") != base["scale_xyz"]
+    ):
+        _fail(
+            "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+            "analytic representation changed placement translation or scale",
+        )
+    quaternion = _canonical_quaternion_xyzw(
+        representation_pose.get("rotation_xyzw"),
+        "normalized representation rotation",
+    )
+    rotation = _quaternion_rotation_matrix_xyzw(
+        quaternion,
+        "normalized representation rotation",
+    )
+    scale = np.asarray(base["scale_xyz"], dtype=np.float64)
+    matrix = np.eye(4, dtype=np.float64)
+    matrix[:3, :3] = rotation @ np.diag(scale)
+    matrix[:3, 3] = np.asarray(base["translation_m"], dtype=np.float64)
+    projected = deepcopy(base)
+    projected["rotation_xyzw"] = list(quaternion)
+    projected["matrix_row_major_4x4"] = matrix.tolist()
+    return projected
+
+
+def _existing_geometry_pose_bound(
+    usd_pose: Mapping[str, Any],
+    query_pose: Mapping[str, Any],
+) -> float:
+    """Return the unchanged gamma-n bound without making a decision."""
+
+    usd = _validate_geometry_pose(usd_pose, "USD geometry pose bound input")
+    query = _validate_geometry_pose(
+        query_pose,
+        "query geometry pose bound input",
+    )
+    operation_count = 1024
+    unit_roundoff = float(np.finfo(np.float32).eps) / 2.0
+    gamma = operation_count * unit_roundoff / (
+        1.0 - operation_count * unit_roundoff
+    )
+    magnitude = max(
+        1.0,
+        float(
+            np.linalg.norm(
+                np.asarray(usd["matrix_row_major_4x4"], dtype=np.float64),
+                ord=np.inf,
+            )
+        ),
+        float(
+            np.linalg.norm(
+                np.asarray(query["translation_m"], dtype=np.float64),
+                ord=np.inf,
+            )
+        ),
+        float(
+            np.linalg.norm(
+                _quaternion_rotation_matrix_xyzw(
+                    query["rotation_xyzw"],
+                    "query geometry pose bound rotation",
+                ),
+                ord=np.inf,
+            )
+        ),
+    )
+    return float(gamma * magnitude)
+
+
 def evaluate_geometry_agreement(
     raw_inputs: GeometryAgreementRawInputs,
 ) -> GeometryAgreementEvaluation:
@@ -3691,16 +3812,139 @@ def evaluate_geometry_agreement(
                 f"{unavailable_field} contains an unavailable raw value",
             )
         usd_dimensions = usd.pop("usd_shape_dimensions")
+        raw_usd_comparison_pose = usd["usd_local_to_rigid_body_pose"]
+        raw_query_comparison_pose = query[
+            "query_local_to_rigid_body_pose"
+        ]
+        analytic_primitive_representation = None
+        comparison_usd_pose = raw_usd_comparison_pose
+        comparison_query_pose = raw_query_comparison_pose
+        if (
+            collider.get("collider_type") == "cylinder"
+            and collider.get("geometry_type") == "Cylinder"
+            and collider.get("approximation") == "analytic"
+        ):
+            shape_parameters = usd_geometry.get("shape_parameters")
+            if not isinstance(shape_parameters, Mapping):
+                _fail(
+                    "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+                    "analytic Cylinder lacks shape parameters",
+                )
+            bound = _existing_geometry_pose_bound(
+                raw_usd_comparison_pose,
+                raw_query_comparison_pose,
+            )
+            query_identity = canonical_sha256(
+                {
+                    "stage_identifier": identity.get("stage_identifier"),
+                    "stage_lifecycle_token": identity.get(
+                        "stage_lifecycle_token"
+                    ),
+                    "collider_prim_path": collider.get(
+                        "collider_prim_path"
+                    ),
+                    "query_operation_index": query.get(
+                        "query_operation_index"
+                    ),
+                    "query_shape_index": query.get("query_shape_index"),
+                    "query_local_pose_raw": query.get(
+                        "query_local_pose_raw"
+                    ),
+                    "query_shape_dimensions": query.get(
+                        "query_shape_dimensions"
+                    ),
+                }
+            )
+            representation_evaluation = (
+                evaluate_analytic_cylinder_representation(
+                    AnalyticPrimitiveRepresentationRawInputs(
+                        primitive_type="ANALYTIC_CYLINDER",
+                        usd_prim_path=str(collider["collider_prim_path"]),
+                        usd_axis_token=str(
+                            shape_parameters.get("axis", "")
+                        ).upper(),
+                        usd_geometry_type=str(collider["geometry_type"]),
+                        usd_approximation=str(collider["approximation"]),
+                        source_backend=SOURCE_BACKEND,
+                        source_backend_version=SOURCE_BACKEND_VERSION,
+                        source_primitive_type=SOURCE_PRIMITIVE_TYPE,
+                        source_canonical_axis=SOURCE_CANONICAL_AXIS,
+                        installed_isaac_sim_version="6.0.1",
+                        installed_extension_version="110.1.13",
+                        query_observation_identity=query_identity,
+                        query_operation_index=int(
+                            query["query_operation_index"]
+                        ),
+                        query_property_index=int(
+                            property_query.get(
+                                "property_query_ordinal",
+                                query["query_shape_index"],
+                            )
+                        ),
+                        query_shape_index=int(query["query_shape_index"]),
+                        query_match_count=1,
+                        stage_lifecycle_token=str(
+                            identity["stage_lifecycle_token"]
+                        ),
+                        lifecycle_record_sha256=str(
+                            identity["lifecycle_record_sha256"]
+                        ),
+                        query_local_pose_frame=str(
+                            query["query_local_pose_frame"]
+                        ),
+                        raw_usd_pose=_representation_pose(
+                            raw_usd_comparison_pose
+                        ),
+                        raw_query_pose=_representation_pose(
+                            raw_query_comparison_pose
+                        ),
+                        usd_shape_dimensions={
+                            "local_aabb_min_m": usd_dimensions[
+                                "local_aabb_min_m"
+                            ],
+                            "local_aabb_max_m": usd_dimensions[
+                                "local_aabb_max_m"
+                            ],
+                            "volume_m3": usd_dimensions["volume_m3"],
+                        },
+                        query_shape_dimensions={
+                            "local_aabb_min_m": query[
+                                "query_shape_dimensions"
+                            ]["local_aabb_min_m"],
+                            "local_aabb_max_m": query[
+                                "query_shape_dimensions"
+                            ]["local_aabb_max_m"],
+                            "volume_m3": query[
+                                "query_shape_dimensions"
+                            ]["volume_m3"],
+                        },
+                        translation_bound_m=bound,
+                        orientation_or_matrix_bound=bound,
+                        scale_bound=bound,
+                        dimension_max_float32_ulp=1,
+                        extra_transform_count=0,
+                    )
+                )
+            )
+            analytic_primitive_representation = (
+                representation_evaluation.to_record()
+            )
+            comparison_usd_pose = _geometry_pose_with_representation(
+                raw_usd_comparison_pose,
+                analytic_primitive_representation["normalized_usd_pose"],
+            )
+            comparison_query_pose = _geometry_pose_with_representation(
+                raw_query_comparison_pose,
+                analytic_primitive_representation[
+                    "normalized_query_pose"
+                ],
+            )
         comparison = compare_geometry_poses_same_frame(
-            usd_pose_in_comparison_frame=usd[
-                "usd_local_to_rigid_body_pose"
+            usd_pose_in_comparison_frame=comparison_usd_pose,
+            query_pose_in_comparison_frame=comparison_query_pose,
+            query_local_rotation_xyzw=comparison_query_pose[
+                "rotation_xyzw"
             ],
-            query_pose_in_comparison_frame=query[
-                "query_local_to_rigid_body_pose"
-            ],
-            query_local_rotation_xyzw=query[
-                "query_local_pose_raw"
-            ]["rotation_xyzw"],
             query_scale=query["query_scale"],
             usd_shape_dimensions=usd_dimensions,
             query_shape_dimensions=query["query_shape_dimensions"],
@@ -3713,6 +3957,9 @@ def evaluate_geometry_agreement(
             **usd,
             **query,
             **comparison,
+            "analytic_primitive_representation": (
+                analytic_primitive_representation
+            ),
             "binding_valid": True,
             "binding_mismatches": [],
             "field_diagnostics": [],
@@ -3762,8 +4009,19 @@ def evaluate_geometry_agreement(
         )
         record["binding_mismatches"] = mismatches
         record["binding_valid"] = not mismatches
+        representation_strict = (
+            True
+            if analytic_primitive_representation is None
+            else bool(
+                analytic_primitive_representation[
+                    "strict_placement_agreement"
+                ]
+            )
+        )
         record["agreement"] = bool(
-            comparison["agreement"] and not mismatches
+            comparison["agreement"]
+            and representation_strict
+            and not mismatches
         )
         if not record["agreement"]:
             record["blocker_code"] = (
@@ -3772,7 +4030,11 @@ def evaluate_geometry_agreement(
             record["blocker_message"] = (
                 _GEOMETRY_DISAGREEMENT_BLOCKER_MESSAGE
                 if not comparison["agreement"]
-                else "geometry disagreement receipt differs from strict gate"
+                else (
+                    "analytic Cylinder representation normalization is invalid"
+                    if not representation_strict
+                    else "geometry disagreement receipt differs from strict gate"
+                )
             )
         record["record_id"] = canonical_sha256(
             {

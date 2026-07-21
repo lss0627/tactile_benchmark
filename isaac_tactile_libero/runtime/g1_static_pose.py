@@ -571,6 +571,56 @@ def validate_c2a_v3_scene_record(record: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+def validate_c2a_v4_scene_record(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate C2a v4 plus source-bound primitive representation records."""
+
+    if (
+        not isinstance(record, Mapping)
+        or record.get("schema_version") != "g1.c2a.static.v4"
+    ):
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "C2a normalized scene must use g1.c2a.static.v4",
+        )
+    representations = record.get(
+        "analytic_primitive_representation_records"
+    )
+    if not isinstance(representations, list):
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "C2a v4 representation records are missing",
+        )
+    from .g1_analytic_primitive_representation import (
+        validate_analytic_primitive_representation,
+    )
+
+    validated_representations = [
+        validate_analytic_primitive_representation(item)
+        for item in representations
+    ]
+    if len(
+        {
+            item["record_sha256"]
+            for item in validated_representations
+        }
+    ) != len(validated_representations):
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "C2a v4 representation record is duplicated",
+        )
+    historical_projection = dict(record)
+    historical_projection["schema_version"] = "g1.c2a.static.v3"
+    historical_projection.pop(
+        "analytic_primitive_representation_records"
+    )
+    result = validate_c2a_v3_scene_record(historical_projection)
+    result["schema_version"] = "g1.c2a.static.v4"
+    result["analytic_primitive_representation_records"] = (
+        validated_representations
+    )
+    return result
+
+
 __all__ = [
     "C2A_ARTICULATION_JOINT_NAMES",
     "C2A_ARM_JOINT_NAMES",
@@ -586,4 +636,5 @@ __all__ = [
     "validate_c2a_readiness_sample",
     "validate_c2a_static_scene_record",
     "validate_c2a_v3_scene_record",
+    "validate_c2a_v4_scene_record",
 ]
