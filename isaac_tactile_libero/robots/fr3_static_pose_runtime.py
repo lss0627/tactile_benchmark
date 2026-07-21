@@ -1800,6 +1800,19 @@ class PhysxResolvedOffsetAdapter:
                         property_query_record=query,
                     )
                 )
+                analytic_primitive_representation = (
+                    evaluation.to_record().get(
+                        "analytic_primitive_representation"
+                    )
+                )
+                if (
+                    collider_type == "cylinder"
+                    and analytic_primitive_representation is None
+                ):
+                    _fail(
+                        "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+                        "analytic Cylinder lacks its representation record",
+                    )
                 geometry_comparison_accumulator.append(evaluation)
                 try:
                     geometry_agreement = (
@@ -3134,7 +3147,7 @@ class C2ARealSceneFactory:
             self.scene_creation_failures.append(
                 {
                     "schema_version": (
-                        "g1.c2a.static.v3.creation_failure"
+                        "g1.c2a.static.v4.creation_failure"
                     ),
                     "candidate_id": scene_spec["candidate_id"],
                     "scene_id": scene_spec["scene_id"],
@@ -3174,6 +3187,24 @@ class C2ARealSceneFactory:
                     "geometry_comparison_record_id": record_id,
                     "geometry_comparison_record_sha256": (
                         record_sha256
+                    ),
+                    "analytic_primitive_representation_records": (
+                        []
+                        if not isinstance(
+                            geometry_disagreement_record,
+                            Mapping,
+                        )
+                        or not isinstance(
+                            geometry_disagreement_record.get(
+                                "analytic_primitive_representation"
+                            ),
+                            Mapping,
+                        )
+                        else [
+                            geometry_disagreement_record[
+                                "analytic_primitive_representation"
+                            ]
+                        ]
                     ),
                     "failure_code": str(
                         getattr(
@@ -3554,6 +3585,16 @@ class C2ARealStaticScene:
                 owner.geometry_comparison_accumulator
             ),
         )
+        comparison_snapshot = owner.geometry_comparison_accumulator.snapshot()
+        self.analytic_primitive_representation_records = [
+            record["analytic_primitive_representation"]
+            for record in comparison_snapshot["records"]
+            if record.get("scene_id") == self.spec["scene_id"]
+            and isinstance(
+                record.get("analytic_primitive_representation"),
+                Mapping,
+            )
+        ]
         self.collision_snapshot = extract_full_robot_collision_snapshot(
             stage=stage,
             subject_root="/World/FR3",
@@ -3821,7 +3862,7 @@ class C2ARealStaticScene:
         )
         self._next_action_index += 1
         return {
-            "schema_version": "g1.c2a.static.v3",
+            "schema_version": "g1.c2a.static.v4",
             "candidate_id": self.candidate["candidate_id"],
             "seed": self.owner.seed,
             "readiness_action_index": int(action_index),

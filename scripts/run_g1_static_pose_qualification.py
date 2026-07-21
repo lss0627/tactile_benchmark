@@ -465,7 +465,11 @@ def validate_real_c2a_readiness_sample(sample: Mapping[str, Any]) -> dict[str, A
     if (
         not isinstance(sample, Mapping)
         or sample.get("schema_version")
-        not in {"g1.c2a.static.v2", "g1.c2a.static.v3"}
+        not in {
+            "g1.c2a.static.v2",
+            "g1.c2a.static.v3",
+            "g1.c2a.static.v4",
+        }
         or "contact_provenance" not in sample
     ):
         _fail(
@@ -488,7 +492,10 @@ def validate_real_c2a_readiness_sample(sample: Mapping[str, Any]) -> dict[str, A
         _fail("G1_C2A_RUNTIME_TRUTH_MISSING", "C2a real readiness sample is incomplete")
     if sample["synthetic_test_double"] is not False or sample["real_runtime_truth"] is not True:
         _fail("G1_C2A_SYNTHETIC_RUNTIME_FORBIDDEN", "synthetic readiness sample is forbidden")
-    if sample.get("schema_version") == "g1.c2a.static.v3":
+    if sample.get("schema_version") in {
+        "g1.c2a.static.v3",
+        "g1.c2a.static.v4",
+    }:
         from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
             validate_scene_lifecycle_record,
         )
@@ -734,12 +741,19 @@ def run_c2a_static_qualification(
                         systemic_failure_code = failure_code
                         systemic_failure_message = failure_message
             scene_schema = (
-                "g1.c2a.static.v3"
+                "g1.c2a.static.v4"
                 if any(
-                    sample.get("schema_version") == "g1.c2a.static.v3"
+                    sample.get("schema_version") == "g1.c2a.static.v4"
                     for sample in samples
                 )
-                else "g1.c2a.static.v2"
+                else (
+                    "g1.c2a.static.v3"
+                    if any(
+                        sample.get("schema_version") == "g1.c2a.static.v3"
+                        for sample in samples
+                    )
+                    else "g1.c2a.static.v2"
+                )
             )
             static_scenes.append(
                 {
@@ -774,6 +788,13 @@ def run_c2a_static_qualification(
                     ),
                     "offset_authority_records": _jsonable(
                         getattr(scene, "offset_authority_records", ())
+                    ),
+                    "analytic_primitive_representation_records": _jsonable(
+                        getattr(
+                            scene,
+                            "analytic_primitive_representation_records",
+                            (),
+                        )
                     ),
                     "swept_clearance_receipts": _jsonable(
                         [
@@ -829,11 +850,29 @@ def write_c2a_static_evidence(
     """Write one immutable, preliminary, non-claim C2a directory."""
 
     metadata = _jsonable(dict(runtime_metadata or {}))
+    observed_scene_versions = {
+        str(item.get("schema_version", ""))
+        for item in (
+            *static_scenes,
+            *tuple(
+                item
+                for item in metadata.get(
+                    "factory_scene_creation_failures",
+                    (),
+                )
+                if isinstance(item, Mapping)
+            ),
+        )
+    }
+    normalized_v4 = any(
+        version.startswith("g1.c2a.static.v4")
+        for version in observed_scene_versions
+    )
     option_d = (
         isinstance(metadata.get("factory_lifecycle_audit"), Mapping)
         or any(
         str(item.get("schema_version", "")).startswith(
-            "g1.c2a.static.v3"
+            ("g1.c2a.static.v3", "g1.c2a.static.v4")
         )
         for item in static_scenes
         )
@@ -844,22 +883,29 @@ def write_c2a_static_evidence(
             not in {
                 "g1.c2a.static.v3",
                 "g1.c2a.static.v3.creation_failure",
+                "g1.c2a.static.v4",
+                "g1.c2a.static.v4.creation_failure",
             }
             for item in static_scenes
         ):
             _fail(
                 "G1_C2A_OPTION_D_INVALID",
-                "C2a evidence cannot mix v2 and v3 scene records",
+                "C2a evidence cannot mix legacy and Option D scene records",
             )
         from isaac_tactile_libero.runtime.g1_static_pose import (
             validate_c2a_v3_scene_record,
+            validate_c2a_v4_scene_record,
         )
 
         static_scenes = tuple(
             (
                 validate_c2a_v3_scene_record(item)
                 if item.get("schema_version") == "g1.c2a.static.v3"
-                else dict(item)
+                else (
+                    validate_c2a_v4_scene_record(item)
+                    if item.get("schema_version") == "g1.c2a.static.v4"
+                    else dict(item)
+                )
             )
             for item in static_scenes
         )
@@ -884,6 +930,7 @@ def write_c2a_static_evidence(
     )
     option_d_paths: list[Path] = []
     geometry_disagreements: list[dict[str, Any]] = []
+    analytic_representation_records: list[dict[str, Any]] = []
     if option_d:
         lifecycle_audit_path = destination / "lifecycle_audit.json"
         lifecycle_audit_path.write_text(
@@ -993,6 +1040,53 @@ def write_c2a_static_evidence(
             ),
             encoding="utf-8",
         )
+        if normalized_v4:
+            from isaac_tactile_libero.runtime.g1_analytic_primitive_representation import (
+                validate_analytic_primitive_representation,
+            )
+
+            retained_representations: dict[str, dict[str, Any]] = {}
+            if isinstance(comparison_snapshot, Mapping):
+                for comparison in comparison_snapshot.get("records", ()):
+                    representation = (
+                        comparison.get("analytic_primitive_representation")
+                        if isinstance(comparison, Mapping)
+                        else None
+                    )
+                    if isinstance(representation, Mapping):
+                        validated = validate_analytic_primitive_representation(
+                            representation
+                        )
+                        retained_representations[
+                            validated["record_sha256"]
+                        ] = validated
+            for scene in static_scenes:
+                for representation in scene.get(
+                    "analytic_primitive_representation_records",
+                    (),
+                ):
+                    validated = validate_analytic_primitive_representation(
+                        representation
+                    )
+                    retained_representations[
+                        validated["record_sha256"]
+                    ] = validated
+            analytic_representation_records = [
+                retained_representations[digest]
+                for digest in sorted(retained_representations)
+            ]
+            representation_path = (
+                destination
+                / "analytic_primitive_representation_records.jsonl"
+            )
+            representation_path.write_text(
+                "".join(
+                    json.dumps(_jsonable(record), sort_keys=True) + "\n"
+                    for record in analytic_representation_records
+                ),
+                encoding="utf-8",
+            )
+            option_d_paths.append(representation_path)
         collision_path = destination / "collision_snapshots.jsonl"
         collision_path.write_text(
             "".join(
@@ -1117,7 +1211,13 @@ def write_c2a_static_evidence(
         }
     report = {
         "schema_version": (
-            "g1.c2a.static.v3" if option_d else "g1.c2a.static.v2"
+            "g1.c2a.static.v4"
+            if normalized_v4
+            else (
+                "g1.c2a.static.v3"
+                if option_d
+                else "g1.c2a.static.v2"
+            )
         ),
         "evidence_stage": (
             "preliminary_option_d" if option_d else "preliminary"
@@ -1183,6 +1283,16 @@ def write_c2a_static_evidence(
                 if isinstance(comparison_snapshot, Mapping)
                 else None
             ),
+        )
+    if normalized_v4:
+        report.update(
+            analytic_primitive_representation_record_count=(
+                len(analytic_representation_records)
+            ),
+            analytic_primitive_representation_record_sha256s=[
+                record["record_sha256"]
+                for record in analytic_representation_records
+            ],
         )
     report_path = destination / "report.json"
     _write_json(report_path, report)
