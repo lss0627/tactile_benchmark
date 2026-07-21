@@ -243,6 +243,13 @@ A research maintainer can train and compare declared baselines only on frozen va
   physics steps for contact onset, and 5 physics steps for release; released state MUST remain
   stable for 3 steps, and no-contact scalar magnitude MUST remain at or below `1.0e-4`. All valid
   force magnitudes and raw impulses MUST be finite.
+- **FR-039**: Full-robot design-time collision qualification MAY normalize only the source-bound
+  representation difference between an OpenUSD analytic Cylinder authored on Z and the approved
+  PhysX source analytic Cylinder on X. The raw poses MUST remain retained, the exact mapping MUST
+  be version- and digest-bound, and the unchanged strict same-frame placement comparator MUST run
+  after normalization. Representation equivalence MUST NOT assert backend shape identity,
+  property-query placement authority, cooked-shape authority, or narrowphase authority, and
+  runtime Contact/collision MUST remain an independent fail-closed truth source.
 - **FR-036**: RGB/depth acceptance MUST validate contract shapes, RGB `uint8`, depth `float32`,
   finite and non-constant updating frames, configured valid-depth ratio and clipping behavior,
   real rendering ticks, timestamps, and sensor skew no greater than one camera tick.

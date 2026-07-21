@@ -147,6 +147,15 @@ ticks, updating RGB/depth, declared clipping behavior, and at most one camera-ti
 Gate execution is sequential. Offline contract work marked `[P]` may proceed in parallel only when
 it cannot produce physical data or advance a blocked claim.
 
+G1 full-robot qualification separates primitive representation from
+placement and runtime truth. The only approved representation normalization
+is the version-bound OpenUSD analytic-Cylinder Z-axis to official PhysX
+source analytic-Cylinder X-axis mapping. The same existing strict comparator
+must evaluate the normalized poses; runtime Contact/collision remains an
+independent rejection. This design-time record cannot establish a backend
+shape handle or narrowphase authority and cannot advance a physical claim by
+itself.
+
 ## Project Structure
 
 ### Documentation (this feature)

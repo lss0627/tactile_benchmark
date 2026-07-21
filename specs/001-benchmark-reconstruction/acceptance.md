@@ -101,6 +101,10 @@ python scripts/review_gate.py --gate G0 \
 - [x] G1-07 Missing force leaves force/wrench invalid; geometry never fabricates tactile values.
 - [ ] G1-08 Ten consecutive physical episodes have 100% release/reset and zero safety violations.
 - [ ] G1-09 Evidence is fresh for current controller, safety config, task, robot, sensor, and asset versions.
+- [ ] G1-10 An analytic-Cylinder representation record retains raw USD/query poses, proves only
+  the exact source/version-bound Z-to-X mapping, reruns the unchanged strict placement comparator
+  after normalization, keeps backend/narrowphase authority false, and never overrides runtime
+  Contact/collision rejection.
 
 **Target command**:
 

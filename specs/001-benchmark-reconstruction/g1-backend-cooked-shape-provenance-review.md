@@ -468,6 +468,14 @@ No Option B, axis normalization, USD-only comparison, query-placement
 authority, pose change, matrix change, or command-cap selection is approved.
 C1 attempt-10 remains prohibited.
 
+The subsequent approved source-bound normalization architecture is defined
+in
+`g1-analytic-cylinder-representation-normalization-architecture.md`. It uses
+the retained `REPRESENTATION_ONLY` source observation solely to normalize the
+analytic Cylinder coordinate representation before the unchanged strict
+placement comparison. It does not revise this review's P4 conclusion or
+claim a backend handle/narrowphase authority.
+
 ## 11. Verification and historical immutability
 
 The completed pre-runtime verification remains:
