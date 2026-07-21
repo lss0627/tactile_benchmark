@@ -3869,8 +3869,18 @@ def evaluate_geometry_agreement(
                         source_backend_version=SOURCE_BACKEND_VERSION,
                         source_primitive_type=SOURCE_PRIMITIVE_TYPE,
                         source_canonical_axis=SOURCE_CANONICAL_AXIS,
-                        installed_isaac_sim_version="6.0.1",
-                        installed_extension_version="110.1.13",
+                        installed_isaac_sim_version=str(
+                            identity.get(
+                                "installed_isaac_sim_version",
+                                "UNAVAILABLE",
+                            )
+                        ),
+                        installed_extension_version=str(
+                            identity.get(
+                                "installed_extension_version",
+                                "UNAVAILABLE",
+                            )
+                        ),
                         query_observation_identity=query_identity,
                         query_operation_index=int(
                             query["query_operation_index"]

@@ -8,6 +8,7 @@ output directory.
 from __future__ import annotations
 
 import hashlib
+from importlib.metadata import PackageNotFoundError, version as package_version
 import json
 import math
 from pathlib import Path
@@ -113,6 +114,27 @@ def _physx_extension_package_provenance(physx_module: Any) -> dict[str, Any]:
         "installed_extension_metadata_sha256": metadata_digest,
         "extension_root_name": extension_root.name,
     }
+
+
+def _installed_isaac_sim_version() -> str:
+    """Return the installed distribution version in runtime schema form."""
+
+    try:
+        observed = package_version("isaacsim")
+    except PackageNotFoundError:
+        _fail(
+            "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+            "installed Isaac Sim distribution version is unavailable",
+        )
+    normalized = observed[:-2] if observed.endswith(".0") else observed
+    if not normalized or not all(
+        part.isdigit() for part in normalized.split(".")
+    ):
+        _fail(
+            "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+            "installed Isaac Sim distribution version is invalid",
+        )
+    return normalized
 
 
 def _matrix_to_list(matrix: Any) -> list[list[float]]:
@@ -1302,6 +1324,7 @@ class PhysxResolvedOffsetAdapter:
         collider_body_paths: Mapping[str, str],
         stage_lifecycle_token: str,
         physics_policy: Mapping[str, Any],
+        runtime_metadata: Mapping[str, Any] | None = None,
         diagnostic_identity: Mapping[str, Any] | None = None,
         lifecycle_record: Mapping[str, Any] | None = None,
         geometry_comparison_accumulator: Any,
@@ -1363,6 +1386,22 @@ class PhysxResolvedOffsetAdapter:
             backend="physx",
         )
         simulation_view.set_subspace_roots("/")
+        import omni.physx  # type: ignore
+
+        installed_isaac_sim_version = _installed_isaac_sim_version()
+        installed_extension_version = str(
+            _physx_extension_package_provenance(omni.physx)[
+                "physx_extension_version"
+            ]
+        )
+        supplied_runtime = dict(runtime_metadata or {})
+        if supplied_runtime and str(
+            supplied_runtime.get("simulator", "")
+        ) != installed_isaac_sim_version:
+            _fail(
+                "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
+                "runtime metadata differs from the installed Isaac Sim version",
+            )
         resolved: dict[str, dict[str, Any]] = {}
         authority_records: list[dict[str, Any]] = []
         for body_path in sorted(by_body):
@@ -1777,6 +1816,12 @@ class PhysxResolvedOffsetAdapter:
                             ],
                             "stage_lifecycle_token": lifecycle_token,
                             "stage_identifier": stage_id,
+                            "installed_isaac_sim_version": (
+                                installed_isaac_sim_version
+                            ),
+                            "installed_extension_version": (
+                                installed_extension_version
+                            ),
                         },
                         collider={
                             "rigid_body_prim_path": body_path,
@@ -3573,6 +3618,7 @@ class C2ARealStaticScene:
                 "broadphase_type": "MBP",
                 "gpu_dynamics_enabled": False,
             },
+            runtime_metadata=owner.runtime_metadata,
             diagnostic_identity={
                 "run_id": owner.lifecycle_authority.run_id,
                 "trial_id": self.lifecycle_record["trial_id"],

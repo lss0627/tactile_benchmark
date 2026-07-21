@@ -264,6 +264,8 @@ class PrimitivePose:
             "scale_xyz",
             _finite_vector(self.scale_xyz, 3, field="scale_xyz"),
         )
+        if any(component <= 0.0 for component in self.scale_xyz):
+            _fail("scale_xyz", "components must be positive")
         if not isinstance(self.frame, str) or not self.frame.startswith("/"):
             _fail("frame", "must be an absolute prim path")
 
@@ -749,12 +751,116 @@ def validate_analytic_primitive_representation(
             _fail(field, "expected SHA-256")
     if value["source_reference_digest"] != SOURCE_REFERENCE_DIGEST:
         _fail("source_reference_digest", "source mapping changed")
+    if value["source_authority"] != SOURCE_AUTHORITY:
+        _fail("source_authority", "source authority changed")
+    approved_transform = _representation_transform()
+    if value["representation_transform"] != approved_transform:
+        _fail(
+            "representation_transform",
+            "does not equal the approved source-bound Z-to-X mapping",
+        )
     expected_transform_digest = representation_transform_sha256(
         value["representation_transform"],
         source_reference_digest=value["source_reference_digest"],
     )
     if value["representation_transform_digest"] != expected_transform_digest:
         _fail("representation_transform_digest", "transform digest changed")
+    if value["representation_transform_source"] != (
+        f"{SOURCE_BACKEND}@{SOURCE_BACKEND_VERSION}"
+    ):
+        _fail("representation_transform_source", "source binding changed")
+    pose_fields = {
+        "translation_m",
+        "rotation_xyzw",
+        "scale_xyz",
+        "frame",
+        "quaternion_order",
+        "matrix_convention",
+    }
+    poses: dict[str, PrimitivePose] = {}
+    for field in (
+        "raw_usd_pose",
+        "raw_query_pose",
+        "normalized_usd_pose",
+        "normalized_query_pose",
+    ):
+        pose_value = value[field]
+        if not isinstance(pose_value, Mapping) or set(pose_value) != pose_fields:
+            _fail(field, "pose field set changed")
+        if (
+            pose_value["quaternion_order"] != QUATERNION_ORDER
+            or pose_value["matrix_convention"] != MATRIX_CONVENTION
+        ):
+            _fail(field, "pose convention changed")
+        pose = PrimitivePose.from_mapping(pose_value)
+        if pose.to_mapping() != pose_value:
+            _fail(field, "pose is not canonical")
+        poses[field] = pose
+    if poses["normalized_query_pose"] != poses["raw_query_pose"]:
+        _fail(
+            "normalized_query_pose",
+            "query observation must remain unchanged",
+        )
+    expected_normalized_usd = PrimitivePose(
+        translation_m=poses["raw_usd_pose"].translation_m,
+        rotation_xyzw=_quaternion_multiply(
+            poses["raw_usd_pose"].rotation_xyzw,
+            Z_TO_X_ROTATION_XYZW,
+        ),
+        scale_xyz=poses["raw_usd_pose"].scale_xyz,
+        frame=poses["raw_usd_pose"].frame,
+    )
+    if poses["normalized_usd_pose"] != expected_normalized_usd:
+        _fail(
+            "normalized_usd_pose",
+            "does not derive from the retained raw pose and approved mapping",
+        )
+    translation_vector = tuple(
+        query - usd
+        for usd, query in zip(
+            poses["normalized_usd_pose"].translation_m,
+            poses["normalized_query_pose"].translation_m,
+        )
+    )
+    if value["placement_translation_residual_vector_m"] != list(
+        translation_vector
+    ):
+        _fail(
+            "placement_translation_residual_vector_m",
+            "does not derive from normalized poses",
+        )
+    if value["placement_translation_residual"] != max(
+        abs(component) for component in translation_vector
+    ):
+        _fail(
+            "placement_translation_residual",
+            "does not derive from normalized poses",
+        )
+    orientation_residual, matrix_residual = _orientation_residual(
+        poses["normalized_usd_pose"].rotation_xyzw,
+        poses["normalized_query_pose"].rotation_xyzw,
+    )
+    if (
+        value["placement_orientation_residual"] != orientation_residual
+        or value["placement_rotation_matrix_max_residual"]
+        != matrix_residual
+    ):
+        _fail(
+            "placement_orientation_residual",
+            "does not derive from normalized poses",
+        )
+    scale_residual = max(
+        abs(query - usd)
+        for usd, query in zip(
+            poses["normalized_usd_pose"].scale_xyz,
+            poses["normalized_query_pose"].scale_xyz,
+        )
+    )
+    if value["placement_scale_residual"] != scale_residual:
+        _fail(
+            "placement_scale_residual",
+            "does not derive from normalized poses",
+        )
     for field in (
         "binary_source_identity_verified",
         "query_to_backend_binding_valid",
