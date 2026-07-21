@@ -3276,6 +3276,43 @@ def _assert_analytic_cylinder_representation_contracts(module: Any) -> None:
     assert record["backend_narrowphase_authority"] is False
     assert record["claim_scope"] == "DESIGN_TIME_REJECTION_FILTER_ONLY"
 
+    tampered_transform = deepcopy(record)
+    tampered_transform["representation_transform"]["rotation_xyzw"] = [
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]
+    tampered_transform["representation_transform_digest"] = (
+        module.representation_transform_sha256(
+            tampered_transform["representation_transform"],
+            source_reference_digest=tampered_transform[
+                "source_reference_digest"
+            ],
+        )
+    )
+    tampered_transform["record_sha256"] = (
+        module.representation_record_sha256(tampered_transform)
+    )
+    with pytest.raises(Exception):
+        validate(tampered_transform)
+
+    tampered_normalized_pose = deepcopy(record)
+    tampered_normalized_pose["normalized_usd_pose"]["translation_m"][0] = 1.0
+    tampered_normalized_pose["record_sha256"] = (
+        module.representation_record_sha256(tampered_normalized_pose)
+    )
+    with pytest.raises(Exception):
+        validate(tampered_normalized_pose)
+
+    tampered_pose_contract = deepcopy(record)
+    tampered_pose_contract["raw_query_pose"]["quaternion_order"] = "wxyz"
+    tampered_pose_contract["record_sha256"] = (
+        module.representation_record_sha256(tampered_pose_contract)
+    )
+    with pytest.raises(Exception):
+        validate(tampered_pose_contract)
+
     projection = evaluation.to_record()
     projection["raw_usd_pose"]["translation_m"][0] = 1.0
     assert evaluation.to_record() == record
@@ -3405,9 +3442,16 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
     )
     assert "build_geometry_disagreement_record(" not in resolve_source
     assert "compare_geometry_poses_same_frame(" not in resolve_source
+    assert "runtime_metadata" in inspect.signature(
+        real_runtime.PhysxResolvedOffsetAdapter.resolve
+    ).parameters
+    assert 'installed_isaac_sim_version="6.0.1"' not in resolve_source
+    assert 'installed_extension_version="110.1.13"' not in resolve_source
     option_d_source = inspect.getsource(option_d.evaluate_geometry_agreement)
     assert "evaluate_analytic_cylinder_representation(" in option_d_source
     assert option_d_source.count("compare_geometry_poses_same_frame(") == 1
+    assert 'installed_isaac_sim_version="6.0.1"' not in option_d_source
+    assert 'installed_extension_version="110.1.13"' not in option_d_source
     factory_source = inspect.getsource(
         real_runtime.C2ARealSceneFactory.create_static_scene
     )
