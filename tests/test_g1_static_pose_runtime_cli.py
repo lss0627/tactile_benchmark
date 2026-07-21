@@ -3305,9 +3305,9 @@ def _assert_analytic_cylinder_representation_contracts(module: Any) -> None:
     placed_rotation = deepcopy(raw.to_mapping())
     placed_rotation["raw_query_pose"]["rotation_xyzw"] = [
         0.0,
-        -math.sin(0.25 * math.pi),
+        -math.sin(0.125 * math.pi),
         0.0,
-        math.cos(0.25 * math.pi),
+        math.cos(0.125 * math.pi),
     ]
     rotation_result = evaluate(
         type(raw).from_mapping(placed_rotation)
