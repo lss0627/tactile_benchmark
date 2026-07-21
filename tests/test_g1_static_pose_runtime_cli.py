@@ -31,6 +31,9 @@ OPTION_D_MODULE = "isaac_tactile_libero.runtime.g1_full_robot_clearance"
 BACKEND_PROVENANCE_MODULE = (
     "isaac_tactile_libero.runtime.g1_backend_shape_provenance"
 )
+ANALYTIC_REPRESENTATION_MODULE = (
+    "isaac_tactile_libero.runtime.g1_analytic_primitive_representation"
+)
 ARM_NAMES = tuple(f"fr3_joint{index}" for index in range(1, 8))
 JOINT_NAMES = ARM_NAMES + ("fr3_finger_joint1", "fr3_finger_joint2")
 CANDIDATES = (
@@ -81,6 +84,14 @@ def _backend_provenance_module():
         "backend cooked-shape provenance module is missing"
     )
     return importlib.import_module(BACKEND_PROVENANCE_MODULE)
+
+
+def _analytic_representation_module():
+    spec = importlib.util.find_spec(ANALYTIC_REPRESENTATION_MODULE)
+    assert spec is not None, (
+        "missing source-bound analytic primitive representation module"
+    )
+    return importlib.import_module(ANALYTIC_REPRESENTATION_MODULE)
 
 
 def _backend_provenance_runner():
@@ -1260,11 +1271,11 @@ def _assert_option_a_disagreement_contracts(module: Any) -> None:
     )
     assert (
         getattr(module, "GEOMETRY_COMPARISON_SCHEMA_VERSION", None)
-        == "g1.full_robot.geometry_comparison_result.v1"
+        == "g1.full_robot.geometry_comparison_result.v2"
     )
     assert (
         getattr(module, "GEOMETRY_ACCUMULATOR_SCHEMA_VERSION", None)
-        == "g1.full_robot.geometry_comparison_accumulator.v1"
+        == "g1.full_robot.geometry_comparison_accumulator.v2"
     )
     raw_type = getattr(module, "GeometryAgreementRawInputs", None)
     evaluation_type = getattr(module, "GeometryAgreementEvaluation", None)
@@ -1301,8 +1312,9 @@ def _assert_option_a_disagreement_contracts(module: Any) -> None:
     canonical_record = evaluation.to_record()
     assert (
         canonical_record["schema_version"]
-        == "g1.full_robot.geometry_comparison_result.v1"
+        == "g1.full_robot.geometry_comparison_result.v2"
     )
+    assert "analytic_primitive_representation" in canonical_record
     assert canonical_record["evaluation_status"] == "complete"
     assert canonical_record["binding_valid"] is True
     assert canonical_record["binding_mismatches"] == []
@@ -2770,7 +2782,7 @@ class _GeometryDisagreementFactory(_FakeFactory):
         self.events.append(f"create:{spec['scene_id']}")
         self.scene_creation_failures.append(
             {
-                "schema_version": "g1.c2a.static.v3.creation_failure",
+                "schema_version": "g1.c2a.static.v4.creation_failure",
                 "candidate_id": spec["candidate_id"],
                 "scene_id": spec["scene_id"],
                 "fresh_scene_token": spec["fresh_scene_token"],
@@ -3127,6 +3139,232 @@ def test_c2a_preplay_authoring_rejects_real_timeline_is_playing_even_without_pla
     assert getattr(caught.value, "code", "") == "G1_C2A_PREPLAY_AUTHORING_UNPROVEN"
 
 
+def _analytic_cylinder_inputs(module: Any) -> Any:
+    pose_type = getattr(module, "PrimitivePose", None)
+    raw_type = getattr(module, "AnalyticPrimitiveRepresentationRawInputs", None)
+    assert pose_type is not None
+    assert raw_type is not None
+    usd_pose = pose_type(
+        translation_m=(0.0, 0.0, 0.0),
+        rotation_xyzw=(0.0, 0.0, 0.0, 1.0),
+        scale_xyz=(1.0, 1.0, 1.0),
+        frame="/World/PressButton/Button",
+    )
+    query_pose = pose_type(
+        translation_m=(0.0, 0.0, 0.0),
+        rotation_xyzw=(0.0, -2.0**-0.5, 0.0, 2.0**-0.5),
+        scale_xyz=(1.0, 1.0, 1.0),
+        frame="/World/PressButton/Button",
+    )
+    return raw_type(
+        primitive_type="ANALYTIC_CYLINDER",
+        usd_prim_path="/World/PressButton/Button",
+        usd_axis_token="Z",
+        usd_geometry_type="Cylinder",
+        usd_approximation="analytic",
+        source_backend="NVIDIA-Omniverse/PhysX",
+        source_backend_version=(
+            "b4b286abff6f2b3debd1d1acb120dc428765cf2e"
+        ),
+        source_primitive_type="PxConvexCore::Cylinder",
+        source_canonical_axis="X",
+        installed_isaac_sim_version="6.0.1",
+        installed_extension_version="110.1.13",
+        query_observation_identity="a" * 64,
+        query_operation_index=0,
+        query_property_index=0,
+        query_shape_index=0,
+        query_match_count=1,
+        stage_lifecycle_token="b" * 64,
+        lifecycle_record_sha256="c" * 64,
+        query_local_pose_frame="queried_rigid_body_actor",
+        raw_usd_pose=usd_pose,
+        raw_query_pose=query_pose,
+        usd_shape_dimensions={
+            "local_aabb_min_m": [-0.035, -0.035, -0.009],
+            "local_aabb_max_m": [0.035, 0.035, 0.009],
+            "volume_m3": math.pi * 0.035**2 * 0.018,
+        },
+        query_shape_dimensions={
+            "local_aabb_min_m": [
+                float(np.float32(-0.035)),
+                float(np.float32(-0.035)),
+                float(np.float32(-0.009)),
+            ],
+            "local_aabb_max_m": [
+                float(np.float32(0.035)),
+                float(np.float32(0.035)),
+                float(np.float32(0.009)),
+            ],
+            "volume_m3": float(
+                np.float32(math.pi * 0.035**2 * 0.018)
+            ),
+        },
+        translation_bound_m=6.103888176768604e-05,
+        orientation_or_matrix_bound=6.103888176768604e-05,
+        scale_bound=6.103888176768604e-05,
+        dimension_max_float32_ulp=1,
+        extra_transform_count=0,
+    )
+
+
+def _assert_analytic_cylinder_representation_contracts(module: Any) -> None:
+    assert (
+        module.ANALYTIC_PRIMITIVE_REPRESENTATION_SCHEMA_VERSION
+        == "g1.full_robot.analytic_primitive_representation.v1"
+    )
+    evaluate = getattr(
+        module,
+        "evaluate_analytic_cylinder_representation",
+        None,
+    )
+    validate = getattr(
+        module,
+        "validate_analytic_primitive_representation",
+        None,
+    )
+    assert callable(evaluate)
+    assert callable(validate)
+    assert not {
+        "pxr",
+        "omni",
+        "isaacsim",
+    } & set(sys.modules)
+
+    raw = _analytic_cylinder_inputs(module)
+    evaluation = evaluate(raw)
+    record = evaluation.to_record()
+    assert evaluation.representation_normalization_valid is True
+    assert evaluation.representation_equivalent is True
+    assert evaluation.strict_placement_agreement is True
+    assert record == validate(record)
+    assert record["record_sha256"] == module.representation_record_sha256(
+        record
+    )
+    assert record["representation_transform_digest"] == (
+        module.representation_transform_sha256(
+            record["representation_transform"],
+            source_reference_digest=record["source_reference_digest"],
+        )
+    )
+    assert record["representation_transform"]["rotation_xyzw"] == [
+        0.0,
+        -2.0**-0.5,
+        0.0,
+        2.0**-0.5,
+    ]
+    assert record["raw_usd_pose"]["translation_m"] == [0.0, 0.0, 0.0]
+    assert record["raw_query_pose"]["translation_m"] == [0.0, 0.0, 0.0]
+    assert record["normalized_usd_pose"]["translation_m"] == (
+        record["raw_usd_pose"]["translation_m"]
+    )
+    assert record["normalized_usd_pose"]["scale_xyz"] == (
+        record["raw_usd_pose"]["scale_xyz"]
+    )
+    assert record["normalized_query_pose"] == record["raw_query_pose"]
+    assert record["placement_translation_residual"] == 0.0
+    assert record["placement_orientation_residual"] == 0.0
+    assert record["placement_rotation_matrix_max_residual"] <= (
+        record["existing_orientation_or_matrix_bound"]
+    )
+    assert record["placement_scale_residual"] == 0.0
+    assert record["representation_dimension_residual"][
+        "within_existing_ulp_policy"
+    ] is True
+    assert record["binary_source_identity_verified"] is False
+    assert record["query_to_backend_binding_valid"] is False
+    assert record["backend_narrowphase_authority"] is False
+    assert record["claim_scope"] == "DESIGN_TIME_REJECTION_FILTER_ONLY"
+
+    projection = evaluation.to_record()
+    projection["raw_usd_pose"]["translation_m"][0] = 1.0
+    assert evaluation.to_record() == record
+    with pytest.raises((AttributeError, TypeError)):
+        evaluation.strict_placement_agreement = False
+
+    sign_equivalent = deepcopy(raw.to_mapping())
+    sign_equivalent["raw_query_pose"]["rotation_xyzw"] = [
+        -component
+        for component in sign_equivalent["raw_query_pose"][
+            "rotation_xyzw"
+        ]
+    ]
+    sign_result = evaluate(type(raw).from_mapping(sign_equivalent)).to_record()
+    assert sign_result["normalized_query_pose"] == record[
+        "normalized_query_pose"
+    ]
+    assert sign_result["strict_placement_agreement"] is True
+
+    translated = deepcopy(raw.to_mapping())
+    translated["raw_query_pose"]["translation_m"][0] = 0.001
+    translated_result = evaluate(type(raw).from_mapping(translated)).to_record()
+    assert translated_result["representation_normalization_valid"] is False
+    assert translated_result["strict_placement_agreement"] is False
+    assert translated_result["placement_translation_residual"] == 0.001
+
+    placed_rotation = deepcopy(raw.to_mapping())
+    placed_rotation["raw_query_pose"]["rotation_xyzw"] = [
+        0.0,
+        -math.sin(0.25 * math.pi),
+        0.0,
+        math.cos(0.25 * math.pi),
+    ]
+    rotation_result = evaluate(
+        type(raw).from_mapping(placed_rotation)
+    ).to_record()
+    assert rotation_result["representation_normalization_valid"] is False
+    assert rotation_result["strict_placement_agreement"] is False
+
+    too_many_ulps = deepcopy(raw.to_mapping())
+    too_many_ulps["query_shape_dimensions"]["local_aabb_max_m"][0] = (
+        float(
+            np.nextafter(
+                np.nextafter(
+                    np.float32(0.035),
+                    np.float32(math.inf),
+                ),
+                np.float32(math.inf),
+            )
+        )
+    )
+    dimension_result = evaluate(
+        type(raw).from_mapping(too_many_ulps)
+    ).to_record()
+    assert dimension_result["representation_normalization_valid"] is False
+    assert dimension_result["strict_placement_agreement"] is False
+
+    for field, invalid in (
+        ("source_backend_version", "d" * 40),
+        ("installed_extension_version", "110.1.14"),
+        ("query_local_pose_frame", "unresolved"),
+        ("query_match_count", 2),
+        ("usd_axis_token", "Y"),
+        ("extra_transform_count", 1),
+    ):
+        changed = deepcopy(raw.to_mapping())
+        changed[field] = invalid
+        changed_record = evaluate(
+            type(raw).from_mapping(changed)
+        ).to_record()
+        assert changed_record["representation_normalization_valid"] is False
+        assert changed_record["strict_placement_agreement"] is False
+        assert changed_record["blockers"]
+
+    for geometry_type in ("Mesh", "ConvexMesh", "Capsule"):
+        changed = deepcopy(raw.to_mapping())
+        changed["usd_geometry_type"] = geometry_type
+        changed_record = evaluate(
+            type(raw).from_mapping(changed)
+        ).to_record()
+        assert changed_record["representation_normalization_valid"] is False
+        assert changed_record["strict_placement_agreement"] is False
+
+    signature = inspect.signature(type(raw))
+    assert "representation_equivalent" not in signature.parameters
+    assert "strict_placement_agreement" not in signature.parameters
+    assert "query_to_backend_binding_valid" not in signature.parameters
+
+
 def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3145,6 +3383,8 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
     _assert_option_a_disagreement_contracts(option_d)
     backend_provenance = _backend_provenance_module()
     _assert_backend_shape_provenance_contracts(backend_provenance)
+    representation = _analytic_representation_module()
+    _assert_analytic_cylinder_representation_contracts(representation)
 
     real_runtime = _real_runtime_module()
     query_source = inspect.getsource(
@@ -3155,6 +3395,7 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
         real_runtime.PhysxResolvedOffsetAdapter.resolve
     )
     assert "evaluate_geometry_agreement(" in resolve_source
+    assert "analytic_primitive_representation" in resolve_source
     assert "geometry_comparison_accumulator.append(" in resolve_source
     assert (
         resolve_source.index("geometry_comparison_accumulator.append(")
@@ -3164,6 +3405,9 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
     )
     assert "build_geometry_disagreement_record(" not in resolve_source
     assert "compare_geometry_poses_same_frame(" not in resolve_source
+    option_d_source = inspect.getsource(option_d.evaluate_geometry_agreement)
+    assert "evaluate_analytic_cylinder_representation(" in option_d_source
+    assert option_d_source.count("compare_geometry_poses_same_frame(") == 1
     factory_source = inspect.getsource(
         real_runtime.C2ARealSceneFactory.create_static_scene
     )
@@ -3368,9 +3612,9 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
     diagnostics["route_diagnostic_sha256"] = option_d.canonical_sha256(
         diagnostics
     )
-    validated_scene = static_pose.validate_c2a_v3_scene_record(
+    validated_scene = static_pose.validate_c2a_v4_scene_record(
         {
-            "schema_version": "g1.c2a.static.v3",
+            "schema_version": "g1.c2a.static.v4",
             "candidate_id": "pose-v3",
             "scene_id": "scene-v3",
             "fresh_scene_token": "fresh-v3",
@@ -3378,6 +3622,7 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
             "lifecycle_record": {},
             "collision_snapshot": {},
             "offset_authority_records": [{}, {}],
+            "analytic_primitive_representation_records": [],
             "swept_clearance_receipts": [
                 {
                     "safe": False,
@@ -3396,6 +3641,12 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
         }
     )
     assert validated_scene["offset_authority_records"] == offsets
+    assert validated_scene[
+        "analytic_primitive_representation_records"
+    ] == []
+    runner_source = RUNNER_PATH.read_text(encoding="utf-8")
+    assert '"g1.c2a.static.v4"' in runner_source
+    assert "analytic_primitive_representation_records.jsonl" in runner_source
 
 
 def test_c2a_real_runtime_executes_only_64_immutable_zero_actions_with_three_substeps(tmp_path: Path) -> None:
