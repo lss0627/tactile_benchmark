@@ -38,6 +38,36 @@ _VALID_INTERPRETATIONS = {
 }
 
 
+def approved_analytic_cylinder_source_binding() -> dict[str, Any]:
+    """Return the public-source mapping without promoting backend authority."""
+
+    return {
+        "source_backend": _SOURCE_REPOSITORY,
+        "source_backend_version": _SOURCE_COMMIT,
+        "source_primitive_type": "PxConvexCore::Cylinder",
+        "source_canonical_axis": "X",
+        "usd_axis_token": "Z",
+        "source_authority": (
+            "OFFICIAL_PHYSX_SOURCE_ANALYTIC_CYLINDER"
+        ),
+        "installed_isaac_sim_version": "6.0.1",
+        "installed_extension_version": "110.1.13",
+        "binary_source_identity_verified": False,
+        "query_to_backend_binding_valid": False,
+        "backend_narrowphase_authority": False,
+        "rotation_xyzw": [
+            0.0,
+            -math.sqrt(0.5),
+            0.0,
+            math.sqrt(0.5),
+        ],
+        "quaternion_order": "xyzw",
+        "matrix_convention": (
+            "row_major_storage_column_vector_semantics"
+        ),
+    }
+
+
 class BackendShapeProvenanceError(ValueError):
     """Structured fail-closed backend-provenance validation error."""
 
@@ -1051,6 +1081,7 @@ __all__ = [
     "BackendShapeProvenanceError",
     "BackendShapeProvenanceEvaluation",
     "BackendShapeProvenanceRawInputs",
+    "approved_analytic_cylinder_source_binding",
     "backend_shape_provenance_sha256",
     "canonical_sha256",
     "classify_cylinder_rotation_interpretation",
