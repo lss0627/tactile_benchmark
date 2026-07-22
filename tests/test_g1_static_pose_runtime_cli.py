@@ -3671,6 +3671,11 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
         "validate_offset_authority_for_snapshot",
         lambda **_kwargs: offsets,
     )
+    from dataclasses import asdict
+
+    sweep_work = importlib.import_module(
+        "isaac_tactile_libero.runtime.g1_sweep_work"
+    )
     work_record = {
         "schema_version": "g1.full_robot.sweep_work.v1",
         "run_id": "scene-v3",
@@ -3681,8 +3686,11 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
         "status": "BLOCKED",
         "failure_code": "EXPECTED_RETAINED_FAILURE",
         "failure_message": "retained fixture failure",
-        "limits": {"sweep_requests": 7681},
-        "counters": {"sweep_requests": 1},
+        "limits": asdict(sweep_work.SweepWorkLimits()),
+        "counters": {
+            name: (1 if name == "sweep_requests" else 0)
+            for name in sweep_work.SweepWorkLedger._COUNTER_NAMES
+        },
         "cache": {},
         "last_class_id": None,
         "last_command_decimal": None,
@@ -3970,6 +3978,38 @@ def test_c2a_runtime_failure_preserves_exact_code_message_writes_before_shutdown
     assert progress_path.name in checksum_names
     assert factory.events.index("write-evidence") < factory.events.index("factory-close:1")
     assert factory.close_codes == [1]
+
+    sweep_work = importlib.import_module(
+        "isaac_tactile_libero.runtime.g1_sweep_work"
+    )
+    ledger = sweep_work.SweepWorkLedger(
+        limits=sweep_work.SweepWorkLimits(),
+        run_id="progress-work-probe",
+        scene_id="progress-scene",
+        trial_id="progress-trial",
+        lifecycle_record_sha256="a" * 64,
+        collision_snapshot_sha256="b" * 64,
+    )
+    work_record = ledger.work_record(status="RUNNING")
+    journal = sweep_work.C2ASweepProgressJournal(
+        output=tmp_path / "progress-work-probe",
+        repository_commit="c" * 40,
+        run_id="progress-work-probe",
+    )
+    journal.append(
+        event="SNAPSHOT_PREPARED",
+        scene_id="progress-scene",
+        trial_id="progress-trial",
+        work_record=work_record,
+    )
+    retained_progress = journal.snapshot()[-1]
+    assert "work_record" in retained_progress, (
+        "progress milestone omitted the auditable work snapshot"
+    )
+    assert retained_progress["work_record"] == work_record
+    assert retained_progress["work_record_sha256"] == work_record[
+        "record_sha256"
+    ]
 
     backend_module = _backend_provenance_module()
     evaluation = backend_module.evaluate_backend_shape_provenance(

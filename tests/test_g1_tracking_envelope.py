@@ -398,6 +398,7 @@ def _assert_option_d_sweep_contracts(module: Any) -> None:
             phase_policy="c1_no_contact",
         )
     claim_snapshot = json.loads(json.dumps(safe_snapshot))
+    claim_snapshot["articulation_joint_positions"] = [0.0]
     claim_snapshot["offset_authority_claim_eligible"] = True
     for index, collider in enumerate(
         claim_snapshot["subject_inventory"]

@@ -2256,6 +2256,7 @@ def certify_option_d_preliminary_route_diagnostics(
     scene_id: str,
     trial_id: str,
     lifecycle_record_sha256: str,
+    prepared_sweep_context: Any,
 ) -> dict[str, Any]:
     """Evaluate all unchanged command routes without sending controller targets."""
 
@@ -2271,6 +2272,7 @@ def certify_option_d_preliminary_route_diagnostics(
         canonical_sha256,
         certify_articulated_sweep,
     )
+    from isaac_tactile_libero.runtime.g1_sweep_work import G1SweepWorkError
 
     if route_bundle.get("schema_version") != (
         "g1.pose_conditioned.command_bound_routes.v1"
@@ -2333,6 +2335,11 @@ def certify_option_d_preliminary_route_diagnostics(
         per_command: list[dict[str, Any]] = []
         for command_route in class_route["command_routes"]:
             command_decimal = str(command_route["command_decimal"])
+            prepared_sweep_context.emit_progress(
+                event="ROUTE_STARTED",
+                class_id=class_id,
+                command_decimal=command_decimal,
+            )
             materialization = command_route["float64_materialization"]
             if len(materialization) != 256:
                 _fail(
@@ -2418,7 +2425,7 @@ def certify_option_d_preliminary_route_diagnostics(
                             "clipped_dq": kernel.get("clipped_dq"),
                         }
                     receipt = certify_articulated_sweep(
-                        snapshot=snapshot,
+                        snapshot=prepared_sweep_context.snapshot,
                         action={
                             "command_decimal": command_decimal,
                             "class_id": class_id,
@@ -2440,11 +2447,14 @@ def certify_option_d_preliminary_route_diagnostics(
                             ),
                         },
                         phase_policy="c2a_no_contact",
+                        prepared_context=prepared_sweep_context,
                     )
                 except G1FullRobotClearanceError as error:
                     receipt = dict(error.receipt or {})
                     failure_code = error.code
                     failure_message = error.message
+                except G1SweepWorkError:
+                    raise
                 except Exception as error:
                     receipt = {}
                     failure_code = str(
@@ -2506,6 +2516,13 @@ def certify_option_d_preliminary_route_diagnostics(
                     action_record
                 )
                 action_records.append(action_record)
+                if action_index == 0 or (action_index + 1) % 32 == 0:
+                    prepared_sweep_context.emit_progress(
+                        event="ACTION_MILESTONE",
+                        class_id=class_id,
+                        command_decimal=command_decimal,
+                        action_index=action_index,
+                    )
                 if failure_code is not None:
                     break
                 assert governed_target is not None
@@ -2549,6 +2566,17 @@ def certify_option_d_preliminary_route_diagnostics(
                 command_record
             )
             per_command.append(command_record)
+            prepared_sweep_context.emit_progress(
+                event="ROUTE_COMPLETED",
+                class_id=class_id,
+                command_decimal=command_decimal,
+                action_index=(
+                    action_records[-1]["action_index"]
+                    if action_records
+                    else None
+                ),
+                status=("COMPLETE" if complete else "BLOCKED"),
+            )
         class_record = {
             "class_id": class_id,
             "command_routes": per_command,
@@ -2564,7 +2592,7 @@ def certify_option_d_preliminary_route_diagnostics(
         and all(command_completion[command])
     ]
     result = {
-        "schema_version": "g1.c2a.option_d.route_diagnostics.v1",
+        "schema_version": "g1.c2a.option_d.route_diagnostics.v2",
         "route_input_schema_version": route_bundle["schema_version"],
         "route_output_schema_version": (
             "g1.pose_conditioned.command_bound_routes.v2"
@@ -2597,6 +2625,23 @@ def certify_option_d_preliminary_route_diagnostics(
             )
             for command, value in command_minimum_effective.items()
         },
+        "sweep_work_record": prepared_sweep_context.work_record(
+            status=(
+                "COMPLETE"
+                if len(safe_commands) == len(commands)
+                else "BLOCKED"
+            ),
+            failure_code=(
+                None
+                if len(safe_commands) == len(commands)
+                else "G1_FULL_ROBOT_SWEEP_UNSAFE"
+            ),
+            failure_message=(
+                None
+                if len(safe_commands) == len(commands)
+                else "one or more command routes failed continuous sweep"
+            ),
+        ),
     }
     result["route_diagnostic_sha256"] = canonical_sha256(result)
     return result
@@ -2660,6 +2705,9 @@ class C2ARealSceneFactory:
         self.scene_creation_failures: list[dict[str, Any]] = []
         self.lifecycle_audit: dict[str, Any] | None = None
         self.option_d_route_bundles: dict[str, dict[str, Any]] = {}
+        self.sweep_progress_callback: (
+            Callable[[Mapping[str, Any]], None] | None
+        ) = None
         articulation_path = _resolve(
             self.root, self.robot_safe["articulation_config_path"]
         )
@@ -2727,6 +2775,19 @@ class C2ARealSceneFactory:
             )
             for key, value in bundles.items()
         }
+
+    def set_sweep_progress_callback(
+        self,
+        callback: Callable[[Mapping[str, Any]], None],
+    ) -> None:
+        """Inject the runner-owned durable progress boundary."""
+
+        if not callable(callback):
+            _fail(
+                "G1_C2A_OPTION_D_INVALID",
+                "sweep progress callback must be callable",
+            )
+        self.sweep_progress_callback = callback
 
     def _stop_timeline(self) -> Any:
         import omni.timeline  # type: ignore
@@ -3192,7 +3253,7 @@ class C2ARealSceneFactory:
             self.scene_creation_failures.append(
                 {
                     "schema_version": (
-                        "g1.c2a.static.v4.creation_failure"
+                        "g1.c2a.static.v5.creation_failure"
                     ),
                     "candidate_id": scene_spec["candidate_id"],
                     "scene_id": scene_spec["scene_id"],
@@ -3225,6 +3286,27 @@ class C2ARealSceneFactory:
                         scene,
                         "command_bound_route_diagnostics",
                         None,
+                    ),
+                    "sweep_work_record": (
+                        getattr(scene, "prepared_sweep_context", None)
+                        .work_record(
+                            status="BLOCKED",
+                            failure_code=str(
+                                getattr(
+                                    error,
+                                    "code",
+                                    "G1_C2A_RUNTIME_ERROR",
+                                )
+                            ),
+                            failure_message=str(error),
+                        )
+                        if getattr(
+                            scene,
+                            "prepared_sweep_context",
+                            None,
+                        )
+                        is not None
+                        else None
                     ),
                     "geometry_disagreement_record": (
                         geometry_disagreement_record
@@ -3667,6 +3749,18 @@ class C2ARealStaticScene:
         from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
             G1FullRobotClearanceError,
             certify_articulated_sweep,
+            prepare_articulated_sweep_context,
+        )
+
+        self.prepared_sweep_context = prepare_articulated_sweep_context(
+            self.collision_snapshot,
+            progress_callback=owner.sweep_progress_callback,
+            run_id=owner.lifecycle_authority.run_id,
+            scene_id=str(self.spec["scene_id"]),
+            trial_id=str(self.lifecycle_record["trial_id"]),
+            lifecycle_record_sha256=self.lifecycle_record[
+                "lifecycle_record_sha256"
+            ],
         )
 
         sweep_state = self.runtime.read_joint_state()
@@ -3692,9 +3786,10 @@ class C2ARealStaticScene:
         }
         try:
             self.initial_swept_clearance = certify_articulated_sweep(
-                snapshot=self.collision_snapshot,
+                snapshot=self.prepared_sweep_context.snapshot,
                 action=sweep_action,
                 phase_policy="c2a_no_contact",
+                prepared_context=self.prepared_sweep_context,
             )
             self.initial_sweep_failure_code = None
             self.initial_sweep_failure_message = None
@@ -3726,12 +3821,13 @@ class C2ARealStaticScene:
                     lifecycle_record_sha256=self.lifecycle_record[
                         "lifecycle_record_sha256"
                     ],
+                    prepared_sweep_context=self.prepared_sweep_context,
                 )
             )
         else:
             self.command_bound_route_diagnostics = {
                 "schema_version": (
-                    "g1.c2a.option_d.route_diagnostics.v1"
+                    "g1.c2a.option_d.route_diagnostics.v2"
                 ),
                 "selected_pose_id": self.candidate["candidate_id"],
                 "selected_pose_sha256": _sha256_json(self.candidate),
@@ -3757,6 +3853,13 @@ class C2ARealStaticScene:
                 "failure_code": self.initial_sweep_failure_code,
                 "failure_message": self.initial_sweep_failure_message,
                 "geometric_upper_bound_command_decimal": None,
+                "sweep_work_record": (
+                    self.prepared_sweep_context.work_record(
+                        status="BLOCKED",
+                        failure_code=self.initial_sweep_failure_code,
+                        failure_message=self.initial_sweep_failure_message,
+                    )
+                ),
             }
             from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
                 canonical_sha256,
@@ -3908,7 +4011,7 @@ class C2ARealStaticScene:
         )
         self._next_action_index += 1
         return {
-            "schema_version": "g1.c2a.static.v4",
+            "schema_version": "g1.c2a.static.v5",
             "candidate_id": self.candidate["candidate_id"],
             "seed": self.owner.seed,
             "readiness_action_index": int(action_index),

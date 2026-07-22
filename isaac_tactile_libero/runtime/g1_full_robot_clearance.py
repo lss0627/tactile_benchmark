@@ -22,6 +22,11 @@ from isaac_tactile_libero.runtime.g1_analytic_primitive_representation import (
     evaluate_analytic_cylinder_representation,
     validate_analytic_primitive_representation,
 )
+from isaac_tactile_libero.runtime.g1_sweep_work import (
+    ExactDigestLRU,
+    SweepWorkLedger,
+    SweepWorkLimits,
+)
 
 
 LIFECYCLE_SCHEMA_VERSION = "g1.scene.lifecycle.v1"
@@ -5346,7 +5351,154 @@ def _joint_motion(joint: Mapping[str, Any], value: float) -> np.ndarray:
     )
 
 
-def _body_transforms(snapshot: Mapping[str, Any], q: np.ndarray) -> dict[str, np.ndarray]:
+@dataclass
+class PreparedArticulatedSweepContext:
+    """Scene-scoped exact reuse authority for continuous sweep evaluation."""
+
+    snapshot: dict[str, Any]
+    ledger: SweepWorkLedger
+    ancestor_chains: dict[str, tuple[dict[str, Any], ...]]
+    _body_transform_cache: ExactDigestLRU
+    _distance_cache: ExactDigestLRU
+    _pair_certificate_cache: ExactDigestLRU
+    _sweep_receipt_cache: ExactDigestLRU
+
+    def work_record(
+        self,
+        *,
+        status: str,
+        failure_code: str | None = None,
+        failure_message: str | None = None,
+    ) -> dict[str, Any]:
+        return self.ledger.work_record(
+            status=status,
+            failure_code=failure_code,
+            failure_message=failure_message,
+        )
+
+    def emit_progress(
+        self,
+        *,
+        event: str,
+        class_id: str | None = None,
+        command_decimal: str | None = None,
+        action_index: int | None = None,
+        status: str = "RUNNING",
+    ) -> None:
+        callback = self.ledger._progress_callback
+        if callback is None:
+            return
+        self.ledger.consume("progress_records")
+        callback(
+            {
+                "event": str(event),
+                "scene_id": self.ledger.scene_id,
+                "trial_id": self.ledger.trial_id,
+                "class_id": class_id,
+                "command_decimal": command_decimal,
+                "action_index": action_index,
+                "work_record": self.work_record(status=status),
+            }
+        )
+
+
+def _exact_float64_key(value: np.ndarray) -> tuple[str, tuple[int, ...], bytes]:
+    array = np.asarray(value, dtype=np.float64)
+    if not np.all(np.isfinite(array)):
+        _fail("G1_FULL_ROBOT_SWEEP_INVALID", "cache key contains a non-finite state")
+    contiguous = np.ascontiguousarray(array)
+    return (contiguous.dtype.str, tuple(contiguous.shape), contiguous.tobytes())
+
+
+def prepare_articulated_sweep_context(
+    snapshot: Mapping[str, Any],
+    *,
+    work_limits: SweepWorkLimits | None = None,
+    progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+    run_id: str,
+    scene_id: str,
+    trial_id: str,
+    lifecycle_record_sha256: str,
+) -> PreparedArticulatedSweepContext:
+    """Validate one scene snapshot and prepare exact bounded reuse facts."""
+
+    sealed = validate_collision_snapshot(snapshot, require_kinematics=True)
+    limits = SweepWorkLimits() if work_limits is None else work_limits
+    if not isinstance(limits, SweepWorkLimits):
+        _fail("G1_FULL_ROBOT_SWEEP_INVALID", "sweep work limits are invalid")
+    caches = {
+        "body_transforms": ExactDigestLRU(
+            name="body_transforms",
+            maximum_entries=limits.transform_cache_entries,
+        ),
+        "gjk_distances": ExactDigestLRU(
+            name="gjk_distances",
+            maximum_entries=limits.distance_cache_entries,
+        ),
+        "pair_certificates": ExactDigestLRU(
+            name="pair_certificates",
+            maximum_entries=limits.pair_cache_entries,
+        ),
+        "sweep_receipts": ExactDigestLRU(
+            name="sweep_receipts",
+            maximum_entries=limits.sweep_cache_entries,
+        ),
+    }
+    ledger = SweepWorkLedger(
+        limits=limits,
+        run_id=str(run_id),
+        scene_id=str(scene_id),
+        trial_id=str(trial_id),
+        lifecycle_record_sha256=str(lifecycle_record_sha256),
+        collision_snapshot_sha256=str(sealed["snapshot_sha256"]),
+        progress_callback=progress_callback,
+    )
+    for cache in caches.values():
+        ledger.register_cache(cache)
+    bodies = {
+        str(record["body_prim_path"])
+        for record in (
+            *sealed["subject_inventory"],
+            *sealed["obstacle_inventory"],
+        )
+    }
+    ancestor_chains = {
+        body: tuple(dict(joint) for joint in _ancestor_joints(sealed, body))
+        for body in sorted(bodies)
+    }
+    context = PreparedArticulatedSweepContext(
+        snapshot=sealed,
+        ledger=ledger,
+        ancestor_chains=ancestor_chains,
+        _body_transform_cache=caches["body_transforms"],
+        _distance_cache=caches["gjk_distances"],
+        _pair_certificate_cache=caches["pair_certificates"],
+        _sweep_receipt_cache=caches["sweep_receipts"],
+    )
+    if progress_callback is not None:
+        progress_callback(context.work_record(status="RUNNING"))
+    return context
+
+
+def _body_transforms(
+    snapshot: Mapping[str, Any],
+    q: np.ndarray,
+    *,
+    prepared_context: PreparedArticulatedSweepContext | None = None,
+) -> dict[str, np.ndarray]:
+    cache_key = None
+    if prepared_context is not None:
+        cache_key = (
+            str(prepared_context.snapshot["snapshot_sha256"]),
+            _exact_float64_key(q),
+        )
+        cached = prepared_context._body_transform_cache.get(cache_key)
+        if cached is not None:
+            return {
+                str(path): np.asarray(matrix, dtype=np.float64)
+                for path, matrix in cached.items()
+            }
+        prepared_context.ledger.consume("body_transform_evaluations")
     transforms = {
         str(path): _matrix(value)
         for path, value in snapshot["body_root_transforms"].items()
@@ -5393,6 +5545,11 @@ def _body_transforms(snapshot: Mapping[str, Any], q: np.ndarray) -> dict[str, np
                 "joint graph cannot be resolved from body roots",
             )
         unresolved = remaining
+    if prepared_context is not None:
+        prepared_context._body_transform_cache.put(
+            cache_key,
+            {path: matrix.tolist() for path, matrix in transforms.items()},
+        )
     return transforms
 
 
@@ -5637,7 +5794,11 @@ def _gjk_distance(
     first_transform: np.ndarray,
     second: Mapping[str, Any],
     second_transform: np.ndarray,
+    *,
+    work_ledger: SweepWorkLedger | None = None,
 ) -> dict[str, float]:
+    if work_ledger is not None:
+        work_ledger.consume("gjk_calls")
     direction = second_transform[:3, 3] - first_transform[:3, 3]
     if float(np.linalg.norm(direction)) == 0.0:
         direction = np.asarray([1.0, 0.0, 0.0], dtype=np.float64)
@@ -5651,6 +5812,8 @@ def _gjk_distance(
     closest = simplex[0]
     lower_bound = 0.0
     for _iteration in range(96):
+        if work_ledger is not None:
+            work_ledger.consume("gjk_iterations")
         squared = float(np.dot(closest, closest))
         if squared == 0.0:
             return {
@@ -5781,6 +5944,7 @@ def _interval_motion_bound(
     q_start: np.ndarray,
     q_end: np.ndarray,
     midpoint_transforms: Mapping[str, np.ndarray],
+    prepared_context: PreparedArticulatedSweepContext | None = None,
 ) -> float:
     del midpoint_transforms
     local_transform = _matrix(record["local_transform"])
@@ -5789,9 +5953,13 @@ def _interval_motion_bound(
         + float(np.linalg.norm(local_transform[:3, 3]))
     )
     bound = 0.0
-    for joint in _ancestor_joints(
-        snapshot, str(record["body_prim_path"])
-    ):
+    body_path = str(record["body_prim_path"])
+    joints = (
+        prepared_context.ancestor_chains[body_path]
+        if prepared_context is not None
+        else _ancestor_joints(snapshot, body_path)
+    )
+    for joint in joints:
         joint_type = str(joint["joint_type"])
         child_from_joint = _matrix(joint["child_from_joint"])
         parent_from_joint = _matrix(joint["parent_from_joint"])
@@ -5836,7 +6004,39 @@ def _pair_interval_certificate(
     q_end: np.ndarray,
     segment_kind: str,
     maximum_depth: int,
+    prepared_context: PreparedArticulatedSweepContext | None = None,
 ) -> dict[str, Any]:
+    pair_key = (
+        str(subject["collider_prim_path"]),
+        str(obstacle["collider_prim_path"]),
+        str(segment_kind),
+        int(maximum_depth),
+        _exact_float64_key(q_start),
+        _exact_float64_key(q_end),
+    )
+    if prepared_context is not None:
+        scoped_pair_key = (
+            str(prepared_context.snapshot["snapshot_sha256"]),
+            *pair_key,
+        )
+        cached_pair = prepared_context._pair_certificate_cache.get(
+            scoped_pair_key
+        )
+        if cached_pair is not None:
+            return dict(cached_pair)
+        prepared_context.ledger.consume("pair_certificate_calls")
+    else:
+        scoped_pair_key = None
+
+    def finish(value: Mapping[str, Any]) -> dict[str, Any]:
+        result = dict(value)
+        if prepared_context is not None:
+            prepared_context._pair_certificate_cache.put(
+                scoped_pair_key,
+                result,
+            )
+        return result
+
     queue: list[tuple[float, float, np.ndarray, np.ndarray, int]] = [
         (0.0, 1.0, q_start, q_end, 0)
     ]
@@ -5853,18 +6053,53 @@ def _pair_interval_certificate(
         obstacle.get("local_pose_sweep_inflation_m", 0.0)
     )
     while queue:
-        start_fraction, end_fraction, interval_q_start, interval_q_end, depth = queue.pop(0)
+        start_fraction, end_fraction, interval_q_start, interval_q_end, depth = queue.pop()
+        if prepared_context is not None:
+            prepared_context.ledger.consume(
+                "interval_evaluations",
+                pair_key=scoped_pair_key,
+            )
         midpoint_fraction = (start_fraction + end_fraction) / 2.0
         midpoint_q = (interval_q_start + interval_q_end) / 2.0
-        transforms = _body_transforms(snapshot, midpoint_q)
+        transforms = _body_transforms(
+            snapshot,
+            midpoint_q,
+            prepared_context=prepared_context,
+        )
         subject_transform = _record_transform(subject, transforms)
         obstacle_transform = _record_transform(obstacle, transforms)
-        distance_bounds = _gjk_distance(
-            subject,
-            subject_transform,
-            obstacle,
-            obstacle_transform,
-        )
+        if prepared_context is None:
+            distance_bounds = _gjk_distance(
+                subject,
+                subject_transform,
+                obstacle,
+                obstacle_transform,
+            )
+        else:
+            distance_key = (
+                str(prepared_context.snapshot["snapshot_sha256"]),
+                str(subject["collider_prim_path"]),
+                str(obstacle["collider_prim_path"]),
+                _exact_float64_key(subject_transform),
+                _exact_float64_key(obstacle_transform),
+            )
+            cached_distance = prepared_context._distance_cache.get(
+                distance_key
+            )
+            if cached_distance is None:
+                distance_bounds = _gjk_distance(
+                    subject,
+                    subject_transform,
+                    obstacle,
+                    obstacle_transform,
+                    work_ledger=prepared_context.ledger,
+                )
+                prepared_context._distance_cache.put(
+                    distance_key,
+                    distance_bounds,
+                )
+            else:
+                distance_bounds = dict(cached_distance)
         distance_lower = distance_bounds["lower_bound_m"]
         distance_upper = distance_bounds["upper_bound_m"]
         subject_motion = _interval_motion_bound(
@@ -5873,6 +6108,7 @@ def _pair_interval_certificate(
             q_start=interval_q_start,
             q_end=interval_q_end,
             midpoint_transforms=transforms,
+            prepared_context=prepared_context,
         )
         obstacle_motion = _interval_motion_bound(
             snapshot=snapshot,
@@ -5880,6 +6116,7 @@ def _pair_interval_certificate(
             q_start=interval_q_start,
             q_end=interval_q_end,
             midpoint_transforms=transforms,
+            prepared_context=prepared_context,
         )
         solid_lower = (
             distance_lower
@@ -5894,7 +6131,7 @@ def _pair_interval_certificate(
             - float(obstacle["contact_offset_resolved"])
         )
         if distance_upper <= 0.0:
-            return {
+            return finish({
                 "safe": False,
                 "failure": "solid_intersection",
                 "segment_kind": segment_kind,
@@ -5910,7 +6147,7 @@ def _pair_interval_certificate(
                     obstacle_authority_inflation
                 ),
                 "interval_certificates": certificates,
-            }
+            })
         if solid_lower > 0.0 and effective_lower > 0.0:
             if solid_lower < closest_solid:
                 closest_solid = solid_lower
@@ -5941,7 +6178,7 @@ def _pair_interval_certificate(
             certificates.append(certificate)
             continue
         if depth >= maximum_depth:
-            return {
+            return finish({
                 "safe": False,
                 "failure": "continuous_interval_unresolved",
                 "segment_kind": segment_kind,
@@ -5957,29 +6194,27 @@ def _pair_interval_certificate(
                     obstacle_authority_inflation
                 ),
                 "interval_certificates": certificates,
-            }
+            })
         q_mid = midpoint_q
-        queue.insert(
-            0,
+        queue.append(
             (
                 midpoint_fraction,
                 end_fraction,
                 q_mid,
                 interval_q_end,
                 depth + 1,
-            ),
+            )
         )
-        queue.insert(
-            0,
+        queue.append(
             (
                 start_fraction,
                 midpoint_fraction,
                 interval_q_start,
                 q_mid,
                 depth + 1,
-            ),
+            )
         )
-    return {
+    return finish({
         "safe": True,
         "failure": None,
         "segment_kind": segment_kind,
@@ -5995,7 +6230,7 @@ def _pair_interval_certificate(
             obstacle_authority_inflation
         ),
         "interval_certificates": certificates,
-    }
+    })
 
 
 def _action_vector(value: Any, length: int, field: str) -> np.ndarray:
@@ -6008,6 +6243,7 @@ def certify_articulated_sweep(
     action: Mapping[str, Any],
     phase_policy: str,
     maximum_depth: int = 24,
+    prepared_context: PreparedArticulatedSweepContext | None = None,
 ) -> dict[str, Any]:
     """Certify command and stopping intervals for every collider pair."""
 
@@ -6018,16 +6254,34 @@ def certify_articulated_sweep(
         )
     if not isinstance(snapshot, Mapping):
         _fail("G1_FULL_ROBOT_SNAPSHOT_INVALID", "collision snapshot must be a mapping")
-    joint_names = [str(name) for name in snapshot.get("articulation_joint_names", ())]
+    if prepared_context is not None and snapshot is not prepared_context.snapshot:
+        from isaac_tactile_libero.runtime.g1_sweep_work import G1SweepWorkError
+
+        raise G1SweepWorkError(
+            "G1_FULL_ROBOT_SWEEP_CACHE_INCONSISTENT",
+            "prepared sweep context received a different snapshot object",
+        )
+    snapshot_authority = (
+        prepared_context.snapshot
+        if prepared_context is not None
+        else snapshot
+    )
+    joint_names = [
+        str(name)
+        for name in snapshot_authority.get("articulation_joint_names", ())
+    ]
     joint_count = len(joint_names)
     q = _action_vector(action.get("observed_q"), joint_count, "observed_q")
-    snapshot_for_validation = dict(snapshot)
-    if "articulation_joint_positions" not in snapshot_for_validation:
-        snapshot_for_validation["articulation_joint_positions"] = q.tolist()
-    sealed_snapshot = validate_collision_snapshot(
-        snapshot_for_validation,
-        require_kinematics=True,
-    )
+    if prepared_context is None:
+        snapshot_for_validation = dict(snapshot)
+        if "articulation_joint_positions" not in snapshot_for_validation:
+            snapshot_for_validation["articulation_joint_positions"] = q.tolist()
+        sealed_snapshot = validate_collision_snapshot(
+            snapshot_for_validation,
+            require_kinematics=True,
+        )
+    else:
+        sealed_snapshot = prepared_context.snapshot
     joint_names = sealed_snapshot["articulation_joint_names"]
     qd = _action_vector(action.get("observed_qd"), joint_count, "observed_qd")
     target = _action_vector(
@@ -6072,6 +6326,38 @@ def certify_articulated_sweep(
             "G1_FULL_ROBOT_OFFSET_UNRESOLVED",
             "claim-bearing sweep requires complete PhysX offset and cooked-geometry authority",
         )
+    sweep_cache_key = None
+    if prepared_context is not None:
+        prepared_context.ledger.set_action_identity(
+            class_id=(
+                None
+                if action.get("class_id") is None
+                else str(action.get("class_id"))
+            ),
+            command_decimal=(
+                None
+                if action.get("command_decimal") is None
+                else str(action.get("command_decimal"))
+            ),
+            action_index=(
+                None
+                if action.get("action_index") is None
+                else int(action.get("action_index"))
+            ),
+        )
+        prepared_context.ledger.consume("sweep_requests")
+        sweep_cache_key = (
+            str(sealed_snapshot["snapshot_sha256"]),
+            str(phase_policy),
+            int(maximum_depth),
+            canonical_sha256(action),
+        )
+        cached_receipt = prepared_context._sweep_receipt_cache.get(
+            sweep_cache_key
+        )
+        if cached_receipt is not None:
+            return dict(cached_receipt)
+        prepared_context.ledger.consume("unique_sweep_evaluations")
     stopping_delta = (
         np.clip(qd, -velocity_limits, velocity_limits)
         * physics_dt
@@ -6095,6 +6381,7 @@ def certify_articulated_sweep(
                     q_end=segment_end,
                     segment_kind=segment_kind,
                     maximum_depth=int(maximum_depth),
+                    prepared_context=prepared_context,
                 )
                 pair_record = {
                     "subject_body_prim_path": subject["body_prim_path"],
@@ -6256,10 +6543,143 @@ def certify_articulated_sweep(
         },
     }
     receipt["record_sha256"] = canonical_sha256(receipt)
+    if prepared_context is not None:
+        _validate_certified_sweep_structure(
+            receipt,
+            snapshot=prepared_context.snapshot,
+        )
+        prepared_context._sweep_receipt_cache.put(
+            sweep_cache_key,
+            receipt,
+        )
+        return deepcopy(receipt)
     return validate_swept_clearance_receipt(
         receipt,
         snapshot=sealed_snapshot,
     )
+
+
+def certify_articulated_sweep_reference(
+    *,
+    snapshot: Mapping[str, Any],
+    action: Mapping[str, Any],
+    phase_policy: str,
+    maximum_depth: int = 24,
+) -> dict[str, Any]:
+    """Run the uncached evaluator plus independent geometry validation."""
+
+    return certify_articulated_sweep(
+        snapshot=snapshot,
+        action=action,
+        phase_policy=phase_policy,
+        maximum_depth=maximum_depth,
+        prepared_context=None,
+    )
+
+
+def _validate_certified_sweep_structure(
+    receipt: Mapping[str, Any],
+    *,
+    snapshot: Mapping[str, Any],
+) -> None:
+    """Validate output structure without repeating certified geometry work."""
+
+    if (
+        receipt.get("schema_version") != SWEEP_SCHEMA_VERSION
+        or receipt.get("safe") is not True
+        or receipt.get("collision_snapshot_sha256")
+        != snapshot.get("snapshot_sha256")
+    ):
+        _fail(
+            "G1_FULL_ROBOT_SWEEP_INVALID",
+            "prepared sweep output identity is invalid",
+        )
+    pairs = receipt.get("pair_receipts")
+    if not isinstance(pairs, Sequence) or isinstance(pairs, (str, bytes)):
+        _fail(
+            "G1_FULL_ROBOT_PAIR_MISSING",
+            "prepared sweep pair records are missing",
+        )
+    expected = {
+        (
+            subject["collider_prim_path"],
+            obstacle["collider_prim_path"],
+            segment,
+        )
+        for subject in snapshot["subject_inventory"]
+        for obstacle in snapshot["obstacle_inventory"]
+        for segment in ("governed_command", "stopping_reach")
+    }
+    observed: set[tuple[str, str, str]] = set()
+    solid_values: list[float] = []
+    effective_values: list[float] = []
+    for pair in pairs:
+        if not isinstance(pair, Mapping) or pair.get("safe") is not True:
+            _fail(
+                "G1_FULL_ROBOT_SWEEP_INVALID",
+                "unsafe pair entered a prepared safe receipt",
+            )
+        identity = (
+            str(pair.get("subject_collider_prim_path", "")),
+            str(pair.get("obstacle_collider_prim_path", "")),
+            str(pair.get("segment_kind", "")),
+        )
+        if identity in observed:
+            _fail(
+                "G1_FULL_ROBOT_PAIR_MISSING",
+                "prepared sweep pair identity is duplicated",
+            )
+        observed.add(identity)
+        supplied = _require_sha256(
+            pair.get("pair_record_sha256"),
+            "pair_record_sha256",
+        )
+        if supplied != canonical_sha256(
+            pair, exclude_fields=("pair_record_sha256",)
+        ):
+            _fail(
+                "G1_FULL_ROBOT_SWEEP_DIGEST_MISMATCH",
+                "prepared sweep pair digest is invalid",
+            )
+        solid_values.append(
+            _finite_float(
+                pair.get("minimum_solid_separation_m"),
+                "prepared pair solid separation",
+            )
+        )
+        effective_values.append(
+            _finite_float(
+                pair.get("minimum_effective_contact_separation_m"),
+                "prepared pair effective separation",
+            )
+        )
+    if observed != expected or int(receipt.get("subject_obstacle_pair_count", -1)) != len(
+        expected
+    ):
+        _fail(
+            "G1_FULL_ROBOT_PAIR_MISSING",
+            "prepared sweep does not cover the exact pair product",
+        )
+    if (
+        receipt.get("minimum_solid_separation_m") != min(solid_values)
+        or receipt.get("minimum_effective_contact_separation_m")
+        != min(effective_values)
+    ):
+        _fail(
+            "G1_FULL_ROBOT_SWEEP_INVALID",
+            "prepared sweep aggregate minimum is invalid",
+        )
+    supplied_receipt = _require_sha256(
+        receipt.get("record_sha256"),
+        "record_sha256",
+    )
+    if supplied_receipt != canonical_sha256(
+        receipt, exclude_fields=("record_sha256",)
+    ):
+        _fail(
+            "G1_FULL_ROBOT_SWEEP_DIGEST_MISMATCH",
+            "prepared sweep record digest is invalid",
+        )
 
 
 def validate_swept_clearance_receipt(
@@ -7122,6 +7542,7 @@ __all__ = [
     "GeometryAgreementEvaluation",
     "GeometryAgreementRawInputs",
     "G1FullRobotClearanceError",
+    "PreparedArticulatedSweepContext",
     "LIFECYCLE_SCHEMA_VERSION",
     "OFFSET_AUTHORITY_SCHEMA_VERSION",
     "ROUTE_SCHEMA_VERSION",
@@ -7131,11 +7552,13 @@ __all__ = [
     "canonical_sha256",
     "build_geometry_disagreement_record",
     "certify_articulated_sweep",
+    "certify_articulated_sweep_reference",
     "compare_geometry_poses_same_frame",
     "evaluate_geometry_agreement",
     "finalize_geometry_disagreement_for_evidence",
     "guard_pre_send_sweep",
     "geometry_comparison_record_sha256",
+    "prepare_articulated_sweep_context",
     "validate_collision_snapshot",
     "validate_collision_offset_authority_record",
     "validate_command_bound_swept_route",

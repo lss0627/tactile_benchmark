@@ -3001,6 +3001,19 @@ class _PoseConditionedIsaacTrackingScene:
                 "gpu_dynamics_enabled": False,
             },
         )
+        from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
+            prepare_articulated_sweep_context,
+        )
+
+        self.prepared_sweep_context = prepare_articulated_sweep_context(
+            self.collision_snapshot,
+            run_id=owner.lifecycle_authority.run_id,
+            scene_id=str(self.spec["scene_id"]),
+            trial_id=str(self.lifecycle_record["trial_id"]),
+            lifecycle_record_sha256=self.lifecycle_record[
+                "lifecycle_record_sha256"
+            ],
+        )
 
         from isaacsim.sensors.experimental.physics import Contact  # type: ignore
 
@@ -3112,7 +3125,7 @@ class _PoseConditionedIsaacTrackingScene:
                 "C1 real scene lacks a full-robot collision snapshot",
             )
         receipt = certify_articulated_sweep(
-            snapshot=self.collision_snapshot,
+            snapshot=self.prepared_sweep_context.snapshot,
             action={
                 "command_decimal": str(Decimal(str(self.spec["command_m"]))),
                 "class_id": str(self.spec["class_id"]),
@@ -3138,6 +3151,7 @@ class _PoseConditionedIsaacTrackingScene:
                 ],
             },
             phase_policy="c1_no_contact",
+            prepared_context=self.prepared_sweep_context,
         )
         self.swept_clearance_receipts.append(dict(receipt))
         return receipt

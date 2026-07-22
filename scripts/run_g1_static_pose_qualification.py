@@ -741,18 +741,26 @@ def run_c2a_static_qualification(
                         systemic_failure_code = failure_code
                         systemic_failure_message = failure_message
             scene_schema = (
-                "g1.c2a.static.v4"
+                "g1.c2a.static.v5"
                 if any(
-                    sample.get("schema_version") == "g1.c2a.static.v4"
+                    sample.get("schema_version") == "g1.c2a.static.v5"
                     for sample in samples
                 )
                 else (
-                    "g1.c2a.static.v3"
+                    "g1.c2a.static.v4"
                     if any(
-                        sample.get("schema_version") == "g1.c2a.static.v3"
+                        sample.get("schema_version") == "g1.c2a.static.v4"
                         for sample in samples
                     )
-                    else "g1.c2a.static.v2"
+                    else (
+                        "g1.c2a.static.v3"
+                        if any(
+                            sample.get("schema_version")
+                            == "g1.c2a.static.v3"
+                            for sample in samples
+                        )
+                        else "g1.c2a.static.v2"
+                    )
                 )
             )
             static_scenes.append(
@@ -864,7 +872,11 @@ def write_c2a_static_evidence(
             ),
         )
     }
-    normalized_v4 = any(
+    bounded_v5 = any(
+        version.startswith("g1.c2a.static.v5")
+        for version in observed_scene_versions
+    )
+    normalized_v4 = bounded_v5 or any(
         version.startswith("g1.c2a.static.v4")
         for version in observed_scene_versions
     )
@@ -872,7 +884,11 @@ def write_c2a_static_evidence(
         isinstance(metadata.get("factory_lifecycle_audit"), Mapping)
         or any(
         str(item.get("schema_version", "")).startswith(
-            ("g1.c2a.static.v3", "g1.c2a.static.v4")
+            (
+                "g1.c2a.static.v3",
+                "g1.c2a.static.v4",
+                "g1.c2a.static.v5",
+            )
         )
         for item in static_scenes
         )
@@ -885,6 +901,8 @@ def write_c2a_static_evidence(
                 "g1.c2a.static.v3.creation_failure",
                 "g1.c2a.static.v4",
                 "g1.c2a.static.v4.creation_failure",
+                "g1.c2a.static.v5",
+                "g1.c2a.static.v5.creation_failure",
             }
             for item in static_scenes
         ):
@@ -895,6 +913,7 @@ def write_c2a_static_evidence(
         from isaac_tactile_libero.runtime.g1_static_pose import (
             validate_c2a_v3_scene_record,
             validate_c2a_v4_scene_record,
+            validate_c2a_v5_scene_record,
         )
 
         static_scenes = tuple(
@@ -904,7 +923,12 @@ def write_c2a_static_evidence(
                 else (
                     validate_c2a_v4_scene_record(item)
                     if item.get("schema_version") == "g1.c2a.static.v4"
-                    else dict(item)
+                    else (
+                        validate_c2a_v5_scene_record(item)
+                        if item.get("schema_version")
+                        == "g1.c2a.static.v5"
+                        else dict(item)
+                    )
                 )
             )
             for item in static_scenes
@@ -928,6 +952,27 @@ def write_c2a_static_evidence(
         "".join(json.dumps(_jsonable(item), sort_keys=True) + "\n" for item in readiness_samples),
         encoding="utf-8",
     )
+    from isaac_tactile_libero.runtime.g1_sweep_work import (
+        validate_sweep_progress_records,
+    )
+
+    progress_value = metadata.get("sweep_work_progress_records")
+    progress_records = (
+        []
+        if progress_value is None
+        else validate_sweep_progress_records(progress_value)
+    )
+    progress_paths: tuple[Path, ...] = ()
+    if progress_records:
+        progress_path = destination / "sweep_work_progress.jsonl"
+        progress_path.write_text(
+            "".join(
+                json.dumps(_jsonable(record), sort_keys=True) + "\n"
+                for record in progress_records
+            ),
+            encoding="utf-8",
+        )
+        progress_paths = (progress_path,)
     option_d_paths: list[Path] = []
     geometry_disagreements: list[dict[str, Any]] = []
     analytic_representation_records: list[dict[str, Any]] = []
@@ -1211,12 +1256,16 @@ def write_c2a_static_evidence(
         }
     report = {
         "schema_version": (
-            "g1.c2a.static.v4"
-            if normalized_v4
+            "g1.c2a.static.v5"
+            if bounded_v5
             else (
-                "g1.c2a.static.v3"
-                if option_d
-                else "g1.c2a.static.v2"
+                "g1.c2a.static.v4"
+                if normalized_v4
+                else (
+                    "g1.c2a.static.v3"
+                    if option_d
+                    else "g1.c2a.static.v2"
+                )
             )
         ),
         "evidence_stage": (
@@ -1266,6 +1315,13 @@ def write_c2a_static_evidence(
         "gate_status_updated": False,
         "t070_completed": False,
     }
+    if progress_records:
+        report.update(
+            sweep_work_progress_count=len(progress_records),
+            sweep_work_progress_terminal_status=progress_records[-1][
+                "event"
+            ],
+        )
     if option_d:
         report.update(
             geometry_disagreement_count=len(geometry_disagreements),
@@ -1301,6 +1357,7 @@ def write_c2a_static_evidence(
         offline_path,
         scenes_path,
         readiness_path,
+        *progress_paths,
         *option_d_paths,
         report_path,
     )
@@ -1467,6 +1524,51 @@ def orchestrate_c2a_real_runtime(
     """Run C2a, persist all preliminary evidence, then close once with its exit code."""
 
     del task_card_path, headless
+    from isaac_tactile_libero.runtime.g1_sweep_work import (
+        C2ASweepProgressJournal,
+        SWEEP_WORK_SCHEMA_VERSION,
+    )
+
+    progress_journal = C2ASweepProgressJournal(
+        output=output,
+        repository_commit=str(repository_commit),
+        run_id=Path(output).name,
+    )
+
+    def retain_sweep_progress(payload: Mapping[str, Any]) -> None:
+        record = dict(payload)
+        work_record = (
+            record
+            if record.get("schema_version") == SWEEP_WORK_SCHEMA_VERSION
+            else record.get("work_record")
+        )
+        status = (
+            work_record.get("status")
+            if isinstance(work_record, Mapping)
+            else None
+        )
+        event = str(
+            record.get(
+                "event",
+                (
+                    "WORK_BUDGET_EXCEEDED"
+                    if status == "BLOCKED"
+                    else "SNAPSHOT_PREPARED"
+                ),
+            )
+        )
+        progress_journal.append(
+            event=event,
+            scene_id=record.get("scene_id"),
+            trial_id=record.get("trial_id"),
+            class_id=record.get("class_id"),
+            command_decimal=record.get("command_decimal"),
+            action_index=record.get("action_index"),
+            work_record=(
+                work_record if isinstance(work_record, Mapping) else None
+            ),
+        )
+
     factory: Any | None = None
     offline_candidates: list[dict[str, Any]] = []
     static_scenes: list[dict[str, Any]] = []
@@ -1480,6 +1582,13 @@ def orchestrate_c2a_real_runtime(
     exit_code = 1
     try:
         factory = factory_builder()
+        set_sweep_progress_callback = getattr(
+            factory,
+            "set_sweep_progress_callback",
+            None,
+        )
+        if callable(set_sweep_progress_callback):
+            set_sweep_progress_callback(retain_sweep_progress)
         reference = validate_c2a_reference_scene(factory.build_reference_scene(seed=int(seed)))
         offline_candidates = [
             dict(record)
@@ -1527,12 +1636,26 @@ def orchestrate_c2a_real_runtime(
         selected_pose_id = str(selection["selected_pose_id"])
         selected_pose_sha256 = _sha256_json(selection["selected_candidate"])
         exit_code = 0
+    except KeyboardInterrupt:
+        systemic_failure_code = "G1_C2A_SWEEP_INTERRUPTED"
+        systemic_failure_message = "continuous sweep was interrupted"
+        exit_code = 1
     except Exception as error:
         systemic_failure_code = str(getattr(error, "code", "G1_C2A_RUNTIME_ERROR"))
         systemic_failure_message = str(getattr(error, "message", str(error)))
         exit_code = 1
 
+    progress_journal.append(
+        event=(
+            "RUN_FAILED"
+            if systemic_failure_code is not None or exit_code != 0
+            else "RUN_COMPLETED"
+        )
+    )
     runtime_metadata = dict(getattr(factory, "runtime_metadata", {}) or {})
+    runtime_metadata["sweep_work_progress_records"] = (
+        progress_journal.snapshot()
+    )
     if factory is not None:
         finalize_lifecycle = getattr(
             factory,
@@ -1610,6 +1733,7 @@ def orchestrate_c2a_real_runtime(
         )
         if isinstance(written, Mapping):
             report.update(dict(written))
+        progress_journal.remove_sidecar()
     except Exception as error:
         systemic_failure_code = "G1_C2A_EVIDENCE_WRITE_FAILED"
         systemic_failure_message = str(error)
@@ -1688,6 +1812,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     output = Path(args.output)
     if output.exists():
         print(f"G1_C2A_OUTPUT_EXISTS: refusing to overwrite {output}", file=sys.stderr)
+        return 2
+    progress_sidecar = output.with_name(
+        output.name + ".sweep-progress.jsonl"
+    )
+    if progress_sidecar.exists():
+        print(
+            "G1_C2A_OUTPUT_EXISTS: refusing to overwrite "
+            f"{progress_sidecar}",
+            file=sys.stderr,
+        )
         return 2
     config_path = _resolve_repo_path(args.config)
     robot_config_path = _resolve_repo_path(args.robot_config)

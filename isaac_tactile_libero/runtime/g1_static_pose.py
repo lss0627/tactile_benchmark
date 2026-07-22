@@ -621,6 +621,77 @@ def validate_c2a_v4_scene_record(record: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+def validate_c2a_v5_scene_record(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate bounded-work C2a v5 without upgrading historical evidence."""
+
+    if (
+        not isinstance(record, Mapping)
+        or record.get("schema_version") != "g1.c2a.static.v5"
+    ):
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "C2a bounded-work scene must use g1.c2a.static.v5",
+        )
+    diagnostics = record.get("command_bound_route_diagnostics")
+    if (
+        not isinstance(diagnostics, Mapping)
+        or diagnostics.get("schema_version")
+        != "g1.c2a.option_d.route_diagnostics.v2"
+    ):
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "C2a v5 route diagnostics must use the bounded-work v2 schema",
+        )
+    from .g1_full_robot_clearance import canonical_sha256
+    from .g1_sweep_work import validate_sweep_work_record
+
+    work_record = validate_sweep_work_record(
+        diagnostics.get("sweep_work_record")
+    )
+    supplied = diagnostics.get("route_diagnostic_sha256")
+    if supplied != canonical_sha256(
+        diagnostics,
+        exclude_fields=("route_diagnostic_sha256",),
+    ):
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "C2a v5 route diagnostic digest mismatch",
+        )
+    historical = json.loads(json.dumps(dict(record), sort_keys=True))
+    historical["schema_version"] = "g1.c2a.static.v4"
+    historical_diagnostics = dict(diagnostics)
+    historical_diagnostics["schema_version"] = (
+        "g1.c2a.option_d.route_diagnostics.v1"
+    )
+    historical_diagnostics.pop("sweep_work_record")
+    historical_diagnostics["route_diagnostic_sha256"] = canonical_sha256(
+        historical_diagnostics,
+        exclude_fields=("route_diagnostic_sha256",),
+    )
+    historical["command_bound_route_diagnostics"] = historical_diagnostics
+    result = validate_c2a_v4_scene_record(historical)
+    lifecycle = result["lifecycle_record"]
+    snapshot = result["collision_snapshot"]
+    if (
+        work_record["run_id"] == ""
+        or work_record["scene_id"] != result.get("scene_id")
+        or work_record["trial_id"] != lifecycle["trial_id"]
+        or work_record["lifecycle_record_sha256"]
+        != lifecycle["lifecycle_record_sha256"]
+        or work_record["collision_snapshot_sha256"]
+        != snapshot["snapshot_sha256"]
+    ):
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "C2a v5 work record differs from scene lifecycle/snapshot",
+        )
+    result["schema_version"] = "g1.c2a.static.v5"
+    result["command_bound_route_diagnostics"] = json.loads(
+        json.dumps(dict(diagnostics), sort_keys=True)
+    )
+    return result
+
+
 __all__ = [
     "C2A_ARTICULATION_JOINT_NAMES",
     "C2A_ARM_JOINT_NAMES",
@@ -637,4 +708,5 @@ __all__ = [
     "validate_c2a_static_scene_record",
     "validate_c2a_v3_scene_record",
     "validate_c2a_v4_scene_record",
+    "validate_c2a_v5_scene_record",
 ]

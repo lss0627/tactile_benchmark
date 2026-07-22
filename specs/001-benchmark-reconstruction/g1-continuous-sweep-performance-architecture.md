@@ -107,6 +107,7 @@ class_id: str | null
 command_decimal: str | null
 action_index: int | null
 work_record_sha256: str | null
+work_record: g1.full_robot.sweep_work.v1 | null
 previous_record_sha256: str | null
 record_sha256: str
 ```
