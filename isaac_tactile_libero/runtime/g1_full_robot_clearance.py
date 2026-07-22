@@ -7716,6 +7716,11 @@ def certify_route_segment_clearance(
         str(phase_policy),
     )
     if prepared_context is not None:
+        prepared_context.ledger.set_action_identity(
+            class_id=str(request["class_id"]),
+            command_decimal=str(request["command_decimal"]),
+            action_index=0,
+        )
         prepared_context.ledger.consume("sweep_requests", 256)
     if proof_cache is not None:
         cached = proof_cache.get(cache_key)
@@ -7752,6 +7757,12 @@ def certify_route_segment_clearance(
         action_begin: int,
         action_end: int,
     ) -> dict[str, Any]:
+        if prepared_context is not None:
+            prepared_context.ledger.set_action_identity(
+                class_id=str(request["class_id"]),
+                command_decimal=str(request["command_decimal"]),
+                action_index=action_begin,
+            )
         subject, obstacle = pair_records[pair_key]
         block_segments = micro_segments[2 * action_begin : 2 * action_end]
         if len(block_segments) != 2 * (action_end - action_begin):
