@@ -451,6 +451,12 @@ def _assert_option_d_sweep_contracts(module: Any) -> None:
         trial_id="equivalence-trial",
         lifecycle_record_sha256="a" * 64,
     )
+    with pytest.raises(TypeError):
+        context.snapshot["subject_inventory"][0][
+            "contact_offset_resolved"
+        ] = 1.0
+    with pytest.raises(TypeError):
+        context.snapshot["subject_inventory"] += ()
     optimized = certify(
         snapshot=context.snapshot,
         action=claim_action,
