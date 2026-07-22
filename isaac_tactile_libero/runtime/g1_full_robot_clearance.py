@@ -6635,6 +6635,7 @@ def certify_articulated_sweep(
     return validate_swept_clearance_receipt(
         receipt,
         snapshot=sealed_snapshot,
+        prepared_context=prepared_context,
     )
 
 
@@ -6765,6 +6766,7 @@ def validate_swept_clearance_receipt(
     receipt: Mapping[str, Any],
     *,
     snapshot: Mapping[str, Any] | None = None,
+    prepared_context: PreparedArticulatedSweepContext | None = None,
 ) -> dict[str, Any]:
     """Validate one complete safe pre-send sweep receipt."""
 
@@ -6870,10 +6872,21 @@ def validate_swept_clearance_receipt(
     subject_records: dict[str, dict[str, Any]] = {}
     obstacle_records: dict[str, dict[str, Any]] = {}
     segment_states: dict[str, tuple[np.ndarray, np.ndarray]] = {}
-    if result["claim_eligible"] is True:
-        sealed_snapshot = validate_collision_snapshot(
-            snapshot,
-            require_kinematics=True,
+    if prepared_context is not None and snapshot is not prepared_context.snapshot:
+        from isaac_tactile_libero.runtime.g1_sweep_work import G1SweepWorkError
+
+        raise G1SweepWorkError(
+            "G1_FULL_ROBOT_SWEEP_CACHE_INCONSISTENT",
+            "sweep validation received a different prepared snapshot object",
+        )
+    if snapshot is not None:
+        sealed_snapshot = (
+            prepared_context.snapshot
+            if prepared_context is not None
+            else validate_collision_snapshot(
+                snapshot,
+                require_kinematics=True,
+            )
         )
         if (
             sealed_snapshot["snapshot_sha256"]
@@ -7006,15 +7019,50 @@ def validate_swept_clearance_receipt(
                     q_end=q_end,
                     segment_kind=identity[2],
                     maximum_depth=maximum_depth,
+                    prepared_context=prepared_context,
                 ),
             }
             independently_recomputed["pair_record_sha256"] = (
                 canonical_sha256(independently_recomputed)
             )
-            if _json_safe(dict(pair)) != independently_recomputed:
+            expected_pair = independently_recomputed
+            if result["claim_eligible"] is False:
+                expected_pair = {
+                    "subject_body_prim_path": independently_recomputed[
+                        "subject_body_prim_path"
+                    ],
+                    "subject_collider_prim_path": independently_recomputed[
+                        "subject_collider_prim_path"
+                    ],
+                    "obstacle_body_prim_path": independently_recomputed[
+                        "obstacle_body_prim_path"
+                    ],
+                    "obstacle_collider_prim_path": independently_recomputed[
+                        "obstacle_collider_prim_path"
+                    ],
+                    "safe": True,
+                    "failure": None,
+                    "segment_kind": independently_recomputed["segment_kind"],
+                    "closest_time_fraction": independently_recomputed[
+                        "closest_time_fraction"
+                    ],
+                    "minimum_solid_separation_m": independently_recomputed[
+                        "minimum_solid_separation_m"
+                    ],
+                    "minimum_effective_contact_separation_m": (
+                        independently_recomputed[
+                            "minimum_effective_contact_separation_m"
+                        ]
+                    ),
+                    "continuous_certificate_scope": "pure_geometry_nonclaim",
+                }
+                expected_pair["pair_record_sha256"] = canonical_sha256(
+                    expected_pair
+                )
+            if _json_safe(dict(pair)) != expected_pair:
                 _fail(
                     "G1_FULL_ROBOT_CONTINUOUS_CERTIFICATE_INVALID",
-                    "claim-bearing pair cannot be recomputed from snapshot geometry",
+                    "sweep pair cannot be recomputed from snapshot geometry",
                 )
         certificates = pair.get("interval_certificates")
         if result["claim_eligible"] is not True:
@@ -7842,6 +7890,7 @@ def certify_route_segment_clearance(
                 request=request,
                 phase_policy=phase_policy,
                 lifecycle_record_sha256=lifecycle_record_sha256,
+                prepared_context=prepared_context,
             )
             if prepared_context is not None:
                 prepared_context.emit_progress(
@@ -8088,6 +8137,7 @@ def certify_route_segment_clearance(
         request=request,
         phase_policy=phase_policy,
         lifecycle_record_sha256=lifecycle_record_sha256,
+        prepared_context=prepared_context,
     )
     if prepared_context is not None:
         prepared_context.emit_progress(
@@ -8107,10 +8157,22 @@ def validate_route_segment_proof(
     request: Mapping[str, Any],
     phase_policy: str,
     lifecycle_record_sha256: str | None = None,
+    prepared_context: PreparedArticulatedSweepContext | None = None,
 ) -> dict[str, Any]:
     """Validate route proof identity and complete pair coverage."""
 
-    sealed = validate_collision_snapshot(snapshot, require_kinematics=True)
+    if prepared_context is not None and snapshot is not prepared_context.snapshot:
+        from isaac_tactile_libero.runtime.g1_sweep_work import G1SweepWorkError
+
+        raise G1SweepWorkError(
+            "G1_FULL_ROBOT_SWEEP_CACHE_INCONSISTENT",
+            "route proof validation received a different prepared snapshot object",
+        )
+    sealed = (
+        prepared_context.snapshot
+        if prepared_context is not None
+        else validate_collision_snapshot(snapshot, require_kinematics=True)
+    )
     equivalence = _build_geometry_equivalence_record(
         snapshot=sealed,
         request=request,
@@ -8156,8 +8218,8 @@ def validate_route_segment_proof(
             pair_key=pair_key,
             action_begin=int(block["action_begin"]),
             action_end=int(block["action_end"]),
-            prepared_context=None,
-            account_work=False,
+            prepared_context=prepared_context,
+            account_work=prepared_context is not None,
         )
         if (
             block["sphere_bound"] != recomputed["sphere"]
@@ -8190,6 +8252,7 @@ def validate_route_segment_proof(
         receipt = validate_swept_clearance_receipt(
             raw_receipt,
             snapshot=sealed,
+            prepared_context=prepared_context,
         )
         action_index = int(receipt["action_index"])
         if action_index in receipt_by_action or action_index not in expected_leaf_coverage:
@@ -8242,6 +8305,16 @@ def validate_route_segment_proof(
                 != {"governed_command", "stopping_reach"}
                 or coverage_record["exact_pair_record_sha256"]
                 != canonical_sha256({"pair_receipts": selected_pairs})
+                or coverage_record["solid_lower_bound_m"]
+                != min(
+                    float(item["minimum_solid_separation_m"])
+                    for item in selected_pairs
+                )
+                or coverage_record["effective_lower_bound_m"]
+                != min(
+                    float(item["minimum_effective_contact_separation_m"])
+                    for item in selected_pairs
+                )
             ):
                 _fail(
                     "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",

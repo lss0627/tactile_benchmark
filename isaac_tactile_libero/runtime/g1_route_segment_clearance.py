@@ -1052,6 +1052,40 @@ def validate_route_segment_proof_structure(
                     "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
                     "route proof block lower-bound record is invalid",
                 )
+        safe_bounds = [
+            bound
+            for bound in (block["sphere_bound"], block["aabb_bound"])
+            if bound["strict_safe"] is True
+        ]
+        chosen = (
+            max(
+                safe_bounds,
+                key=lambda item: (
+                    float(item["effective_lower_bound_m"]),
+                    str(item["method"]),
+                ),
+            )
+            if safe_bounds
+            else None
+        )
+        action_begin = block.get("action_begin")
+        action_end = block.get("action_end")
+        expected_decision = (
+            f"CERTIFIED_{str(chosen['method']).upper()}"
+            if chosen is not None
+            else (
+                "EXACT_LEAF"
+                if isinstance(action_begin, int)
+                and isinstance(action_end, int)
+                and action_end - action_begin == 1
+                else "SPLIT"
+            )
+        )
+        if block["decision"] != expected_decision:
+            _fail(
+                "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                "route proof block decision is not deterministic",
+            )
         tree_by_pair[pair_index].append(block)
     if [
         block
@@ -1218,6 +1252,21 @@ def validate_route_segment_proof_structure(
                     _fail(
                         "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
                         "route proof coverage references a different bound",
+                    )
+                selected_bound = terminal[
+                    "sphere_bound"
+                    if method == "enclosing_sphere"
+                    else "aabb_bound"
+                ]
+                if (
+                    item["solid_lower_bound_m"]
+                    != selected_bound["solid_lower_bound_m"]
+                    or item["effective_lower_bound_m"]
+                    != selected_bound["effective_lower_bound_m"]
+                ):
+                    _fail(
+                        "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                        "route proof coverage lower bound differs from its record",
                     )
                 if method == "enclosing_sphere":
                     sphere_count += 1

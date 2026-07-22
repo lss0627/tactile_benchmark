@@ -2523,7 +2523,7 @@ def certify_option_d_preliminary_route_diagnostics(
                     action_record
                 )
                 action_records.append(action_record)
-                if action_index == 0 or (action_index + 1) % 32 == 0:
+                if action_index == 0 or (action_index + 1) % 64 == 0:
                     prepared_sweep_context.emit_progress(
                         event="ACTION_MILESTONE",
                         class_id=class_id,
