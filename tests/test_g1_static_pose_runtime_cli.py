@@ -4030,10 +4030,11 @@ def test_c2a_runtime_failure_preserves_exact_code_message_writes_before_shutdown
     terminal_failure_factory = _GeometryDisagreementFactory(
         _option_a_canonical_evaluation(_option_d_module())
     )
-    terminal_failure_output = tmp_path / "terminal-progress-failure"
+    terminal_failure_root = tmp_path / "terminal-progress-failure"
+    terminal_failure_output = terminal_failure_root / "c2a"
     terminal_failure = _orchestrate(
         runner,
-        terminal_failure_output,
+        terminal_failure_root,
         terminal_failure_factory,
         evidence_writer=write,
     )

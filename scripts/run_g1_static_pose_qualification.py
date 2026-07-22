@@ -1645,13 +1645,35 @@ def orchestrate_c2a_real_runtime(
         systemic_failure_message = str(getattr(error, "message", str(error)))
         exit_code = 1
 
-    progress_journal.append(
-        event=(
-            "RUN_FAILED"
-            if systemic_failure_code is not None or exit_code != 0
-            else "RUN_COMPLETED"
+    try:
+        progress_journal.append(
+            event=(
+                "RUN_FAILED"
+                if systemic_failure_code is not None or exit_code != 0
+                else "RUN_COMPLETED"
+            )
         )
-    )
+    except Exception as error:
+        systemic_failure_code = "G1_C2A_EVIDENCE_WRITE_FAILED"
+        systemic_failure_message = str(error)
+        exit_code = 1
+        report.update(
+            systemic_failure=True,
+            systemic_failure_code=systemic_failure_code,
+            systemic_failure_message=systemic_failure_message,
+        )
+        if factory is not None:
+            factory.close(exit_code=1)
+        return {
+            "exit_code": 1,
+            "systemic_failure": True,
+            "systemic_failure_code": systemic_failure_code,
+            "systemic_failure_message": systemic_failure_message,
+            "selected_pose_id": None,
+            "selected_pose_sha256": None,
+            "result": result,
+            "report": report,
+        }
     runtime_metadata = dict(getattr(factory, "runtime_metadata", {}) or {})
     runtime_metadata["sweep_work_progress_records"] = (
         progress_journal.snapshot()
