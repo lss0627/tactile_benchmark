@@ -241,4 +241,3 @@ behavioral RED-to-GREEN tests, unchanged frozen node inventory/digests, full
 repository regression, an independent Critical/Important review with both
 counts zero, a clean projection, and a fresh repository-integrity G0. A new
 runtime requires separate authorization after those gates.
-
