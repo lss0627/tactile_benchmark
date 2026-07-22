@@ -3230,6 +3230,23 @@ collection-order 1c8e6a8e9b09da6b06435ea6c75191c5fb4b3c3fa7e1b97161951e65249d45a
 sorted           00a6e84c5d2e1f623f2211db8272ca95859e8050417f7c25cbfeef9afd84efc7
 ```
 
+## Continuous-sweep bounded-work closure
+
+The attempt-08 performance diagnostic identified unbounded composition of the
+otherwise finite Option D continuous-sweep work. The approved repair is
+specified in:
+
+- `g1-continuous-sweep-performance-architecture.md`;
+- `g1-continuous-sweep-performance-implementation-plan.md`; and
+- `g1-continuous-sweep-performance-schema-migration.md`.
+
+The repair retains the original full-link interval/GJK decision, strict
+clearance and Contact truth, CPU/MBP/GPU-off policy, pose list, and command
+matrix. It adds deterministic fail-closed work limits, exact digest-bound
+caches, optimized/reference byte-equivalence tests, and write-ahead progress.
+No runtime result is inferred from attempt-08, and a new runtime requires
+separate authorization after projection and formal G0.
+
 External attestation remains one node, JUnit 1/0/0/0, factory calls zero, and
 nine checksum-valid files. The attempt-02 checksum remains
 `cc53c4b4bc3cefdc7a2363c6446741e3abfc65e768ac0db71123aa593be528ed` and
