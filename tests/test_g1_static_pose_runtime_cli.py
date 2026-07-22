@@ -3455,7 +3455,24 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
     representation = _analytic_representation_module()
     _assert_analytic_cylinder_representation_contracts(representation)
 
+    assert getattr(option_d, "ROUTE_SEGMENT_PROOF_SCHEMA_VERSION", None) == (
+        "g1.full_robot.route_segment_proof.v1"
+    )
+    assert getattr(option_d, "ROUTE_DIAGNOSTICS_SCHEMA_VERSION", None) == (
+        "g1.pose_conditioned.route_diagnostics.v3"
+    )
+
     real_runtime = _real_runtime_module()
+    route_source = inspect.getsource(
+        real_runtime.certify_option_d_preliminary_route_diagnostics
+    )
+    assert "materialize_route_micro_segments(" in route_source
+    assert "certify_route_segment_clearance(" in route_source
+    assert '"g1.pose_conditioned.route_diagnostics.v3"' in route_source
+    runner_source = RUNNER_PATH.read_text(encoding="utf-8")
+    assert '"g1.c2a.static.v6"' in runner_source
+    assert "route_segment_proofs.jsonl" in runner_source
+    assert "geometry_equivalence_records.jsonl" in runner_source
     query_source = inspect.getsource(
         real_runtime.PhysxResolvedOffsetAdapter._query_colliders
     )

@@ -676,6 +676,362 @@ def _assert_option_d_sweep_contracts(module: Any) -> None:
     with pytest.raises(Exception):
         validate_route(intentional)
 
+    _assert_hierarchical_route_segment_contracts(module, claim_snapshot)
+
+
+def _hierarchical_route_request(
+    module: Any,
+    *,
+    class_id: str | None = None,
+    command_decimal: str = "0.00025",
+    first_target: float = 0.00001,
+) -> dict[str, Any]:
+    if class_id is None:
+        class_id = TRAJECTORY_CLASS_IDS[0]
+    actions: list[dict[str, Any]] = []
+    observed = 0.0
+    for action_index in range(256):
+        target = first_target if action_index == 0 else observed + 0.00001
+        actions.append(
+            {
+                "action_index": action_index,
+                "observed_q": [observed],
+                "observed_qd": [0.0],
+                "governed_target": [target],
+                "kernel_record_sha256": f"{action_index + 1:064x}",
+            }
+        )
+        observed = target
+    request = {
+        "schema_version": "g1.full_robot.route_proof_request.v1",
+        "selected_pose_id": "task-ready-z-0p55",
+        "selected_pose_sha256": "1" * 64,
+        "class_id": class_id,
+        "command_decimal": command_decimal,
+        "source_motif_sha256": "2" * 64,
+        "shared_kernel_provenance_sha256": "3" * 64,
+        "joint_names": ["sweep_joint"],
+        "physics_substeps": 3,
+        "physics_dt_s": 1.0 / 60.0,
+        "joint_velocity_limits": [2.0],
+        "actions": actions,
+    }
+    request["request_sha256"] = module.canonical_sha256(request)
+    return request
+
+
+def _hierarchical_full_inventory_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    expanded = json.loads(json.dumps(snapshot))
+    expanded["obstacle_inventory"][0]["local_transform"] = _identity_matrix(
+        x=100.0, y=100.0, z=100.0
+    )
+    expanded["obstacle_inventory"][0]["world_transform"] = _identity_matrix(
+        x=100.0, y=100.0, z=100.0
+    )
+    for index in range(13):
+        body = f"/World/FR3/fr3_aux_{index:02d}"
+        collider = f"{body}/collisions"
+        record = _option_d_sphere(
+            body=body,
+            collider=collider,
+            center=(float(index + 10), 0.0, 0.0),
+            radius=0.05,
+        )
+        record["offset_authority_sha256"] = f"{index + 1000:064x}"
+        record["property_query_geometry_agreement_sha256"] = (
+            f"{index + 2000:064x}"
+        )
+        record["aabb_authority_model"] = (
+            "analytic_shape_exact_within_one_float32_ulp"
+        )
+        record["mesh_sweep_local_aabb_min"] = None
+        record["mesh_sweep_local_aabb_max"] = None
+        record["local_pose_sweep_inflation_m"] = 0.0
+        record["stage_world_transform_diagnostic"] = record["world_transform"]
+        record["stage_world_transform_readback_valid"] = True
+        record["stage_world_transform_translation_residual_m"] = 0.0
+        record["stage_world_transform_rotation_residual"] = 0.0
+        record["world_transform_authority"] = (
+            "normalized_usd_joint_graph_with_stage_readback"
+        )
+        expanded["subject_inventory"].append(record)
+        expanded["body_root_transforms"][body] = _identity_matrix()
+    expanded["offset_authority_claim_eligible"] = True
+    return expanded
+
+
+def _assert_hierarchical_route_segment_contracts(
+    module: Any,
+    snapshot: dict[str, Any],
+) -> None:
+    materialize = getattr(module, "materialize_route_micro_segments", None)
+    build_equivalence = getattr(
+        module, "build_geometry_equivalence_record", None
+    )
+    certify_route = getattr(module, "certify_route_segment_clearance", None)
+    validate_proof = getattr(module, "validate_route_segment_proof", None)
+    sphere_bounds = getattr(module, "conservative_sphere_lower_bounds", None)
+    aabb_bounds = getattr(module, "conservative_aabb_lower_bounds", None)
+    cache_type = getattr(module, "RouteProofCache", None)
+    assert callable(materialize), "missing hierarchical route materialization"
+    assert callable(build_equivalence), "missing geometry-equivalence authority"
+    assert callable(certify_route), "missing hierarchical route certification"
+    assert callable(validate_proof), "missing route-proof validator"
+    assert callable(sphere_bounds), "missing conservative sphere lower bound"
+    assert callable(aabb_bounds), "missing conservative AABB lower bound"
+    assert isinstance(cache_type, type), "missing digest-bound route proof cache"
+
+    request = _hierarchical_route_request(module)
+    segments = materialize(request)
+    assert len(segments) == 512
+    assert [item["action_index"] for item in segments[0:4]] == [0, 0, 1, 1]
+    assert [item["segment_kind"] for item in segments[0:4]] == [
+        "governed_command",
+        "stopping_reach",
+        "governed_command",
+        "stopping_reach",
+    ]
+    assert segments[0]["q_start"] == [0.0]
+    assert segments[0]["q_end"] == [0.00001]
+    assert segments[1]["q_start"] == [0.00001]
+    assert segments[1]["q_end"] == [0.00001]
+    assert all(item["q_start_float64_sha256"] for item in segments)
+    assert all(item["q_end_float64_sha256"] for item in segments)
+    assert all(
+        item["record_sha256"]
+        == module.canonical_sha256(item, exclude_fields=("record_sha256",))
+        for item in segments
+    )
+
+    for mutation in ("missing", "duplicate", "reordered", "no_stopping"):
+        changed = json.loads(json.dumps(request))
+        if mutation == "missing":
+            changed["actions"].pop()
+        elif mutation == "duplicate":
+            changed["actions"][1]["action_index"] = 0
+        elif mutation == "reordered":
+            changed["actions"][0], changed["actions"][1] = (
+                changed["actions"][1],
+                changed["actions"][0],
+            )
+        else:
+            changed["actions"][0].pop("observed_qd")
+        changed["request_sha256"] = module.canonical_sha256(
+            changed, exclude_fields=("request_sha256",)
+        )
+        with pytest.raises(Exception):
+            materialize(changed)
+
+    sphere = sphere_bounds(
+        subject_center=[0.0, 0.0, 0.0],
+        subject_radius_m=0.25,
+        subject_motion_bound_m=0.0,
+        subject_geometry_inflation_m=0.0,
+        subject_contact_offset_m=0.0,
+        obstacle_center=[1.0, 0.0, 0.0],
+        obstacle_radius_m=0.25,
+        obstacle_motion_bound_m=0.0,
+        obstacle_geometry_inflation_m=0.0,
+        obstacle_contact_offset_m=0.0,
+    )
+    assert sphere["solid_lower_bound_m"] == 0.5
+    assert sphere["effective_lower_bound_m"] == 0.5
+    assert sphere["strict_safe"] is True
+    boundary = sphere_bounds(
+        subject_center=[0.0, 0.0, 0.0],
+        subject_radius_m=0.25,
+        subject_motion_bound_m=0.0,
+        subject_geometry_inflation_m=0.0,
+        subject_contact_offset_m=0.0,
+        obstacle_center=[0.5, 0.0, 0.0],
+        obstacle_radius_m=0.25,
+        obstacle_motion_bound_m=0.0,
+        obstacle_geometry_inflation_m=0.0,
+        obstacle_contact_offset_m=0.0,
+    )
+    assert boundary["solid_lower_bound_m"] == 0.0
+    assert boundary["strict_safe"] is False
+    outside = sphere_bounds(
+        subject_center=[0.0, 0.0, 0.0],
+        subject_radius_m=0.25,
+        subject_motion_bound_m=0.0,
+        subject_geometry_inflation_m=0.0,
+        subject_contact_offset_m=0.0,
+        obstacle_center=[float(np.nextafter(0.5, math.inf)), 0.0, 0.0],
+        obstacle_radius_m=0.25,
+        obstacle_motion_bound_m=0.0,
+        obstacle_geometry_inflation_m=0.0,
+        obstacle_contact_offset_m=0.0,
+    )
+    assert outside["strict_safe"] is True
+    offset = sphere_bounds(
+        subject_center=[0.0, 0.0, 0.0],
+        subject_radius_m=0.25,
+        subject_motion_bound_m=0.0,
+        subject_geometry_inflation_m=0.1,
+        subject_contact_offset_m=0.2,
+        obstacle_center=[1.0, 0.0, 0.0],
+        obstacle_radius_m=0.25,
+        obstacle_motion_bound_m=0.0,
+        obstacle_geometry_inflation_m=0.1,
+        obstacle_contact_offset_m=0.2,
+    )
+    assert offset["geometry_lower_bound_m"] == 0.5
+    assert offset["solid_lower_bound_m"] == 0.3
+    assert offset["effective_lower_bound_m"] == (0.3 - 0.2 - 0.2)
+    assert offset["strict_safe"] is False
+    for malformed in (math.nan, math.inf, -1.0):
+        with pytest.raises(Exception):
+            sphere_bounds(
+                subject_center=[0.0, 0.0, 0.0],
+                subject_radius_m=malformed,
+                subject_motion_bound_m=0.0,
+                subject_geometry_inflation_m=0.0,
+                subject_contact_offset_m=0.0,
+                obstacle_center=[1.0, 0.0, 0.0],
+                obstacle_radius_m=0.25,
+                obstacle_motion_bound_m=0.0,
+                obstacle_geometry_inflation_m=0.0,
+                obstacle_contact_offset_m=0.0,
+            )
+
+    aabb = aabb_bounds(
+        subject_aabb_min=[0.0, 0.0, 0.0],
+        subject_aabb_max=[0.25, 0.25, 0.25],
+        subject_motion_bound_m=0.0,
+        subject_geometry_inflation_m=0.0,
+        subject_contact_offset_m=0.0,
+        obstacle_aabb_min=[1.0, 0.0, 0.0],
+        obstacle_aabb_max=[1.25, 0.25, 0.25],
+        obstacle_motion_bound_m=0.0,
+        obstacle_geometry_inflation_m=0.0,
+        obstacle_contact_offset_m=0.0,
+    )
+    assert aabb["solid_lower_bound_m"] == 0.75
+    assert aabb["strict_safe"] is True
+    with pytest.raises(Exception):
+        aabb_bounds(
+            subject_aabb_min=[1.0, 0.0, 0.0],
+            subject_aabb_max=[0.0, 0.0, 0.0],
+            subject_motion_bound_m=0.0,
+            subject_geometry_inflation_m=0.0,
+            subject_contact_offset_m=0.0,
+            obstacle_aabb_min=[2.0, 0.0, 0.0],
+            obstacle_aabb_max=[3.0, 1.0, 1.0],
+            obstacle_motion_bound_m=0.0,
+            obstacle_geometry_inflation_m=0.0,
+            obstacle_contact_offset_m=0.0,
+        )
+
+    full_snapshot = _hierarchical_full_inventory_snapshot(snapshot)
+    equivalence = build_equivalence(
+        snapshot=full_snapshot,
+        request=request,
+    )
+    assert equivalence["schema_version"] == (
+        "g1.full_robot.geometry_equivalence.v1"
+    )
+    assert equivalence["subject_collider_count"] == 17
+    assert equivalence["obstacle_collider_count"] == 2
+    cache = cache_type(maximum_entries=64)
+    proof = certify_route(
+        snapshot=full_snapshot,
+        request=request,
+        phase_policy="c2a_no_contact",
+        proof_cache=cache,
+    )
+    validated = validate_proof(
+        proof,
+        snapshot=full_snapshot,
+        request=request,
+    )
+    assert validated["schema_version"] == (
+        "g1.full_robot.route_segment_proof.v1"
+    )
+    assert validated["action_count"] == 256
+    assert validated["micro_segment_count"] == 512
+    assert validated["subject_obstacle_pair_count"] == 34
+    assert validated["all_pair_coverage_count"] == 34
+    assert validated["unresolved_count"] == 0
+    assert validated["false_safe_count"] == 0
+    assert validated["claim_scope"] == "DESIGN_TIME_REJECTION_FILTER_ONLY"
+    assert validated["claim_eligible"] is False
+    assert validated["selected_command_cap_m"] is None
+    assert validated["force_vector_valid"] is False
+    assert validated["wrench_valid"] is False
+    assert validated["raw_impulse_used_as_force"] is False
+
+    cached = certify_route(
+        snapshot=full_snapshot,
+        request=request,
+        phase_policy="c2a_no_contact",
+        proof_cache=cache,
+    )
+    assert module.canonical_json_bytes(cached) == module.canonical_json_bytes(
+        validated
+    )
+    assert cache.statistics()["hits"] == 1
+    entry = next(iter(cache._entries.values()))
+    entry.digest = "0" * 64
+    with pytest.raises(Exception) as corrupt:
+        certify_route(
+            snapshot=full_snapshot,
+            request=request,
+            phase_policy="c2a_no_contact",
+            proof_cache=cache,
+        )
+    assert getattr(corrupt.value, "code", "") == (
+        "G1_FULL_ROBOT_SWEEP_CACHE_INCONSISTENT"
+    )
+
+    unsafe_request = _hierarchical_route_request(
+        module,
+        first_target=math.pi,
+    )
+    with pytest.raises(Exception) as middle_unsafe:
+        certify_route(
+            snapshot=snapshot,
+            request=unsafe_request,
+            phase_policy="c2a_no_contact",
+        )
+    assert getattr(middle_unsafe.value, "code", "") in {
+        "G1_FULL_ROBOT_SWEEP_UNSAFE",
+        "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+    }
+    assert getattr(middle_unsafe.value, "receipt", None)
+
+    plans: list[dict[str, Any]] = []
+    for class_id in TRAJECTORY_CLASS_IDS:
+        for command in ("0", "0.00025", "0.00035", "0.00040", "0.00045"):
+            plans.append(
+                _hierarchical_route_request(
+                    module,
+                    class_id=class_id,
+                    command_decimal=command,
+                )
+            )
+    full_plan_proofs = [
+        certify_route(
+            snapshot=full_snapshot,
+            request=plan,
+            phase_policy="c2a_no_contact",
+        )
+        for plan in plans
+    ]
+    full_plan_gjk_calls = sum(
+        item["performance"]["leaf_gjk_calls"] for item in full_plan_proofs
+    )
+    assert sum(item["action_count"] for item in full_plan_proofs) + 1 == 7_681
+    assert sum(item["micro_segment_count"] for item in full_plan_proofs) == 15_360
+    assert all(item["all_pair_coverage_count"] == 34 for item in full_plan_proofs)
+    assert all(item["false_safe_count"] == 0 for item in full_plan_proofs)
+    assert all(item["unresolved_count"] == 0 for item in full_plan_proofs)
+    assert full_plan_gjk_calls <= 33_106
+    assert 331_068 / max(1, full_plan_gjk_calls) >= 10.0
+    assert len(
+        {item["record_sha256"] for item in full_plan_proofs}
+    ) == len(full_plan_proofs)
+
 
 def _contact_provenance(
     *,
