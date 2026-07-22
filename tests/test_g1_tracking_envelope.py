@@ -834,6 +834,9 @@ def _assert_hierarchical_route_segment_contracts(
     sphere_bounds = getattr(module, "conservative_sphere_lower_bounds", None)
     aabb_bounds = getattr(module, "conservative_aabb_lower_bounds", None)
     cache_type = getattr(module, "RouteProofCache", None)
+    hierarchical_coverage = getattr(
+        module, "certify_hierarchical_pair_coverage", None
+    )
     assert callable(materialize), "missing hierarchical route materialization"
     assert callable(build_equivalence), "missing geometry-equivalence authority"
     assert callable(certify_route), "missing hierarchical route certification"
@@ -841,6 +844,9 @@ def _assert_hierarchical_route_segment_contracts(
     assert callable(sphere_bounds), "missing conservative sphere lower bound"
     assert callable(aabb_bounds), "missing conservative AABB lower bound"
     assert isinstance(cache_type, type), "missing digest-bound route proof cache"
+    assert callable(hierarchical_coverage), "missing hierarchical coverage core"
+    assert "phase_policy" in inspect.signature(build_equivalence).parameters
+    assert "phase_policy" in inspect.signature(validate_proof).parameters
 
     request = _hierarchical_route_request(module)
     segments = materialize(request)
@@ -987,16 +993,81 @@ def _assert_hierarchical_route_segment_contracts(
             obstacle_contact_offset_m=0.0,
         )
 
+    def _bound(
+        method: str,
+        solid: float,
+        effective: float,
+        *,
+        strict_safe: bool,
+    ) -> dict[str, Any]:
+        value = {
+            "schema_version": "g1.full_robot.conservative_lower_bound.v1",
+            "method": method,
+            "geometry_lower_bound_m": solid,
+            "solid_lower_bound_m": solid,
+            "effective_lower_bound_m": effective,
+            "strict_safe": strict_safe,
+        }
+        value["record_sha256"] = module.canonical_sha256(value)
+        return value
+
+    independent_minima = hierarchical_coverage(
+        action_count=256,
+        pair_keys=(("subject-a", "obstacle"), ("subject-b", "obstacle")),
+        evaluate_block=lambda pair, _begin, _end: {
+            "sphere": _bound(
+                "enclosing_sphere",
+                1.0 if pair[0] == "subject-a" else 0.5,
+                0.1 if pair[0] == "subject-a" else 0.4,
+                strict_safe=True,
+            ),
+            "aabb": _bound(
+                "swept_aabb",
+                -1.0,
+                -1.0,
+                strict_safe=False,
+            ),
+        },
+        evaluate_leaf=lambda _pair, _action: pytest.fail(
+            "safe root blocks must not invoke the exact leaf"
+        ),
+    )
+    assert independent_minima["minimum_certified_solid_lower_bound_m"] == 0.5
+    assert independent_minima[
+        "minimum_certified_effective_lower_bound_m"
+    ] == 0.1
+
     full_snapshot = _hierarchical_full_inventory_snapshot(module, snapshot)
     equivalence = build_equivalence(
         snapshot=full_snapshot,
         request=request,
+        phase_policy="c2a_no_contact",
     )
     assert equivalence["schema_version"] == (
         "g1.full_robot.geometry_equivalence.v1"
     )
     assert equivalence["subject_collider_count"] == 17
     assert equivalence["obstacle_collider_count"] == 2
+    assert equivalence["phase_policy"] == "c2a_no_contact"
+    c1_equivalence = build_equivalence(
+        snapshot=full_snapshot,
+        request=request,
+        phase_policy="c1_no_contact",
+    )
+    assert c1_equivalence["phase_policy"] == "c1_no_contact"
+    assert c1_equivalence["geometry_equivalence_sha256"] != equivalence[
+        "geometry_equivalence_sha256"
+    ]
+    incomplete_snapshot = json.loads(json.dumps(full_snapshot))
+    incomplete_snapshot["subject_inventory"] = incomplete_snapshot[
+        "subject_inventory"
+    ][:16]
+    with pytest.raises(Exception):
+        build_equivalence(
+            snapshot=incomplete_snapshot,
+            request=request,
+            phase_policy="c2a_no_contact",
+        )
     cache = cache_type(maximum_entries=64)
     proof = certify_route(
         snapshot=full_snapshot,
@@ -1008,6 +1079,7 @@ def _assert_hierarchical_route_segment_contracts(
         proof,
         snapshot=full_snapshot,
         request=request,
+        phase_policy="c2a_no_contact",
     )
     assert validated["schema_version"] == (
         "g1.full_robot.route_segment_proof.v1"
@@ -1024,7 +1096,85 @@ def _assert_hierarchical_route_segment_contracts(
     assert validated["force_vector_valid"] is False
     assert validated["wrench_valid"] is False
     assert validated["raw_impulse_used_as_force"] is False
+    assert validated["phase_policy"] == "c2a_no_contact"
+    assert len(validated["block_tree"]) == validated["block_count"]
 
+    def _reseal_route_proof(value: dict[str, Any]) -> None:
+        pure_payload = {
+            key: item
+            for key, item in value.items()
+            if key
+            not in {
+                "collision_snapshot_sha256",
+                "record_sha256",
+                "pure_route_proof_sha256",
+            }
+        }
+        value["pure_route_proof_sha256"] = module.canonical_sha256(
+            pure_payload
+        )
+        value["record_sha256"] = module.canonical_sha256(
+            value, exclude_fields=("record_sha256",)
+        )
+
+    empty_coverage = json.loads(json.dumps(validated))
+    empty_pair = empty_coverage["pair_coverage"][0]
+    empty_pair["coverage"] = []
+    empty_pair["coverage_sha256"] = module.canonical_sha256(
+        {
+            "pair": [
+                empty_pair["subject_collider_prim_path"],
+                empty_pair["obstacle_collider_prim_path"],
+            ],
+            "coverage": [],
+        }
+    )
+    _reseal_route_proof(empty_coverage)
+    with pytest.raises(Exception):
+        validate_proof(
+            empty_coverage,
+            snapshot=full_snapshot,
+            request=request,
+            phase_policy="c2a_no_contact",
+        )
+
+    nonpositive_bound = json.loads(json.dumps(validated))
+    bound_item = nonpositive_bound["pair_coverage"][0]["coverage"][0]
+    bound_item["effective_lower_bound_m"] = 0.0
+    bound_item["coverage_record_sha256"] = module.canonical_sha256(
+        bound_item, exclude_fields=("coverage_record_sha256",)
+    )
+    first_pair = nonpositive_bound["pair_coverage"][0]
+    first_pair["coverage_sha256"] = module.canonical_sha256(
+        {
+            "pair": [
+                first_pair["subject_collider_prim_path"],
+                first_pair["obstacle_collider_prim_path"],
+            ],
+            "coverage": first_pair["coverage"],
+        }
+    )
+    _reseal_route_proof(nonpositive_bound)
+    with pytest.raises(Exception):
+        validate_proof(
+            nonpositive_bound,
+            snapshot=full_snapshot,
+            request=request,
+            phase_policy="c2a_no_contact",
+        )
+
+    wrong_phase = json.loads(json.dumps(validated))
+    wrong_phase["phase_policy"] = "c1_no_contact"
+    _reseal_route_proof(wrong_phase)
+    with pytest.raises(Exception):
+        validate_proof(
+            wrong_phase,
+            snapshot=full_snapshot,
+            request=request,
+            phase_policy="c2a_no_contact",
+        )
+
+    route_progress: list[dict[str, Any]] = []
     route_context = module.prepare_articulated_sweep_context(
         full_snapshot,
         work_limits=importlib.import_module(
@@ -1034,6 +1184,7 @@ def _assert_hierarchical_route_segment_contracts(
         scene_id="hierarchical-work-scene",
         trial_id="hierarchical-work-trial",
         lifecycle_record_sha256="a" * 64,
+        progress_callback=lambda record: route_progress.append(dict(record)),
     )
     certify_route(
         snapshot=route_context.snapshot,
@@ -1051,6 +1202,13 @@ def _assert_hierarchical_route_segment_contracts(
         "command_decimal"
     ]
     assert route_work["last_action_index"] == 0
+    assert "ROUTE_MATERIALIZED" in {
+        item["event"] for item in route_progress
+    }
+    assert "BLOCK_MILESTONE" in {item["event"] for item in route_progress}
+    assert "ROUTE_PROOF_RETAINED" in {
+        item["event"] for item in route_progress
+    }
 
     cached = certify_route(
         snapshot=full_snapshot,
@@ -1071,6 +1229,7 @@ def _assert_hierarchical_route_segment_contracts(
     fresh_equivalence = build_equivalence(
         snapshot=fresh_snapshot,
         request=request,
+        phase_policy="c2a_no_contact",
     )
     assert fresh_equivalence["geometry_equivalence_sha256"] == (
         equivalence["geometry_equivalence_sha256"]
@@ -1099,6 +1258,7 @@ def _assert_hierarchical_route_segment_contracts(
     assert build_equivalence(
         snapshot=geometry_mutation,
         request=request,
+        phase_policy="c2a_no_contact",
     )["geometry_equivalence_sha256"] != equivalence[
         "geometry_equivalence_sha256"
     ]
