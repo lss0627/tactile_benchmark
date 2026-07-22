@@ -5355,7 +5355,7 @@ def _joint_motion(joint: Mapping[str, Any], value: float) -> np.ndarray:
 class PreparedArticulatedSweepContext:
     """Scene-scoped exact reuse authority for continuous sweep evaluation."""
 
-    snapshot: dict[str, Any]
+    snapshot: Mapping[str, Any]
     ledger: SweepWorkLedger
     ancestor_chains: dict[str, tuple[dict[str, Any], ...]]
     _body_transform_cache: ExactDigestLRU
@@ -5408,6 +5408,60 @@ def _exact_float64_key(value: np.ndarray) -> tuple[str, tuple[int, ...], bytes]:
         _fail("G1_FULL_ROBOT_SWEEP_INVALID", "cache key contains a non-finite state")
     contiguous = np.ascontiguousarray(array)
     return (contiguous.dtype.str, tuple(contiguous.shape), contiguous.tobytes())
+
+
+class _FrozenDict(dict[str, Any]):
+    """JSON-serializable mapping that rejects every mutation operation."""
+
+    def _immutable(self, *_args: Any, **_kwargs: Any) -> None:
+        raise TypeError("prepared sweep snapshot is immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    clear = _immutable
+    pop = _immutable
+    popitem = _immutable
+    setdefault = _immutable
+    update = _immutable
+    __ior__ = _immutable
+
+    def __deepcopy__(self, _memo: dict[int, Any]) -> "_FrozenDict":
+        return self
+
+
+class _FrozenList(list[Any]):
+    """JSON-serializable sequence that rejects every mutation operation."""
+
+    def _immutable(self, *_args: Any, **_kwargs: Any) -> None:
+        raise TypeError("prepared sweep snapshot is immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    __iadd__ = _immutable
+    __imul__ = _immutable
+    append = _immutable
+    clear = _immutable
+    extend = _immutable
+    insert = _immutable
+    pop = _immutable
+    remove = _immutable
+    reverse = _immutable
+    sort = _immutable
+
+    def __deepcopy__(self, _memo: dict[int, Any]) -> "_FrozenList":
+        return self
+
+
+def _deep_freeze_json(value: Any) -> Any:
+    """Detach and recursively freeze validated scene authority for cache reuse."""
+
+    if isinstance(value, Mapping):
+        return _FrozenDict(
+            (str(key), _deep_freeze_json(item)) for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return _FrozenList(_deep_freeze_json(item) for item in value)
+    return value
 
 
 def prepare_articulated_sweep_context(
@@ -5466,8 +5520,9 @@ def prepare_articulated_sweep_context(
         body: tuple(dict(joint) for joint in _ancestor_joints(sealed, body))
         for body in sorted(bodies)
     }
+    frozen_snapshot = _deep_freeze_json(sealed)
     context = PreparedArticulatedSweepContext(
-        snapshot=sealed,
+        snapshot=frozen_snapshot,
         ledger=ledger,
         ancestor_chains=ancestor_chains,
         _body_transform_cache=caches["body_transforms"],
