@@ -3903,7 +3903,10 @@ def test_c2a_real_readiness_enforces_existing_send_penetration_joint_velocity_an
     assert getattr(caught.value, "code", "") == expected_code
 
 
-def test_c2a_runtime_failure_preserves_exact_code_message_writes_before_shutdown(tmp_path: Path) -> None:
+def test_c2a_runtime_failure_preserves_exact_code_message_writes_before_shutdown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     runner = _runner()
     factory = _GeometryDisagreementFactory(
         _option_a_canonical_evaluation(_option_d_module())
@@ -4010,6 +4013,41 @@ def test_c2a_runtime_failure_preserves_exact_code_message_writes_before_shutdown
     assert retained_progress["work_record_sha256"] == work_record[
         "record_sha256"
     ]
+
+    real_journal_type = sweep_work.C2ASweepProgressJournal
+
+    class TerminalWriteFailureJournal(real_journal_type):
+        def append(self, *, event: str, **payload: Any) -> dict[str, Any]:
+            if event in {"RUN_COMPLETED", "RUN_FAILED"}:
+                raise OSError("terminal progress write probe")
+            return super().append(event=event, **payload)
+
+    monkeypatch.setattr(
+        sweep_work,
+        "C2ASweepProgressJournal",
+        TerminalWriteFailureJournal,
+    )
+    terminal_failure_factory = _GeometryDisagreementFactory(
+        _option_a_canonical_evaluation(_option_d_module())
+    )
+    terminal_failure_output = tmp_path / "terminal-progress-failure"
+    terminal_failure = _orchestrate(
+        runner,
+        terminal_failure_output,
+        terminal_failure_factory,
+        evidence_writer=write,
+    )
+    assert terminal_failure["exit_code"] == 1
+    assert terminal_failure["systemic_failure_code"] == (
+        "G1_C2A_EVIDENCE_WRITE_FAILED"
+    )
+    assert terminal_failure_factory.close_codes == [1]
+    assert terminal_failure_factory.events[-1] == "factory-close:1"
+    assert terminal_failure_output.with_name(
+        terminal_failure_output.name + ".sweep-progress.jsonl"
+    ).is_file()
+    assert not (terminal_failure_output / "checksums.sha256").exists()
+    assert not (terminal_failure_output / "manifest.json").exists()
 
     backend_module = _backend_provenance_module()
     evaluation = backend_module.evaluate_backend_shape_provenance(
