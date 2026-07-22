@@ -3416,6 +3416,38 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
     assert all(scene["broadphase_type"] == "MBP" for scene in scenes)
     assert all(scene["gpu_dynamics_enabled"] is False for scene in scenes)
     option_d = _option_d_module()
+    progress_path = tmp_path / "c2a" / "sweep_work_progress.jsonl"
+    assert progress_path.is_file(), "C2a evidence omitted sweep work progress"
+    progress_records = [
+        json.loads(line)
+        for line in progress_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert progress_records
+    assert progress_records[0]["event"] == "RUN_STARTED"
+    assert progress_records[-1]["event"] == "RUN_COMPLETED"
+    assert [record["sequence"] for record in progress_records] == list(
+        range(len(progress_records))
+    )
+    previous = None
+    for record in progress_records:
+        assert record["schema_version"] == "g1.full_robot.sweep_progress.v1"
+        assert record["previous_record_sha256"] == previous
+        assert record["record_sha256"] == option_d.canonical_sha256(
+            record, exclude_fields=("record_sha256",)
+        )
+        previous = record["record_sha256"]
+    progress_manifest = json.loads(
+        (tmp_path / "c2a" / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert progress_manifest["sweep_work_progress_count"] == len(
+        progress_records
+    )
+    assert progress_manifest["sweep_work_progress_terminal_status"] == (
+        "RUN_COMPLETED"
+    )
+    assert "sweep_work_progress.jsonl" in (
+        tmp_path / "c2a" / "checksums.sha256"
+    ).read_text(encoding="utf-8")
     _assert_option_d_inventory_contracts(option_d)
     _assert_option_a_disagreement_contracts(option_d)
     backend_provenance = _backend_provenance_module()
@@ -3639,8 +3671,32 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
         "validate_offset_authority_for_snapshot",
         lambda **_kwargs: offsets,
     )
+    work_record = {
+        "schema_version": "g1.full_robot.sweep_work.v1",
+        "run_id": "scene-v3",
+        "scene_id": "scene-v3",
+        "trial_id": "scene-v3",
+        "lifecycle_record_sha256": "b" * 64,
+        "collision_snapshot_sha256": "c" * 64,
+        "status": "BLOCKED",
+        "failure_code": "EXPECTED_RETAINED_FAILURE",
+        "failure_message": "retained fixture failure",
+        "limits": {"sweep_requests": 7681},
+        "counters": {"sweep_requests": 1},
+        "cache": {},
+        "last_class_id": None,
+        "last_command_decimal": None,
+        "last_action_index": None,
+        "selected_command_cap_m": None,
+        "actuation_performed": False,
+        "post_abort_actuation_count": 0,
+        "force_vector_valid": False,
+        "wrench_valid": False,
+        "raw_impulse_used_as_force": False,
+    }
+    work_record["record_sha256"] = option_d.canonical_sha256(work_record)
     diagnostics = {
-        "schema_version": "g1.c2a.option_d.route_diagnostics.v1",
+        "schema_version": "g1.c2a.option_d.route_diagnostics.v2",
         "selected_pose_id": "pose-v3",
         "scene_id": "scene-v3",
         "trial_id": "scene-v3",
@@ -3652,13 +3708,16 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
             "0.00045",
         ],
         "controller_targets_sent": 0,
+        "sweep_work_record": work_record,
     }
     diagnostics["route_diagnostic_sha256"] = option_d.canonical_sha256(
         diagnostics
     )
-    validated_scene = static_pose.validate_c2a_v4_scene_record(
+    validate_v5 = getattr(static_pose, "validate_c2a_v5_scene_record", None)
+    assert callable(validate_v5)
+    validated_scene = validate_v5(
         {
-            "schema_version": "g1.c2a.static.v4",
+            "schema_version": "g1.c2a.static.v5",
             "candidate_id": "pose-v3",
             "scene_id": "scene-v3",
             "fresh_scene_token": "fresh-v3",
@@ -3689,8 +3748,9 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
         "analytic_primitive_representation_records"
     ] == []
     runner_source = RUNNER_PATH.read_text(encoding="utf-8")
-    assert '"g1.c2a.static.v4"' in runner_source
+    assert '"g1.c2a.static.v5"' in runner_source
     assert "analytic_primitive_representation_records.jsonl" in runner_source
+    assert "sweep_work_progress.jsonl" in runner_source
 
 
 def test_c2a_real_runtime_executes_only_64_immutable_zero_actions_with_three_substeps(tmp_path: Path) -> None:
@@ -3859,6 +3919,24 @@ def test_c2a_runtime_failure_preserves_exact_code_message_writes_before_shutdown
     assert outcome["selected_pose_sha256"] is None
     assert outcome["report"]["selected_command_cap_m"] is None
     assert outcome["report"]["claim_eligible"] is False
+    progress_path = output / "sweep_work_progress.jsonl"
+    assert progress_path.is_file(), "C2a failure omitted sweep work progress"
+    progress_records = [
+        json.loads(line)
+        for line in progress_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert progress_records[0]["event"] == "RUN_STARTED"
+    assert progress_records[-1]["event"] == "RUN_FAILED"
+    assert progress_records[-1]["work_record_sha256"] is None
+    assert all(record["selected_command_cap_m"] is None for record in progress_records)
+    assert all(record["actuation_performed"] is False for record in progress_records)
+    assert all(record["post_abort_actuation_count"] == 0 for record in progress_records)
+    assert all(record["force_vector_valid"] is False for record in progress_records)
+    assert all(record["wrench_valid"] is False for record in progress_records)
+    assert all(
+        record["raw_impulse_used_as_force"] is False
+        for record in progress_records
+    )
     disagreement_path = output / "geometry_disagreements.jsonl"
     retained = [
         json.loads(line)
@@ -3889,6 +3967,7 @@ def test_c2a_runtime_failure_preserves_exact_code_message_writes_before_shutdown
         .splitlines()
     }
     assert disagreement_path.name in checksum_names
+    assert progress_path.name in checksum_names
     assert factory.events.index("write-evidence") < factory.events.index("factory-close:1")
     assert factory.close_codes == [1]
 

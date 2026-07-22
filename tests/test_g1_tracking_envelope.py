@@ -331,10 +331,18 @@ def _option_d_action(
 
 def _assert_option_d_sweep_contracts(module: Any) -> None:
     certify = getattr(module, "certify_articulated_sweep", None)
+    certify_reference = getattr(
+        module, "certify_articulated_sweep_reference", None
+    )
+    prepare_context = getattr(
+        module, "prepare_articulated_sweep_context", None
+    )
     validate_receipt = getattr(module, "validate_swept_clearance_receipt", None)
     validate_route = getattr(module, "validate_command_bound_swept_route", None)
     guard = getattr(module, "guard_pre_send_sweep", None)
     assert callable(certify)
+    assert callable(certify_reference)
+    assert callable(prepare_context)
     assert callable(validate_receipt)
     assert callable(validate_route)
     assert callable(guard)
@@ -426,6 +434,145 @@ def _assert_option_d_sweep_contracts(module: Any) -> None:
         action=claim_action,
         phase_policy="c1_no_contact",
     )
+
+    sweep_work = importlib.import_module(
+        "isaac_tactile_libero.runtime.g1_sweep_work"
+    )
+    limits_type = getattr(sweep_work, "SweepWorkLimits", None)
+    assert isinstance(limits_type, type)
+    progress: list[dict[str, Any]] = []
+    context = prepare_context(
+        claim_snapshot,
+        work_limits=limits_type(),
+        progress_callback=lambda record: progress.append(dict(record)),
+        run_id="equivalence-run",
+        scene_id="equivalence-scene",
+        trial_id="equivalence-trial",
+        lifecycle_record_sha256="a" * 64,
+    )
+    optimized = certify(
+        snapshot=context.snapshot,
+        action=claim_action,
+        phase_policy="c1_no_contact",
+        prepared_context=context,
+    )
+    reference = certify_reference(
+        snapshot=claim_snapshot,
+        action=claim_action,
+        phase_policy="c1_no_contact",
+    )
+    assert module.canonical_json_bytes(optimized) == module.canonical_json_bytes(
+        reference
+    )
+    assert progress
+    first_work = context.work_record(status="RUNNING")
+    assert first_work["schema_version"] == "g1.full_robot.sweep_work.v1"
+    assert first_work["counters"]["sweep_requests"] == 1
+    assert first_work["selected_command_cap_m"] is None
+    assert first_work["actuation_performed"] is False
+    assert first_work["post_abort_actuation_count"] == 0
+    assert first_work["force_vector_valid"] is False
+    assert first_work["wrench_valid"] is False
+    assert first_work["raw_impulse_used_as_force"] is False
+    assert first_work["record_sha256"] == module.canonical_sha256(
+        first_work, exclude_fields=("record_sha256",)
+    )
+
+    cached = certify(
+        snapshot=context.snapshot,
+        action=claim_action,
+        phase_policy="c1_no_contact",
+        prepared_context=context,
+    )
+    assert module.canonical_json_bytes(cached) == module.canonical_json_bytes(
+        reference
+    )
+    second_work = context.work_record(status="RUNNING")
+    assert second_work["counters"]["sweep_requests"] == 2
+    assert second_work["counters"]["unique_sweep_evaluations"] == 1
+    assert second_work["cache"]["sweep_receipts"]["hits"] == 1
+
+    boundary_action = json.loads(json.dumps(claim_action))
+    boundary_action["governed_target"][0] = float(
+        np.nextafter(boundary_action["governed_target"][0], math.inf)
+    )
+    boundary_context = prepare_context(
+        claim_snapshot,
+        work_limits=limits_type(),
+        run_id="boundary-run",
+        scene_id="boundary-scene",
+        trial_id="boundary-trial",
+        lifecycle_record_sha256="a" * 64,
+    )
+    boundary_optimized = certify(
+        snapshot=boundary_context.snapshot,
+        action=boundary_action,
+        phase_policy="c1_no_contact",
+        prepared_context=boundary_context,
+    )
+    boundary_reference = certify_reference(
+        snapshot=claim_snapshot,
+        action=boundary_action,
+        phase_policy="c1_no_contact",
+    )
+    assert module.canonical_json_bytes(
+        boundary_optimized
+    ) == module.canonical_json_bytes(boundary_reference)
+    assert boundary_context.work_record(status="RUNNING")["cache"][
+        "sweep_receipts"
+    ]["misses"] == 1
+
+    mismatched_snapshot = json.loads(json.dumps(context.snapshot))
+    with pytest.raises(Exception) as scope_failure:
+        certify(
+            snapshot=mismatched_snapshot,
+            action=claim_action,
+            phase_policy="c1_no_contact",
+            prepared_context=context,
+        )
+    assert getattr(scope_failure.value, "code", "") == (
+        "G1_FULL_ROBOT_SWEEP_CACHE_INCONSISTENT"
+    )
+
+    cache_entries = context._sweep_receipt_cache._entries
+    cache_key = next(iter(cache_entries))
+    cache_entries[cache_key].digest = "0" * 64
+    with pytest.raises(Exception) as corrupt_cache:
+        certify(
+            snapshot=context.snapshot,
+            action=claim_action,
+            phase_policy="c1_no_contact",
+            prepared_context=context,
+        )
+    assert getattr(corrupt_cache.value, "code", "") == (
+        "G1_FULL_ROBOT_SWEEP_CACHE_INCONSISTENT"
+    )
+
+    exhausted_context = prepare_context(
+        claim_snapshot,
+        work_limits=limits_type(sweep_requests=0),
+        run_id="budget-run",
+        scene_id="budget-scene",
+        trial_id="budget-trial",
+        lifecycle_record_sha256="a" * 64,
+    )
+    with pytest.raises(Exception) as exhausted:
+        certify(
+            snapshot=exhausted_context.snapshot,
+            action=claim_action,
+            phase_policy="c1_no_contact",
+            prepared_context=exhausted_context,
+        )
+    assert getattr(exhausted.value, "code", "") == (
+        "G1_FULL_ROBOT_SWEEP_WORK_BUDGET_EXCEEDED"
+    )
+    exhausted_receipt = getattr(exhausted.value, "receipt", None)
+    assert exhausted_receipt["schema_version"] == (
+        "g1.full_robot.sweep_work.v1"
+    )
+    assert exhausted_receipt["status"] == "BLOCKED"
+    assert exhausted_receipt["selected_command_cap_m"] is None
+    assert exhausted_receipt["actuation_performed"] is False
     tampered = json.loads(json.dumps(claim_receipt))
     for pair in tampered["pair_receipts"]:
         pair["minimum_effective_contact_separation_m"] += 0.1
