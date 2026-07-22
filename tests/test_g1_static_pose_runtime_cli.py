@@ -4014,6 +4014,50 @@ def test_c2a_runtime_failure_preserves_exact_code_message_writes_before_shutdown
         "record_sha256"
     ]
 
+    interval_progress: list[dict[str, Any]] = []
+    interval_ledger = sweep_work.SweepWorkLedger(
+        limits=sweep_work.SweepWorkLimits(),
+        run_id="interval-progress-probe",
+        scene_id="interval-scene",
+        trial_id="interval-trial",
+        lifecycle_record_sha256="d" * 64,
+        collision_snapshot_sha256="e" * 64,
+        progress_callback=lambda record: interval_progress.append(dict(record)),
+    )
+    interval_ledger.set_action_identity(
+        class_id="C1_LOCAL_APPROACH_AXIS_RT_V1",
+        command_decimal="0.00025",
+        action_index=17,
+    )
+    interval_ledger.consume(
+        "interval_evaluations",
+        4_095,
+        pair_key=("subject", "obstacle"),
+    )
+    assert interval_progress == []
+    interval_ledger.consume(
+        "interval_evaluations",
+        1,
+        pair_key=("subject", "obstacle"),
+    )
+    assert len(interval_progress) == 1
+    assert interval_progress[0]["event"] == "ACTION_MILESTONE"
+    assert interval_progress[0]["action_index"] == 17
+    assert interval_progress[0]["work_record"]["counters"][
+        "interval_evaluations"
+    ] == 4_096
+    assert interval_progress[0]["work_record"]["counters"][
+        "progress_records"
+    ] == 1
+
+    changed_limits_record = json.loads(json.dumps(work_record))
+    changed_limits_record["limits"]["interval_evaluations"] += 1
+    changed_limits_record["record_sha256"] = option_d.canonical_sha256(
+        changed_limits_record, exclude_fields=("record_sha256",)
+    )
+    with pytest.raises(Exception):
+        sweep_work.validate_sweep_work_record(changed_limits_record)
+
     real_journal_type = sweep_work.C2ASweepProgressJournal
 
     class TerminalWriteFailureJournal(real_journal_type):
