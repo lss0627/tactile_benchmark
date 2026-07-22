@@ -4052,7 +4052,7 @@ def test_c2a_runtime_failure_preserves_exact_code_message_writes_before_shutdown
 
     changed_limits_record = json.loads(json.dumps(work_record))
     changed_limits_record["limits"]["interval_evaluations"] += 1
-    changed_limits_record["record_sha256"] = option_d.canonical_sha256(
+    changed_limits_record["record_sha256"] = sweep_work.canonical_sha256(
         changed_limits_record, exclude_fields=("record_sha256",)
     )
     with pytest.raises(Exception):

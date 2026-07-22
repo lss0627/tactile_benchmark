@@ -299,6 +299,24 @@ class SweepWorkLedger:
                     pair_observed,
                     self.limits.interval_evaluations_per_pair,
                 )
+        if (
+            counter == "interval_evaluations"
+            and observed > 0
+            and observed % 4_096 == 0
+            and self._progress_callback is not None
+        ):
+            self.consume("progress_records")
+            self._progress_callback(
+                {
+                    "event": "ACTION_MILESTONE",
+                    "scene_id": self.scene_id,
+                    "trial_id": self.trial_id,
+                    "class_id": self.last_class_id,
+                    "command_decimal": self.last_command_decimal,
+                    "action_index": self.last_action_index,
+                    "work_record": self.work_record(status="RUNNING"),
+                }
+            )
 
     def work_record(
         self,
@@ -505,6 +523,7 @@ def validate_sweep_work_record(record: Any) -> dict[str, Any]:
         and result.get("status") in {"RUNNING", "COMPLETE", "BLOCKED", "INTERRUPTED"}
         and isinstance(result.get("limits"), Mapping)
         and set(result["limits"]) == limit_fields
+        and result["limits"] == asdict(SweepWorkLimits())
         and all(
             isinstance(value, int) and not isinstance(value, bool) and value >= 0
             for value in result["limits"].values()
