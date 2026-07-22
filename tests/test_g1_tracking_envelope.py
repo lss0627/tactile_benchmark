@@ -720,13 +720,33 @@ def _hierarchical_route_request(
     return request
 
 
-def _hierarchical_full_inventory_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+def _hierarchical_full_inventory_snapshot(
+    module: Any,
+    snapshot: dict[str, Any],
+) -> dict[str, Any]:
     expanded = json.loads(json.dumps(snapshot))
     expanded["obstacle_inventory"][0]["local_transform"] = _identity_matrix(
         x=100.0, y=100.0, z=100.0
     )
     expanded["obstacle_inventory"][0]["world_transform"] = _identity_matrix(
         x=100.0, y=100.0, z=100.0
+    )
+    expanded["obstacle_inventory"][0][
+        "stage_world_transform_diagnostic"
+    ] = expanded["obstacle_inventory"][0]["world_transform"]
+    expanded["obstacle_inventory"][0].update(
+        module.stage_world_transform_readback_contract(
+            canonical_world_transform=expanded["obstacle_inventory"][0][
+                "world_transform"
+            ],
+            stage_world_transform=expanded["obstacle_inventory"][0][
+                "world_transform"
+            ],
+            joint_graph=expanded["joint_graph"],
+            body_prim_path=expanded["obstacle_inventory"][0][
+                "body_prim_path"
+            ],
+        )
     )
     for index in range(13):
         body = f"/World/FR3/fr3_aux_{index:02d}"
@@ -747,10 +767,17 @@ def _hierarchical_full_inventory_snapshot(snapshot: dict[str, Any]) -> dict[str,
         record["mesh_sweep_local_aabb_min"] = None
         record["mesh_sweep_local_aabb_max"] = None
         record["local_pose_sweep_inflation_m"] = 0.0
-        record["stage_world_transform_diagnostic"] = record["world_transform"]
-        record["stage_world_transform_readback_valid"] = True
-        record["stage_world_transform_translation_residual_m"] = 0.0
-        record["stage_world_transform_rotation_residual"] = 0.0
+        record["stage_world_transform_diagnostic"] = record[
+            "world_transform"
+        ]
+        record.update(
+            module.stage_world_transform_readback_contract(
+                canonical_world_transform=record["world_transform"],
+                stage_world_transform=record["world_transform"],
+                joint_graph=expanded["joint_graph"],
+                body_prim_path=body,
+            )
+        )
         record["world_transform_authority"] = (
             "normalized_usd_joint_graph_with_stage_readback"
         )
@@ -877,8 +904,11 @@ def _assert_hierarchical_route_segment_contracts(
         obstacle_contact_offset_m=0.2,
     )
     assert offset["geometry_lower_bound_m"] == 0.5
-    assert offset["solid_lower_bound_m"] == 0.3
-    assert offset["effective_lower_bound_m"] == (0.3 - 0.2 - 0.2)
+    expected_solid = 0.5 - 0.1 - 0.1
+    assert offset["solid_lower_bound_m"] == expected_solid
+    assert offset["effective_lower_bound_m"] == (
+        expected_solid - 0.2 - 0.2
+    )
     assert offset["strict_safe"] is False
     for malformed in (math.nan, math.inf, -1.0):
         with pytest.raises(Exception):
@@ -923,7 +953,7 @@ def _assert_hierarchical_route_segment_contracts(
             obstacle_contact_offset_m=0.0,
         )
 
-    full_snapshot = _hierarchical_full_inventory_snapshot(snapshot)
+    full_snapshot = _hierarchical_full_inventory_snapshot(module, snapshot)
     equivalence = build_equivalence(
         snapshot=full_snapshot,
         request=request,
@@ -988,9 +1018,33 @@ def _assert_hierarchical_route_segment_contracts(
         module,
         first_target=math.pi,
     )
+    unsafe_snapshot = json.loads(json.dumps(snapshot))
+    unsafe_snapshot["obstacle_inventory"][0]["local_transform"] = (
+        _identity_matrix(x=0.0, y=1.0, z=0.0)
+    )
+    unsafe_snapshot["obstacle_inventory"][0]["world_transform"] = (
+        _identity_matrix(x=0.0, y=1.0, z=0.0)
+    )
+    unsafe_snapshot["obstacle_inventory"][0][
+        "stage_world_transform_diagnostic"
+    ] = unsafe_snapshot["obstacle_inventory"][0]["world_transform"]
+    unsafe_snapshot["obstacle_inventory"][0].update(
+        module.stage_world_transform_readback_contract(
+            canonical_world_transform=unsafe_snapshot["obstacle_inventory"][0][
+                "world_transform"
+            ],
+            stage_world_transform=unsafe_snapshot["obstacle_inventory"][0][
+                "world_transform"
+            ],
+            joint_graph=unsafe_snapshot["joint_graph"],
+            body_prim_path=unsafe_snapshot["obstacle_inventory"][0][
+                "body_prim_path"
+            ],
+        )
+    )
     with pytest.raises(Exception) as middle_unsafe:
         certify_route(
-            snapshot=snapshot,
+            snapshot=unsafe_snapshot,
             request=unsafe_request,
             phase_policy="c2a_no_contact",
         )
