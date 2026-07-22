@@ -4083,6 +4083,26 @@ def test_c2a_runtime_failure_preserves_exact_code_message_writes_before_shutdown
     with pytest.raises(Exception):
         sweep_work.validate_sweep_work_record(changed_limits_record)
 
+    for status, failure_code, failure_message, counter_overage in (
+        ("COMPLETE", "UNEXPECTED", "unexpected", False),
+        ("RUNNING", "UNEXPECTED", "unexpected", False),
+        ("BLOCKED", None, None, False),
+        ("COMPLETE", None, None, True),
+    ):
+        invalid_status = json.loads(json.dumps(work_record))
+        invalid_status["status"] = status
+        invalid_status["failure_code"] = failure_code
+        invalid_status["failure_message"] = failure_message
+        if counter_overage:
+            invalid_status["counters"]["gjk_calls"] = (
+                invalid_status["limits"]["gjk_calls"] + 1
+            )
+        invalid_status["record_sha256"] = sweep_work.canonical_sha256(
+            invalid_status, exclude_fields=("record_sha256",)
+        )
+        with pytest.raises(Exception):
+            sweep_work.validate_sweep_work_record(invalid_status)
+
     real_journal_type = sweep_work.C2ASweepProgressJournal
 
     class TerminalWriteFailureJournal(real_journal_type):

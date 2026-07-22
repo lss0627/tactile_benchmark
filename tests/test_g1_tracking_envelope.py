@@ -1233,6 +1233,26 @@ def _assert_hierarchical_route_segment_contracts(
     assert fresh_equivalence["geometry_equivalence_sha256"] == (
         equivalence["geometry_equivalence_sha256"]
     )
+    route_proof_module = importlib.import_module(
+        "isaac_tactile_libero.runtime.g1_route_segment_clearance"
+    )
+    lifecycle_derived_snapshot = json.loads(json.dumps(full_snapshot))
+    lifecycle_derived_snapshot["sorted_inventory_sha256"] = "8" * 64
+    for index, collider in enumerate(
+        lifecycle_derived_snapshot["subject_inventory"]
+        + lifecycle_derived_snapshot["obstacle_inventory"]
+    ):
+        collider["offset_authority_sha256"] = f"{index + 5000:064x}"
+        collider["property_query_geometry_agreement_sha256"] = (
+            f"{index + 6000:064x}"
+        )
+    assert route_proof_module.build_geometry_equivalence_record(
+        snapshot=lifecycle_derived_snapshot,
+        request=request,
+        phase_policy="c2a_no_contact",
+    )["geometry_equivalence_sha256"] == equivalence[
+        "geometry_equivalence_sha256"
+    ]
     fresh_proof = certify_route(
         snapshot=fresh_snapshot,
         request=request,
@@ -1313,6 +1333,31 @@ def _assert_hierarchical_route_segment_contracts(
         "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
     }
     assert getattr(middle_unsafe.value, "receipt", None)
+
+    unsafe_sealed = module.validate_collision_snapshot(
+        unsafe_snapshot,
+        require_kinematics=True,
+    )
+    unsafe_equivalence = build_equivalence(
+        snapshot=unsafe_sealed,
+        request=request,
+        phase_policy="c2a_no_contact",
+    )
+    rebound_safe_proof = json.loads(json.dumps(validated))
+    rebound_safe_proof["collision_snapshot_sha256"] = unsafe_sealed[
+        "snapshot_sha256"
+    ]
+    rebound_safe_proof["geometry_equivalence_sha256"] = unsafe_equivalence[
+        "geometry_equivalence_sha256"
+    ]
+    _reseal_route_proof(rebound_safe_proof)
+    with pytest.raises(Exception):
+        validate_proof(
+            rebound_safe_proof,
+            snapshot=unsafe_sealed,
+            request=request,
+            phase_policy="c2a_no_contact",
+        )
 
     plans: list[dict[str, Any]] = []
     for class_id in TRAJECTORY_CLASS_IDS:
