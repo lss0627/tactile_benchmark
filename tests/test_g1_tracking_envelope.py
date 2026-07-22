@@ -529,6 +529,40 @@ def _assert_option_d_sweep_contracts(module: Any) -> None:
         "sweep_receipts"
     ]["misses"] == 1
 
+    reference_context = prepare_context(
+        claim_snapshot,
+        work_limits=limits_type(),
+        run_id="reference-100-run",
+        scene_id="reference-100-scene",
+        trial_id="reference-100-trial",
+        lifecycle_record_sha256="a" * 64,
+    )
+    for action_index in range(100):
+        start = float(action_index) * 0.000001
+        target = float(action_index + 1) * 0.000001
+        action = _option_d_action(
+            start=start,
+            target=target,
+            action_index=action_index,
+        )
+        optimized_action = certify(
+            snapshot=reference_context.snapshot,
+            action=action,
+            phase_policy="c1_no_contact",
+            prepared_context=reference_context,
+        )
+        reference_action = certify_reference(
+            snapshot=claim_snapshot,
+            action=action,
+            phase_policy="c1_no_contact",
+        )
+        assert module.canonical_json_bytes(
+            optimized_action
+        ) == module.canonical_json_bytes(reference_action)
+    reference_work = reference_context.work_record(status="COMPLETE")
+    assert reference_work["counters"]["sweep_requests"] == 100
+    assert reference_work["counters"]["unique_sweep_evaluations"] == 100
+
     mismatched_snapshot = json.loads(json.dumps(context.snapshot))
     with pytest.raises(Exception) as scope_failure:
         certify(
