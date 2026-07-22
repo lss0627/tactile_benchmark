@@ -7616,6 +7616,7 @@ def build_geometry_equivalence_record(
     *,
     snapshot: Mapping[str, Any],
     request: Mapping[str, Any],
+    phase_policy: str,
 ) -> dict[str, Any]:
     """Build the lifecycle-independent route/geometry reuse authority."""
 
@@ -7623,6 +7624,7 @@ def build_geometry_equivalence_record(
     return _build_geometry_equivalence_record(
         snapshot=sealed,
         request=request,
+        phase_policy=phase_policy,
     )
 
 
@@ -7708,6 +7710,7 @@ def certify_route_segment_clearance(
     equivalence = _build_geometry_equivalence_record(
         snapshot=sealed,
         request=request,
+        phase_policy=phase_policy,
     )
     cache_key = (
         ROUTE_SEGMENT_PROOF_SCHEMA_VERSION,
@@ -7722,6 +7725,12 @@ def certify_route_segment_clearance(
             action_index=0,
         )
         prepared_context.ledger.consume("sweep_requests", 256)
+        prepared_context.emit_progress(
+            event="ROUTE_MATERIALIZED",
+            class_id=str(request["class_id"]),
+            command_decimal=str(request["command_decimal"]),
+            action_index=255,
+        )
     if proof_cache is not None:
         cached = proof_cache.get(cache_key)
         if cached is not None:
@@ -7730,11 +7739,21 @@ def certify_route_segment_clearance(
                 "collision_snapshot_sha256": sealed["snapshot_sha256"],
             }
             proof["record_sha256"] = canonical_sha256(proof)
-            return validate_route_segment_proof(
+            validated_cached = validate_route_segment_proof(
                 proof,
                 snapshot=sealed,
                 request=request,
+                phase_policy=phase_policy,
             )
+            if prepared_context is not None:
+                prepared_context.emit_progress(
+                    event="ROUTE_PROOF_RETAINED",
+                    class_id=str(request["class_id"]),
+                    command_decimal=str(request["command_decimal"]),
+                    action_index=255,
+                    status="COMPLETE",
+                )
+            return validated_cached
     if prepared_context is not None:
         prepared_context.ledger.consume("unique_sweep_evaluations", 256)
 
@@ -7768,6 +7787,13 @@ def certify_route_segment_clearance(
                 "interval_evaluations",
                 pair_key=(pair_key[0], pair_key[1], "route_block"),
             )
+            if action_begin == 0 and action_end == 256:
+                prepared_context.emit_progress(
+                    event="BLOCK_MILESTONE",
+                    class_id=str(request["class_id"]),
+                    command_decimal=str(request["command_decimal"]),
+                    action_index=0,
+                )
         subject, obstacle = pair_records[pair_key]
         block_segments = micro_segments[2 * action_begin : 2 * action_end]
         if len(block_segments) != 2 * (action_end - action_begin):
@@ -7856,6 +7882,13 @@ def certify_route_segment_clearance(
             else 0
         )
         if new_receipt:
+            if prepared_context is not None:
+                prepared_context.emit_progress(
+                    event="LEAF_GJK_FALLBACK",
+                    class_id=str(request["class_id"]),
+                    command_decimal=str(request["command_decimal"]),
+                    action_index=action_index,
+                )
             action = request["actions"][action_index]
             exact_action_receipts[action_index] = certify_articulated_sweep(
                 snapshot=(
@@ -7949,6 +7982,7 @@ def certify_route_segment_clearance(
             "shared_kernel_provenance_sha256"
         ],
         "route_request_sha256": request["request_sha256"],
+        "phase_policy": phase_policy,
         "micro_segment_sequence_sha256": canonical_sha256(
             {"record_sha256s": [item["record_sha256"] for item in micro_segments]}
         ),
@@ -7963,6 +7997,7 @@ def certify_route_segment_clearance(
         "subject_obstacle_pair_count": len(pair_keys),
         "all_pair_coverage_count": len(hierarchy["pair_coverage"]),
         "pair_coverage": hierarchy["pair_coverage"],
+        "block_tree": hierarchy["block_tree"],
         "block_count": hierarchy["block_count"],
         "block_tree_sha256": hierarchy["block_tree_sha256"],
         "broadphase_sphere_certificate_count": hierarchy[
@@ -8013,7 +8048,16 @@ def certify_route_segment_clearance(
         proof,
         snapshot=sealed,
         request=request,
+        phase_policy=phase_policy,
     )
+    if prepared_context is not None:
+        prepared_context.emit_progress(
+            event="ROUTE_PROOF_RETAINED",
+            class_id=str(request["class_id"]),
+            command_decimal=str(request["command_decimal"]),
+            action_index=255,
+            status="COMPLETE",
+        )
     return deepcopy(validated)
 
 
@@ -8022,6 +8066,7 @@ def validate_route_segment_proof(
     *,
     snapshot: Mapping[str, Any],
     request: Mapping[str, Any],
+    phase_policy: str,
 ) -> dict[str, Any]:
     """Validate route proof identity and complete pair coverage."""
 
@@ -8029,6 +8074,7 @@ def validate_route_segment_proof(
     equivalence = _build_geometry_equivalence_record(
         snapshot=sealed,
         request=request,
+        phase_policy=phase_policy,
     )
     return validate_route_segment_proof_structure(
         proof,
@@ -8045,6 +8091,7 @@ def validate_route_segment_proof(
             str(item["collider_prim_path"])
             for item in sealed["obstacle_inventory"]
         ],
+        expected_phase_policy=phase_policy,
     )
 
 

@@ -2567,6 +2567,7 @@ def certify_option_d_preliminary_route_diagnostics(
                         build_geometry_equivalence_record(
                             snapshot=prepared_sweep_context.snapshot,
                             request=route_proof_request,
+                            phase_policy="c2a_no_contact",
                         )
                     )
                     route_segment_proof = certify_route_segment_clearance(

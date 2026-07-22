@@ -780,10 +780,12 @@ def validate_c2a_v6_scene_record(record: Mapping[str, Any]) -> dict[str, Any]:
                 proof,
                 snapshot=snapshot,
                 request=request,
+                phase_policy="c2a_no_contact",
             )
             expected_equivalence = build_geometry_equivalence_record(
                 snapshot=snapshot,
                 request=request,
+                phase_policy="c2a_no_contact",
             )
             if not isinstance(equivalence, Mapping) or dict(
                 equivalence

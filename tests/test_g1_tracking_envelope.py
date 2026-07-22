@@ -1202,13 +1202,12 @@ def _assert_hierarchical_route_segment_contracts(
         "command_decimal"
     ]
     assert route_work["last_action_index"] == 0
-    assert "ROUTE_MATERIALIZED" in {
-        item["event"] for item in route_progress
+    route_progress_events = {
+        item.get("event") for item in route_progress if "event" in item
     }
-    assert "BLOCK_MILESTONE" in {item["event"] for item in route_progress}
-    assert "ROUTE_PROOF_RETAINED" in {
-        item["event"] for item in route_progress
-    }
+    assert "ROUTE_MATERIALIZED" in route_progress_events
+    assert "BLOCK_MILESTONE" in route_progress_events
+    assert "ROUTE_PROOF_RETAINED" in route_progress_events
 
     cached = certify_route(
         snapshot=full_snapshot,
@@ -1279,7 +1278,7 @@ def _assert_hierarchical_route_segment_contracts(
         module,
         first_target=math.pi,
     )
-    unsafe_snapshot = json.loads(json.dumps(snapshot))
+    unsafe_snapshot = json.loads(json.dumps(full_snapshot))
     unsafe_snapshot["obstacle_inventory"][0]["local_transform"] = (
         _identity_matrix(x=0.0, y=1.0, z=0.0)
     )

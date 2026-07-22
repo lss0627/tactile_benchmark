@@ -21,6 +21,9 @@ GEOMETRY_EQUIVALENCE_SCHEMA_VERSION = "g1.full_robot.geometry_equivalence.v1"
 ROUTE_SEGMENT_PROOF_SCHEMA_VERSION = "g1.full_robot.route_segment_proof.v1"
 ROUTE_DIAGNOSTICS_SCHEMA_VERSION = "g1.pose_conditioned.route_diagnostics.v3"
 ROUTE_PROOF_POLICY_VERSION = "HIERARCHICAL_ROUTE_SEGMENT_PROOF_V1"
+REQUIRED_SUBJECT_COLLIDER_COUNT = 17
+REQUIRED_OBSTACLE_COLLIDER_COUNT = 2
+NO_CONTACT_PHASE_POLICIES = frozenset({"c1_no_contact", "c2a_no_contact"})
 
 
 class G1RouteSegmentClearanceError(RuntimeError):
@@ -509,6 +512,7 @@ def build_geometry_equivalence_record(
     *,
     snapshot: Mapping[str, Any],
     request: Mapping[str, Any],
+    phase_policy: str,
 ) -> dict[str, Any]:
     """Bind all geometry/route fields while excluding scene-local lifecycle."""
 
@@ -520,12 +524,17 @@ def build_geometry_equivalence_record(
         or isinstance(subjects, (str, bytes))
         or not isinstance(obstacles, Sequence)
         or isinstance(obstacles, (str, bytes))
-        or not subjects
-        or not obstacles
+        or len(subjects) != REQUIRED_SUBJECT_COLLIDER_COUNT
+        or len(obstacles) != REQUIRED_OBSTACLE_COLLIDER_COUNT
     ):
         _fail(
             "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
             "geometry equivalence requires complete collider inventories",
+        )
+    if phase_policy not in NO_CONTACT_PHASE_POLICIES:
+        _fail(
+            "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+            "geometry equivalence requires an explicit no-contact phase",
         )
     subject_paths = [str(item.get("collider_prim_path", "")) for item in subjects]
     obstacle_paths = [str(item.get("collider_prim_path", "")) for item in obstacles]
@@ -549,7 +558,7 @@ def build_geometry_equivalence_record(
             "shared_kernel_provenance_sha256"
         ],
         "micro_segment_sha256s": [item["record_sha256"] for item in segments],
-        "phase_policy": "c2a_no_contact",
+        "phase_policy": phase_policy,
         "proof_policy_version": ROUTE_PROOF_POLICY_VERSION,
     }
     result = {
@@ -564,6 +573,7 @@ def build_geometry_equivalence_record(
         "selected_pose_id": request["selected_pose_id"],
         "selected_pose_sha256": request["selected_pose_sha256"],
         "route_request_sha256": request["request_sha256"],
+        "phase_policy": phase_policy,
         "lifecycle_fields_excluded": True,
     }
     result["geometry_equivalence_sha256"] = canonical_sha256(result)
@@ -676,7 +686,10 @@ def certify_hierarchical_pair_coverage(
                     "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
                     "hierarchical block lacks both conservative bounds",
                 )
-            for bound in (sphere, aabb):
+            for expected_method, bound in (
+                ("enclosing_sphere", sphere),
+                ("swept_aabb", aabb),
+            ):
                 supplied = _require_sha256(bound.get("record_sha256"), "bound digest")
                 if supplied != canonical_sha256(
                     bound, exclude_fields=("record_sha256",)
@@ -684,6 +697,24 @@ def certify_hierarchical_pair_coverage(
                     _fail(
                         "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
                         "hierarchical lower-bound digest mismatch",
+                    )
+                solid = _finite_float(
+                    bound.get("solid_lower_bound_m"),
+                    "hierarchical solid lower bound",
+                )
+                effective = _finite_float(
+                    bound.get("effective_lower_bound_m"),
+                    "hierarchical effective lower bound",
+                )
+                if (
+                    bound.get("method") != expected_method
+                    or effective > solid
+                    or bound.get("strict_safe")
+                    is not (solid > 0.0 and effective > 0.0)
+                ):
+                    _fail(
+                        "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                        "hierarchical lower-bound truth is invalid",
                     )
             candidates = [bound for bound in (sphere, aabb) if bound["strict_safe"] is True]
             chosen = (
@@ -733,9 +764,10 @@ def certify_hierarchical_pair_coverage(
                 pair_coverage.append(item)
                 effective = float(item["effective_lower_bound_m"])
                 solid = float(item["solid_lower_bound_m"])
+                if solid < minimum_solid:
+                    minimum_solid = solid
                 if effective < minimum_effective:
                     minimum_effective = effective
-                    minimum_solid = solid
                     limiting = dict(item)
                 return
             if end - begin > 1:
@@ -756,8 +788,14 @@ def certify_hierarchical_pair_coverage(
                     "exact route leaf did not prove safe",
                     receipt=leaf,
                 )
+            gjk_calls = leaf.get("gjk_calls", 0)
+            if not isinstance(gjk_calls, int) or gjk_calls < 0:
+                _fail(
+                    "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                    "exact route leaf GJK count is invalid",
+                )
             leaf_actions.add(begin)
-            leaf_gjk_calls += int(leaf.get("gjk_calls", 0))
+            leaf_gjk_calls += gjk_calls
             solid = _finite_float(
                 leaf.get("minimum_solid_separation_m"),
                 "exact leaf solid separation",
@@ -786,12 +824,14 @@ def certify_hierarchical_pair_coverage(
                     leaf.get("exact_pair_record_sha256"),
                     "exact_pair_record_sha256",
                 ),
+                "gjk_calls": gjk_calls,
             }
             item["coverage_record_sha256"] = canonical_sha256(item)
             pair_coverage.append(item)
+            if solid < minimum_solid:
+                minimum_solid = solid
             if effective < minimum_effective:
                 minimum_effective = effective
-                minimum_solid = solid
                 limiting = dict(item)
 
         visit(0, action_count, 0)
@@ -846,6 +886,7 @@ def validate_route_segment_proof_structure(
     expected_request_sha256: str,
     expected_subject_paths: Sequence[str],
     expected_obstacle_paths: Sequence[str],
+    expected_phase_policy: str,
 ) -> dict[str, Any]:
     """Validate proof identity, digest, no-claim truth, and all-pair coverage."""
 
@@ -856,13 +897,19 @@ def validate_route_segment_proof_structure(
         )
     result = _json_safe(proof)
     if (
-        result.get("schema_version") != ROUTE_SEGMENT_PROOF_SCHEMA_VERSION
+        expected_phase_policy not in NO_CONTACT_PHASE_POLICIES
+        or len(expected_subject_paths) != REQUIRED_SUBJECT_COLLIDER_COUNT
+        or len(expected_obstacle_paths) != REQUIRED_OBSTACLE_COLLIDER_COUNT
+        or result.get("schema_version") != ROUTE_SEGMENT_PROOF_SCHEMA_VERSION
         or result.get("collision_snapshot_sha256") != expected_snapshot_sha256
         or result.get("geometry_equivalence_sha256")
         != expected_geometry_equivalence_sha256
         or result.get("route_request_sha256") != expected_request_sha256
         or result.get("action_count") != 256
         or result.get("micro_segment_count") != 512
+        or result.get("phase_policy") != expected_phase_policy
+        or result.get("subject_collider_paths") != list(expected_subject_paths)
+        or result.get("obstacle_collider_paths") != list(expected_obstacle_paths)
         or result.get("claim_scope") != "DESIGN_TIME_REJECTION_FILTER_ONLY"
         or result.get("claim_eligible") is not False
         or result.get("selected_command_cap_m") is not None
@@ -880,6 +927,13 @@ def validate_route_segment_proof_structure(
         for obstacle in expected_obstacle_paths
     ]
     coverage = result.get("pair_coverage")
+    if not isinstance(coverage, list) or any(
+        not isinstance(item, Mapping) for item in coverage
+    ):
+        _fail(
+            "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+            "route proof pair coverage is not a record list",
+        )
     observed_pairs = (
         [
             (
@@ -901,6 +955,275 @@ def validate_route_segment_proof_structure(
         _fail(
             "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
             "route proof pair coverage is incomplete",
+        )
+    block_tree = result.get("block_tree")
+    if (
+        not isinstance(block_tree, list)
+        or not block_tree
+        or result.get("block_count") != len(block_tree)
+        or result.get("block_tree_sha256")
+        != canonical_sha256({"block_tree": block_tree})
+    ):
+        _fail(
+            "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+            "route proof block tree is missing or invalid",
+        )
+
+    tree_by_pair: dict[int, list[dict[str, Any]]] = {
+        index: [] for index in range(len(expected_pairs))
+    }
+    for raw_block in block_tree:
+        if not isinstance(raw_block, Mapping):
+            _fail(
+                "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                "route proof block tree contains a non-record",
+            )
+        block = dict(raw_block)
+        pair_index = block.get("pair_index")
+        if not isinstance(pair_index, int) or pair_index not in tree_by_pair:
+            _fail(
+                "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                "route proof block pair index is invalid",
+            )
+        expected_pair = expected_pairs[pair_index]
+        if (
+            block.get("subject_collider_prim_path") != expected_pair[0]
+            or block.get("obstacle_collider_prim_path") != expected_pair[1]
+            or block.get("record_sha256")
+            != canonical_sha256(block, exclude_fields=("record_sha256",))
+            or block.get("decision")
+            not in {
+                "CERTIFIED_ENCLOSING_SPHERE",
+                "CERTIFIED_SWEPT_AABB",
+                "EXACT_LEAF",
+                "SPLIT",
+            }
+        ):
+            _fail(
+                "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                "route proof block identity or digest is invalid",
+            )
+        _require_sha256(block.get("sphere_record_sha256"), "sphere digest")
+        _require_sha256(block.get("aabb_record_sha256"), "AABB digest")
+        tree_by_pair[pair_index].append(block)
+    if [
+        block
+        for pair_index in range(len(expected_pairs))
+        for block in tree_by_pair[pair_index]
+    ] != block_tree:
+        _fail(
+            "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+            "route proof block tree pair order is not deterministic",
+        )
+
+    terminal_records_by_pair: dict[int, list[dict[str, Any]]] = {}
+    split_count = 0
+    for pair_index, records in tree_by_pair.items():
+        cursor = 0
+        terminals: list[dict[str, Any]] = []
+
+        def consume_tree(begin: int, end: int, depth: int) -> None:
+            nonlocal cursor
+            nonlocal split_count
+            if cursor >= len(records):
+                _fail(
+                    "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                    "route proof block tree is truncated",
+                )
+            block = records[cursor]
+            cursor += 1
+            if (
+                block.get("action_begin") != begin
+                or block.get("action_end") != end
+                or block.get("depth") != depth
+                or not begin < end <= 256
+            ):
+                _fail(
+                    "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                    "route proof block tree range/order is invalid",
+                )
+            decision = block["decision"]
+            if decision == "SPLIT":
+                if end - begin <= 1:
+                    _fail(
+                        "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                        "route proof split does not reduce a block",
+                    )
+                split_count += 1
+                middle = begin + (end - begin) // 2
+                consume_tree(begin, middle, depth + 1)
+                consume_tree(middle, end, depth + 1)
+                return
+            if decision == "EXACT_LEAF" and end - begin != 1:
+                _fail(
+                    "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                    "route proof exact leaf spans more than one action",
+                )
+            terminals.append(block)
+
+        consume_tree(0, 256, 0)
+        if cursor != len(records):
+            _fail(
+                "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                "route proof block tree contains trailing records",
+            )
+        terminal_records_by_pair[pair_index] = terminals
+
+    sphere_count = 0
+    aabb_count = 0
+    leaf_actions: set[int] = set()
+    leaf_gjk_calls = 0
+    minimum_solid = math.inf
+    minimum_effective = math.inf
+    limiting: dict[str, Any] | None = None
+    for pair_index, pair_record in enumerate(coverage):
+        if not isinstance(pair_record, Mapping):
+            _fail(
+                "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                "route proof pair coverage contains a non-record",
+            )
+        pair = expected_pairs[pair_index]
+        items = pair_record.get("coverage")
+        if not isinstance(items, list) or not items:
+            _fail(
+                "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                "route proof pair has no certified coverage",
+            )
+        if pair_record.get("coverage_sha256") != canonical_sha256(
+            {"pair": list(pair), "coverage": items}
+        ):
+            _fail(
+                "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                "route proof pair coverage digest mismatch",
+            )
+        terminals = terminal_records_by_pair[pair_index]
+        if len(items) != len(terminals):
+            _fail(
+                "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                "route proof terminal/coverage counts differ",
+            )
+        expected_begin = 0
+        for item, terminal in zip(items, terminals):
+            if not isinstance(item, Mapping):
+                _fail(
+                    "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                    "route proof coverage contains a non-record",
+                )
+            if (
+                item.get("pair_index") != pair_index
+                or item.get("subject_collider_prim_path") != pair[0]
+                or item.get("obstacle_collider_prim_path") != pair[1]
+                or item.get("action_begin") != expected_begin
+                or item.get("action_end") != terminal["action_end"]
+                or item.get("action_begin") != terminal["action_begin"]
+                or item.get("depth") != terminal["depth"]
+                or item.get("decision") != terminal["decision"]
+                or item.get("record_sha256") != terminal["record_sha256"]
+                or item.get("coverage_record_sha256")
+                != canonical_sha256(
+                    item, exclude_fields=("coverage_record_sha256",)
+                )
+            ):
+                _fail(
+                    "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                    "route proof coverage identity, order, or digest is invalid",
+                )
+            expected_begin = int(item["action_end"])
+            solid = _finite_float(
+                item.get("solid_lower_bound_m"), "certified solid lower bound"
+            )
+            effective = _finite_float(
+                item.get("effective_lower_bound_m"),
+                "certified effective lower bound",
+            )
+            if not solid > 0.0 or not effective > 0.0 or effective > solid:
+                _fail(
+                    "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                    "route proof lower bound is not strictly positive",
+                )
+            if solid < minimum_solid:
+                minimum_solid = solid
+            if effective < minimum_effective:
+                minimum_effective = effective
+                limiting = dict(item)
+            kind = item.get("coverage_kind")
+            method = item.get("bound_method")
+            if kind == "conservative_lower_bound":
+                expected_decision = {
+                    "enclosing_sphere": "CERTIFIED_ENCLOSING_SPHERE",
+                    "swept_aabb": "CERTIFIED_SWEPT_AABB",
+                }.get(method)
+                if expected_decision is None or terminal["decision"] != expected_decision:
+                    _fail(
+                        "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                        "route proof broadphase method/decision mismatch",
+                    )
+                lower_bound_sha256 = _require_sha256(
+                    item.get("lower_bound_record_sha256"),
+                    "lower-bound record digest",
+                )
+                terminal_bound_sha256 = terminal[
+                    "sphere_record_sha256"
+                    if method == "enclosing_sphere"
+                    else "aabb_record_sha256"
+                ]
+                if lower_bound_sha256 != terminal_bound_sha256:
+                    _fail(
+                        "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                        "route proof coverage references a different bound",
+                    )
+                if method == "enclosing_sphere":
+                    sphere_count += 1
+                else:
+                    aabb_count += 1
+            elif kind == "exact_articulated_sweep_leaf":
+                if method != "existing_exact_gjk" or terminal["decision"] != "EXACT_LEAF":
+                    _fail(
+                        "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                        "route proof exact leaf authority mismatch",
+                    )
+                _require_sha256(
+                    item.get("exact_sweep_record_sha256"),
+                    "exact sweep record digest",
+                )
+                _require_sha256(
+                    item.get("exact_pair_record_sha256"),
+                    "exact pair record digest",
+                )
+                gjk_calls = item.get("gjk_calls")
+                if not isinstance(gjk_calls, int) or gjk_calls < 0:
+                    _fail(
+                        "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                        "route proof exact leaf GJK count is invalid",
+                    )
+                leaf_actions.add(int(item["action_begin"]))
+                leaf_gjk_calls += gjk_calls
+            else:
+                _fail(
+                    "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                    "route proof coverage authority is unknown",
+                )
+        if expected_begin != 256:
+            _fail(
+                "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                "route proof pair coverage is gapped or truncated",
+            )
+
+    if (
+        result.get("broadphase_sphere_certificate_count") != sphere_count
+        or result.get("broadphase_aabb_certificate_count") != aabb_count
+        or result.get("recursively_split_block_count") != split_count
+        or result.get("leaf_gjk_action_count") != len(leaf_actions)
+        or result.get("minimum_certified_solid_lower_bound_m") != minimum_solid
+        or result.get("minimum_certified_effective_lower_bound_m")
+        != minimum_effective
+        or result.get("limiting_certified_pair_block") != limiting
+        or not isinstance(result.get("performance"), Mapping)
+        or result["performance"].get("leaf_gjk_calls") != leaf_gjk_calls
+    ):
+        _fail(
+            "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+            "route proof derived counters or bounds are invalid",
         )
     supplied = _require_sha256(result.get("record_sha256"), "record_sha256")
     if supplied != canonical_sha256(result, exclude_fields=("record_sha256",)):
