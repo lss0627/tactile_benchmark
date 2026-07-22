@@ -31,8 +31,8 @@ distinct float64 actions. Every canonical receipt was byte-equivalent.
 | body-transform cache hit/miss/eviction | 1,400 / 200 / 0 |
 | distance cache hit/miss/eviction | 1,194 / 406 / 0 |
 | sweep cache hit/miss/eviction | 0 / 100 / 0 |
-| wall / CPU | 4.449428 s / 4.448997 s |
-| maximum RSS | 69,632 KiB |
+| wall / CPU | 5.268257 s / 5.268220 s |
+| maximum RSS | 71,680 KiB |
 
 This gate preserves the exact leaf receipt and GJK truth. It is an equivalence test,
 not the route-level speedup measurement.
@@ -54,16 +54,25 @@ shape and proof accounting without making a claim about the real stage.
 | sphere / AABB certificates | 1,020 / 0 |
 | recursively split blocks | 0 |
 | exact-leaf actions / GJK calls | 0 / 0 |
+| generation + validation pair/interval ledger | 2,040 / 2,040 |
+| body-transform evaluations | 1 |
+| proof-cache hit/miss/eviction | 0 / 30 / 0 |
 | false-safe / unresolved | 0 / 0 |
 | distinct deterministic proof digests | 30 |
-| wall / CPU | 47.144549 s / 47.142394 s |
-| maximum RSS | 68,608 KiB |
+| wall / CPU | 88.033023 s / 88.031204 s |
+| maximum RSS | 76,800 KiB |
 
 Relative to the attempt-09 projected 331,068 GJK calls, this safe-workload proof
 eliminates all exact-leaf GJK work. The measured reduction therefore exceeds the
 required 10x threshold; it is reported as an unbounded ratio rather than converting
-division by zero into a fabricated finite speedup. The 47.145-second wall result is
+division by zero into a fabricated finite speedup. The 88.033-second wall result is
 well below the unchanged 1,800-second budget.
+
+The ledger counts both the canonical proof generation and its independent
+geometry-grounded validation. The full frozen contract node, which additionally
+executes all adversarial, cache, lifecycle, and mutation checks, passed in 116.51
+seconds; `/usr/bin/time` reported 116.92 seconds wall, 124.37 seconds CPU, and
+233,412 KiB maximum RSS.
 
 ## Adversarial and boundary gates
 
