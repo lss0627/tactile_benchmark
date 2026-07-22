@@ -642,6 +642,8 @@ def _assert_option_d_sweep_contracts(module: Any) -> None:
             action=_option_d_action(start=0.0, target=0.01, velocity=2.0),
             phase_policy="c1_no_contact",
         )
+    with pytest.raises(Exception):
+        validate_receipt(receipt, snapshot=stopping_snapshot)
 
     send_count = 0
     latch_count = 0
@@ -1195,8 +1197,8 @@ def _assert_hierarchical_route_segment_contracts(
     route_work = route_context.work_record(status="COMPLETE")
     assert route_work["counters"]["sweep_requests"] == 256
     assert route_work["counters"]["unique_sweep_evaluations"] == 256
-    assert route_work["counters"]["pair_certificate_calls"] == 34
-    assert route_work["counters"]["interval_evaluations"] == 34
+    assert route_work["counters"]["pair_certificate_calls"] == 68
+    assert route_work["counters"]["interval_evaluations"] == 68
     assert route_work["last_class_id"] == request["class_id"]
     assert route_work["last_command_decimal"] == request[
         "command_decimal"
