@@ -1208,6 +1208,9 @@ def _assert_hierarchical_route_segment_contracts(
     assert "ROUTE_MATERIALIZED" in route_progress_events
     assert "BLOCK_MILESTONE" in route_progress_events
     assert "ROUTE_PROOF_RETAINED" in route_progress_events
+    assert sum(
+        item.get("event") == "BLOCK_MILESTONE" for item in route_progress
+    ) == 1
 
     cached = certify_route(
         snapshot=full_snapshot,
@@ -1236,6 +1239,13 @@ def _assert_hierarchical_route_segment_contracts(
     route_proof_module = importlib.import_module(
         "isaac_tactile_libero.runtime.g1_route_segment_clearance"
     )
+    lifecycle_independent_equivalence = (
+        route_proof_module.build_geometry_equivalence_record(
+            snapshot=full_snapshot,
+            request=request,
+            phase_policy="c2a_no_contact",
+        )
+    )
     lifecycle_derived_snapshot = json.loads(json.dumps(full_snapshot))
     lifecycle_derived_snapshot["sorted_inventory_sha256"] = "8" * 64
     for index, collider in enumerate(
@@ -1250,7 +1260,7 @@ def _assert_hierarchical_route_segment_contracts(
         snapshot=lifecycle_derived_snapshot,
         request=request,
         phase_policy="c2a_no_contact",
-    )["geometry_equivalence_sha256"] == equivalence[
+    )["geometry_equivalence_sha256"] == lifecycle_independent_equivalence[
         "geometry_equivalence_sha256"
     ]
     fresh_proof = certify_route(

@@ -6820,6 +6820,7 @@ def validate_swept_clearance_receipt(
         "readiness",
         "measurement",
         "preliminary_diagnostic",
+        "preliminary_hierarchical_route_proof",
     }:
         _fail("G1_FULL_ROBOT_SWEEP_INVALID", "sweep phase is invalid")
     snapshot_digest = _require_sha256(
@@ -7680,6 +7681,101 @@ def _route_block_motion_bound(
     )
 
 
+def _route_block_bound_records(
+    *,
+    snapshot: Mapping[str, Any],
+    micro_segments: Sequence[Mapping[str, Any]],
+    pair_records: Mapping[
+        tuple[str, str], tuple[Mapping[str, Any], Mapping[str, Any]]
+    ],
+    pair_key: tuple[str, str],
+    action_begin: int,
+    action_end: int,
+    prepared_context: PreparedArticulatedSweepContext | None,
+    account_work: bool,
+) -> dict[str, Any]:
+    """Use one authority for generated and independently validated bounds."""
+
+    if account_work and prepared_context is not None:
+        prepared_context.ledger.consume("pair_certificate_calls")
+        prepared_context.ledger.consume(
+            "interval_evaluations",
+            pair_key=(pair_key[0], pair_key[1], "route_block"),
+        )
+    subject, obstacle = pair_records[pair_key]
+    block_segments = micro_segments[2 * action_begin : 2 * action_end]
+    if len(block_segments) != 2 * (action_end - action_begin):
+        _fail(
+            "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+            "route block omitted an ordered micro-segment",
+        )
+    q_reference = _action_vector(
+        block_segments[0]["q_start"],
+        len(snapshot["articulation_joint_names"]),
+        "route block reference q",
+    )
+    transforms = _body_transforms(
+        snapshot,
+        q_reference,
+        prepared_context=prepared_context,
+    )
+    subject_transform = _record_transform(subject, transforms)
+    obstacle_transform = _record_transform(obstacle, transforms)
+    subject_motion = _route_block_motion_bound(
+        snapshot=snapshot,
+        record=subject,
+        micro_segments=block_segments,
+        prepared_context=prepared_context,
+    )
+    obstacle_motion = _route_block_motion_bound(
+        snapshot=snapshot,
+        record=obstacle,
+        micro_segments=block_segments,
+        prepared_context=prepared_context,
+    )
+    subject_inflation = float(
+        subject.get("local_pose_sweep_inflation_m", 0.0)
+    )
+    obstacle_inflation = float(
+        obstacle.get("local_pose_sweep_inflation_m", 0.0)
+    )
+    sphere = conservative_sphere_lower_bounds(
+        subject_center=subject_transform[:3, 3].tolist(),
+        subject_radius_m=_shape_radius(subject),
+        subject_motion_bound_m=subject_motion,
+        subject_geometry_inflation_m=subject_inflation,
+        subject_contact_offset_m=float(subject["contact_offset_resolved"]),
+        obstacle_center=obstacle_transform[:3, 3].tolist(),
+        obstacle_radius_m=_shape_radius(obstacle),
+        obstacle_motion_bound_m=obstacle_motion,
+        obstacle_geometry_inflation_m=obstacle_inflation,
+        obstacle_contact_offset_m=float(obstacle["contact_offset_resolved"]),
+    )
+    subject_min, subject_max = _route_world_aabb(subject, subject_transform)
+    obstacle_min, obstacle_max = _route_world_aabb(obstacle, obstacle_transform)
+    aabb = conservative_aabb_lower_bounds(
+        subject_aabb_min=subject_min,
+        subject_aabb_max=subject_max,
+        subject_motion_bound_m=subject_motion,
+        subject_geometry_inflation_m=subject_inflation,
+        subject_contact_offset_m=float(subject["contact_offset_resolved"]),
+        obstacle_aabb_min=obstacle_min,
+        obstacle_aabb_max=obstacle_max,
+        obstacle_motion_bound_m=obstacle_motion,
+        obstacle_geometry_inflation_m=obstacle_inflation,
+        obstacle_contact_offset_m=float(obstacle["contact_offset_resolved"]),
+    )
+    return {
+        "sphere": sphere,
+        "aabb": aabb,
+        "subject_motion_bound_m": subject_motion,
+        "obstacle_motion_bound_m": obstacle_motion,
+        "micro_segment_sha256s": [
+            item["record_sha256"] for item in block_segments
+        ],
+    }
+
+
 def certify_route_segment_clearance(
     *,
     snapshot: Mapping[str, Any],
@@ -7687,6 +7783,7 @@ def certify_route_segment_clearance(
     phase_policy: str,
     prepared_context: PreparedArticulatedSweepContext | None = None,
     proof_cache: RouteProofCache | None = None,
+    lifecycle_record_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Certify one 256-action route with broadphase and exact leaf fallback."""
 
@@ -7744,6 +7841,7 @@ def certify_route_segment_clearance(
                 snapshot=sealed,
                 request=request,
                 phase_policy=phase_policy,
+                lifecycle_record_sha256=lifecycle_record_sha256,
             )
             if prepared_context is not None:
                 prepared_context.emit_progress(
@@ -7770,111 +7868,45 @@ def certify_route_segment_clearance(
     pair_keys = list(pair_records)
     exact_action_receipts: dict[int, dict[str, Any]] = {}
     exact_action_gjk_calls: dict[int, int] = {}
+    block_progress_emitted = False
+    leaf_progress_emitted = False
 
     def evaluate_block(
         pair_key: tuple[str, str],
         action_begin: int,
         action_end: int,
     ) -> dict[str, Any]:
+        nonlocal block_progress_emitted
         if prepared_context is not None:
             prepared_context.ledger.set_action_identity(
                 class_id=str(request["class_id"]),
                 command_decimal=str(request["command_decimal"]),
                 action_index=action_begin,
             )
-            prepared_context.ledger.consume("pair_certificate_calls")
-            prepared_context.ledger.consume(
-                "interval_evaluations",
-                pair_key=(pair_key[0], pair_key[1], "route_block"),
-            )
-            if action_begin == 0 and action_end == 256:
+            if not block_progress_emitted:
                 prepared_context.emit_progress(
                     event="BLOCK_MILESTONE",
                     class_id=str(request["class_id"]),
                     command_decimal=str(request["command_decimal"]),
                     action_index=0,
                 )
-        subject, obstacle = pair_records[pair_key]
-        block_segments = micro_segments[2 * action_begin : 2 * action_end]
-        if len(block_segments) != 2 * (action_end - action_begin):
-            _fail(
-                "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
-                "route block omitted an ordered micro-segment",
-            )
-        q_reference = _action_vector(
-            block_segments[0]["q_start"],
-            len(sealed["articulation_joint_names"]),
-            "route block reference q",
-        )
-        transforms = _body_transforms(
-            sealed,
-            q_reference,
-            prepared_context=prepared_context,
-        )
-        subject_transform = _record_transform(subject, transforms)
-        obstacle_transform = _record_transform(obstacle, transforms)
-        subject_motion = _route_block_motion_bound(
+                block_progress_emitted = True
+        return _route_block_bound_records(
             snapshot=sealed,
-            record=subject,
-            micro_segments=block_segments,
+            micro_segments=micro_segments,
+            pair_records=pair_records,
+            pair_key=pair_key,
+            action_begin=action_begin,
+            action_end=action_end,
             prepared_context=prepared_context,
+            account_work=True,
         )
-        obstacle_motion = _route_block_motion_bound(
-            snapshot=sealed,
-            record=obstacle,
-            micro_segments=block_segments,
-            prepared_context=prepared_context,
-        )
-        subject_inflation = float(
-            subject.get("local_pose_sweep_inflation_m", 0.0)
-        )
-        obstacle_inflation = float(
-            obstacle.get("local_pose_sweep_inflation_m", 0.0)
-        )
-        sphere = conservative_sphere_lower_bounds(
-            subject_center=subject_transform[:3, 3].tolist(),
-            subject_radius_m=_shape_radius(subject),
-            subject_motion_bound_m=subject_motion,
-            subject_geometry_inflation_m=subject_inflation,
-            subject_contact_offset_m=float(subject["contact_offset_resolved"]),
-            obstacle_center=obstacle_transform[:3, 3].tolist(),
-            obstacle_radius_m=_shape_radius(obstacle),
-            obstacle_motion_bound_m=obstacle_motion,
-            obstacle_geometry_inflation_m=obstacle_inflation,
-            obstacle_contact_offset_m=float(obstacle["contact_offset_resolved"]),
-        )
-        subject_min, subject_max = _route_world_aabb(
-            subject, subject_transform
-        )
-        obstacle_min, obstacle_max = _route_world_aabb(
-            obstacle, obstacle_transform
-        )
-        aabb = conservative_aabb_lower_bounds(
-            subject_aabb_min=subject_min,
-            subject_aabb_max=subject_max,
-            subject_motion_bound_m=subject_motion,
-            subject_geometry_inflation_m=subject_inflation,
-            subject_contact_offset_m=float(subject["contact_offset_resolved"]),
-            obstacle_aabb_min=obstacle_min,
-            obstacle_aabb_max=obstacle_max,
-            obstacle_motion_bound_m=obstacle_motion,
-            obstacle_geometry_inflation_m=obstacle_inflation,
-            obstacle_contact_offset_m=float(obstacle["contact_offset_resolved"]),
-        )
-        return {
-            "sphere": sphere,
-            "aabb": aabb,
-            "subject_motion_bound_m": subject_motion,
-            "obstacle_motion_bound_m": obstacle_motion,
-            "micro_segment_sha256s": [
-                item["record_sha256"] for item in block_segments
-            ],
-        }
 
     def evaluate_leaf(
         pair_key: tuple[str, str],
         action_index: int,
     ) -> dict[str, Any]:
+        nonlocal leaf_progress_emitted
         new_receipt = action_index not in exact_action_receipts
         before_gjk = (
             prepared_context.ledger.counters["gjk_calls"]
@@ -7882,13 +7914,14 @@ def certify_route_segment_clearance(
             else 0
         )
         if new_receipt:
-            if prepared_context is not None:
+            if prepared_context is not None and not leaf_progress_emitted:
                 prepared_context.emit_progress(
                     event="LEAF_GJK_FALLBACK",
                     class_id=str(request["class_id"]),
                     command_decimal=str(request["command_decimal"]),
                     action_index=action_index,
                 )
+                leaf_progress_emitted = True
             action = request["actions"][action_index]
             exact_action_receipts[action_index] = certify_articulated_sweep(
                 snapshot=(
@@ -7911,7 +7944,8 @@ def certify_route_segment_clearance(
                     "tcp_declared_solid_clearance_m": 0.005,
                     "phase": "preliminary_hierarchical_route_proof",
                     "lifecycle_record_sha256": request.get(
-                        "lifecycle_record_sha256"
+                        "lifecycle_record_sha256",
+                        lifecycle_record_sha256,
                     ),
                 },
                 phase_policy=phase_policy,
@@ -7998,6 +8032,10 @@ def certify_route_segment_clearance(
         "all_pair_coverage_count": len(hierarchy["pair_coverage"]),
         "pair_coverage": hierarchy["pair_coverage"],
         "block_tree": hierarchy["block_tree"],
+        "exact_leaf_action_receipts": [
+            exact_action_receipts[index]
+            for index in sorted(exact_action_receipts)
+        ],
         "block_count": hierarchy["block_count"],
         "block_tree_sha256": hierarchy["block_tree_sha256"],
         "broadphase_sphere_certificate_count": hierarchy[
@@ -8037,7 +8075,7 @@ def certify_route_segment_clearance(
         "raw_impulse_used_as_force": False,
     }
     proof_core["pure_route_proof_sha256"] = canonical_sha256(proof_core)
-    if proof_cache is not None:
+    if proof_cache is not None and hierarchy["leaf_gjk_action_count"] == 0:
         proof_cache.put(cache_key, proof_core)
     proof = {
         **proof_core,
@@ -8049,6 +8087,7 @@ def certify_route_segment_clearance(
         snapshot=sealed,
         request=request,
         phase_policy=phase_policy,
+        lifecycle_record_sha256=lifecycle_record_sha256,
     )
     if prepared_context is not None:
         prepared_context.emit_progress(
@@ -8067,6 +8106,7 @@ def validate_route_segment_proof(
     snapshot: Mapping[str, Any],
     request: Mapping[str, Any],
     phase_policy: str,
+    lifecycle_record_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Validate route proof identity and complete pair coverage."""
 
@@ -8076,7 +8116,7 @@ def validate_route_segment_proof(
         request=request,
         phase_policy=phase_policy,
     )
-    return validate_route_segment_proof_structure(
+    validated = validate_route_segment_proof_structure(
         proof,
         expected_snapshot_sha256=sealed["snapshot_sha256"],
         expected_geometry_equivalence_sha256=equivalence[
@@ -8093,6 +8133,121 @@ def validate_route_segment_proof(
         ],
         expected_phase_policy=phase_policy,
     )
+    micro_segments = materialize_route_micro_segments(request)
+    subjects = list(sealed["subject_inventory"])
+    obstacles = list(sealed["obstacle_inventory"])
+    pair_records = {
+        (str(subject["collider_prim_path"]), str(obstacle["collider_prim_path"])): (
+            subject,
+            obstacle,
+        )
+        for subject in subjects
+        for obstacle in obstacles
+    }
+    for block in validated["block_tree"]:
+        pair_key = (
+            str(block["subject_collider_prim_path"]),
+            str(block["obstacle_collider_prim_path"]),
+        )
+        recomputed = _route_block_bound_records(
+            snapshot=sealed,
+            micro_segments=micro_segments,
+            pair_records=pair_records,
+            pair_key=pair_key,
+            action_begin=int(block["action_begin"]),
+            action_end=int(block["action_end"]),
+            prepared_context=None,
+            account_work=False,
+        )
+        if (
+            block["sphere_bound"] != recomputed["sphere"]
+            or block["aabb_bound"] != recomputed["aabb"]
+        ):
+            _fail(
+                "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                "route proof lower bound differs from current geometry/route",
+            )
+
+    expected_leaf_coverage: dict[
+        int, list[Mapping[str, Any]]
+    ] = {}
+    for pair_record in validated["pair_coverage"]:
+        for coverage_record in pair_record["coverage"]:
+            if coverage_record["coverage_kind"] == (
+                "exact_articulated_sweep_leaf"
+            ):
+                expected_leaf_coverage.setdefault(
+                    int(coverage_record["action_begin"]), []
+                ).append(coverage_record)
+    exact_receipts = validated.get("exact_leaf_action_receipts")
+    if not isinstance(exact_receipts, list):
+        _fail(
+            "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+            "route proof exact-leaf receipts are missing",
+        )
+    receipt_by_action: dict[int, dict[str, Any]] = {}
+    for raw_receipt in exact_receipts:
+        receipt = validate_swept_clearance_receipt(
+            raw_receipt,
+            snapshot=sealed,
+        )
+        action_index = int(receipt["action_index"])
+        if action_index in receipt_by_action or action_index not in expected_leaf_coverage:
+            _fail(
+                "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                "route proof exact-leaf receipt identity is invalid",
+            )
+        action = request["actions"][action_index]
+        if (
+            receipt["phase_policy"] != phase_policy
+            or receipt["class_id"] != request["class_id"]
+            or receipt["command_decimal"] != request["command_decimal"]
+            or receipt["observed_q"] != action["observed_q"]
+            or receipt["observed_qd"] != action["observed_qd"]
+            or receipt["governed_target"] != action["governed_target"]
+            or receipt["lifecycle_record_sha256"]
+            != lifecycle_record_sha256
+        ):
+            _fail(
+                "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                "route proof exact-leaf receipt differs from its action",
+            )
+        receipt_by_action[action_index] = receipt
+    if set(receipt_by_action) != set(expected_leaf_coverage):
+        _fail(
+            "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+            "route proof exact-leaf receipt coverage is incomplete",
+        )
+    for action_index, coverage_records in expected_leaf_coverage.items():
+        receipt = receipt_by_action[action_index]
+        for coverage_record in coverage_records:
+            pair_key = (
+                coverage_record["subject_collider_prim_path"],
+                coverage_record["obstacle_collider_prim_path"],
+            )
+            selected_pairs = [
+                item
+                for item in receipt["pair_receipts"]
+                if (
+                    item["subject_collider_prim_path"],
+                    item["obstacle_collider_prim_path"],
+                )
+                == pair_key
+            ]
+            if (
+                coverage_record["exact_sweep_record_sha256"]
+                != receipt["record_sha256"]
+                or len(selected_pairs) != 2
+                or {item["segment_kind"] for item in selected_pairs}
+                != {"governed_command", "stopping_reach"}
+                or coverage_record["exact_pair_record_sha256"]
+                != canonical_sha256({"pair_receipts": selected_pairs})
+            ):
+                _fail(
+                    "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                    "route proof exact-leaf pair binding is invalid",
+                )
+    return validated
 
 
 __all__ = [

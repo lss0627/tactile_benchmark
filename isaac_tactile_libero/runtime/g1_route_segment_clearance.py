@@ -496,6 +496,9 @@ def _without_lifecycle(value: Any) -> Any:
         "target_latch_identity",
         "diagnostic_ids",
         "snapshot_sha256",
+        "sorted_inventory_sha256",
+        "offset_authority_sha256",
+        "property_query_geometry_agreement_sha256",
     }
     if isinstance(value, Mapping):
         return {
@@ -737,6 +740,8 @@ def certify_hierarchical_pair_coverage(
                 "depth": depth,
                 "sphere_record_sha256": sphere["record_sha256"],
                 "aabb_record_sha256": aabb["record_sha256"],
+                "sphere_bound": dict(sphere),
+                "aabb_bound": dict(aabb),
                 "decision": (
                     f"CERTIFIED_{str(chosen['method']).upper()}"
                     if chosen is not None
@@ -1005,6 +1010,48 @@ def validate_route_segment_proof_structure(
             )
         _require_sha256(block.get("sphere_record_sha256"), "sphere digest")
         _require_sha256(block.get("aabb_record_sha256"), "AABB digest")
+        for field, method in (
+            ("sphere_bound", "enclosing_sphere"),
+            ("aabb_bound", "swept_aabb"),
+        ):
+            bound = block.get(field)
+            if not isinstance(bound, Mapping):
+                _fail(
+                    "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                    "route proof block omits a lower-bound record",
+                )
+            bound_digest = _require_sha256(
+                bound.get("record_sha256"),
+                "block lower-bound digest",
+            )
+            expected_digest = block[
+                "sphere_record_sha256"
+                if method == "enclosing_sphere"
+                else "aabb_record_sha256"
+            ]
+            solid = _finite_float(
+                bound.get("solid_lower_bound_m"),
+                "block solid lower bound",
+            )
+            effective = _finite_float(
+                bound.get("effective_lower_bound_m"),
+                "block effective lower bound",
+            )
+            if (
+                bound.get("method") != method
+                or bound_digest != expected_digest
+                or bound_digest
+                != canonical_sha256(
+                    bound, exclude_fields=("record_sha256",)
+                )
+                or effective > solid
+                or bound.get("strict_safe")
+                is not (solid > 0.0 and effective > 0.0)
+            ):
+                _fail(
+                    "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                    "route proof block lower-bound record is invalid",
+                )
         tree_by_pair[pair_index].append(block)
     if [
         block

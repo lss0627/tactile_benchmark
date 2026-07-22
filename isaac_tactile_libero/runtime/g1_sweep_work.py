@@ -514,6 +514,38 @@ def validate_sweep_work_record(record: Any) -> dict[str, Any]:
     digest_fields = ("lifecycle_record_sha256", "collision_snapshot_sha256")
     limit_fields = set(asdict(SweepWorkLimits()))
     counter_fields = set(SweepWorkLedger._COUNTER_NAMES)
+    status = result.get("status")
+    failure_code = result.get("failure_code")
+    failure_message = result.get("failure_message")
+    counters_within_limits = (
+        isinstance(result.get("limits"), Mapping)
+        and isinstance(result.get("counters"), Mapping)
+        and all(
+            field in result["limits"]
+            and field in result["counters"]
+            and isinstance(result["limits"][field], int)
+            and isinstance(result["counters"][field], int)
+            and result["counters"][field] <= result["limits"][field]
+            for field in counter_fields
+        )
+    )
+    status_truth_valid = (
+        status in {"RUNNING", "COMPLETE"}
+        and failure_code is None
+        and failure_message is None
+        and counters_within_limits
+    ) or (
+        status in {"BLOCKED", "INTERRUPTED"}
+        and isinstance(failure_code, str)
+        and bool(failure_code)
+        and isinstance(failure_message, str)
+        and bool(failure_message)
+        and (
+            counters_within_limits
+            or failure_code
+            == "G1_FULL_ROBOT_SWEEP_WORK_BUDGET_EXCEEDED"
+        )
+    )
     valid = (
         set(result) == required
         and result.get("schema_version") == SWEEP_WORK_SCHEMA_VERSION
@@ -525,6 +557,7 @@ def validate_sweep_work_record(record: Any) -> dict[str, Any]:
             for field in digest_fields
         )
         and result.get("status") in {"RUNNING", "COMPLETE", "BLOCKED", "INTERRUPTED"}
+        and status_truth_valid
         and isinstance(result.get("limits"), Mapping)
         and set(result["limits"]) == limit_fields
         and result["limits"] == asdict(SweepWorkLimits())

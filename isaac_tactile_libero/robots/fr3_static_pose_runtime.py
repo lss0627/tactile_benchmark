@@ -2576,6 +2576,7 @@ def certify_option_d_preliminary_route_diagnostics(
                         phase_policy="c2a_no_contact",
                         prepared_context=prepared_sweep_context,
                         proof_cache=route_proof_cache,
+                        lifecycle_record_sha256=lifecycle_record_sha256,
                     )
                 except G1SweepWorkError:
                     raise

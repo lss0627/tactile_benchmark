@@ -762,6 +762,17 @@ def validate_c2a_v6_scene_record(record: Mapping[str, Any]) -> dict[str, Any]:
             "G1_C2A_OPTION_D_INVALID",
             "C2a v6 work record differs from scene lifecycle/snapshot",
         )
+    if (
+        result.get("failure_code") is None
+        and work_record["status"] != "COMPLETE"
+    ) or (
+        result.get("failure_code") is not None
+        and work_record["status"] == "COMPLETE"
+    ):
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "C2a v6 work status differs from scene completion",
+        )
     route_proofs: list[dict[str, Any]] = []
     for class_record in diagnostics.get("class_diagnostics", ()):
         for command_record in class_record.get("command_routes", ()):
@@ -781,6 +792,7 @@ def validate_c2a_v6_scene_record(record: Mapping[str, Any]) -> dict[str, Any]:
                 snapshot=snapshot,
                 request=request,
                 phase_policy="c2a_no_contact",
+                lifecycle_record_sha256=lifecycle["lifecycle_record_sha256"],
             )
             expected_equivalence = build_geometry_equivalence_record(
                 snapshot=snapshot,
