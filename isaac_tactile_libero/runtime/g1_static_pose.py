@@ -692,6 +692,161 @@ def validate_c2a_v5_scene_record(record: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+def validate_c2a_v6_scene_record(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate hierarchical route-proof C2a v6 without upgrading history."""
+
+    if (
+        not isinstance(record, Mapping)
+        or record.get("schema_version") != "g1.c2a.static.v6"
+    ):
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "C2a hierarchical scene must use g1.c2a.static.v6",
+        )
+    diagnostics = record.get("command_bound_route_diagnostics")
+    if (
+        not isinstance(diagnostics, Mapping)
+        or diagnostics.get("schema_version")
+        != "g1.pose_conditioned.route_diagnostics.v3"
+        or diagnostics.get("route_segment_proof_schema_version")
+        != "g1.full_robot.route_segment_proof.v1"
+    ):
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "C2a v6 route diagnostics must use hierarchical v3/v1 schemas",
+        )
+    from .g1_full_robot_clearance import (
+        build_geometry_equivalence_record,
+        canonical_sha256,
+        validate_route_segment_proof,
+    )
+    from .g1_sweep_work import validate_sweep_work_record
+
+    supplied = diagnostics.get("route_diagnostic_sha256")
+    if supplied != canonical_sha256(
+        diagnostics,
+        exclude_fields=("route_diagnostic_sha256",),
+    ):
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "C2a v6 route diagnostic digest mismatch",
+        )
+    work_record = validate_sweep_work_record(
+        diagnostics.get("sweep_work_record")
+    )
+    historical = json.loads(json.dumps(dict(record), sort_keys=True))
+    historical["schema_version"] = "g1.c2a.static.v4"
+    historical_diagnostics = dict(diagnostics)
+    historical_diagnostics["schema_version"] = (
+        "g1.c2a.option_d.route_diagnostics.v1"
+    )
+    historical_diagnostics.pop("sweep_work_record")
+    historical_diagnostics["route_diagnostic_sha256"] = canonical_sha256(
+        historical_diagnostics,
+        exclude_fields=("route_diagnostic_sha256",),
+    )
+    historical["command_bound_route_diagnostics"] = historical_diagnostics
+    result = validate_c2a_v4_scene_record(historical)
+    lifecycle = result["lifecycle_record"]
+    snapshot = result["collision_snapshot"]
+    if (
+        work_record["run_id"] == ""
+        or work_record["scene_id"] != result.get("scene_id")
+        or work_record["trial_id"] != lifecycle["trial_id"]
+        or work_record["lifecycle_record_sha256"]
+        != lifecycle["lifecycle_record_sha256"]
+        or work_record["collision_snapshot_sha256"]
+        != snapshot["snapshot_sha256"]
+    ):
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "C2a v6 work record differs from scene lifecycle/snapshot",
+        )
+    route_proofs: list[dict[str, Any]] = []
+    for class_record in diagnostics.get("class_diagnostics", ()):
+        for command_record in class_record.get("command_routes", ()):
+            request = command_record.get("route_proof_request")
+            proof = command_record.get("route_segment_proof")
+            equivalence = command_record.get("geometry_equivalence_record")
+            binding = command_record.get("route_proof_lifecycle_binding")
+            if proof is None:
+                if command_record.get("complete") is True:
+                    _fail(
+                        "G1_C2A_OPTION_D_INVALID",
+                        "complete C2a v6 command lacks a route proof",
+                    )
+                continue
+            validated_proof = validate_route_segment_proof(
+                proof,
+                snapshot=snapshot,
+                request=request,
+            )
+            expected_equivalence = build_geometry_equivalence_record(
+                snapshot=snapshot,
+                request=request,
+            )
+            if not isinstance(equivalence, Mapping) or dict(
+                equivalence
+            ) != expected_equivalence:
+                _fail(
+                    "G1_C2A_OPTION_D_INVALID",
+                    "C2a v6 geometry-equivalence record mismatch",
+                )
+            if not isinstance(binding, Mapping):
+                _fail(
+                    "G1_C2A_OPTION_D_INVALID",
+                    "C2a v6 route proof lacks its scene lifecycle binding",
+                )
+            expected_binding = {
+                "schema_version": (
+                    "g1.full_robot.route_proof_lifecycle_binding.v1"
+                ),
+                "scene_id": result.get("scene_id"),
+                "trial_id": lifecycle["trial_id"],
+                "lifecycle_record_sha256": lifecycle[
+                    "lifecycle_record_sha256"
+                ],
+                "collision_snapshot_sha256": snapshot["snapshot_sha256"],
+                "geometry_equivalence_sha256": validated_proof[
+                    "geometry_equivalence_sha256"
+                ],
+                "route_segment_proof_sha256": validated_proof[
+                    "record_sha256"
+                ],
+            }
+            expected_binding["binding_sha256"] = canonical_sha256(
+                expected_binding
+            )
+            if dict(binding) != expected_binding:
+                _fail(
+                    "G1_C2A_OPTION_D_INVALID",
+                    "C2a v6 route proof lifecycle binding mismatch",
+                )
+            route_proofs.append(validated_proof)
+    expected_proof_count = 6 * 5
+    if result.get("failure_code") is None and len(route_proofs) != expected_proof_count:
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "successful C2a v6 scene lacks all 30 route proofs",
+        )
+    if any(
+        item["claim_eligible"] is not False
+        or item["selected_command_cap_m"] is not None
+        or item["post_abort_actuation_count"] != 0
+        for item in route_proofs
+    ):
+        _fail(
+            "G1_C2A_OPTION_D_INVALID",
+            "C2a v6 route proof crossed its no-claim truth boundary",
+        )
+    result["schema_version"] = "g1.c2a.static.v6"
+    result["command_bound_route_diagnostics"] = json.loads(
+        json.dumps(dict(diagnostics), sort_keys=True)
+    )
+    result["route_segment_proofs"] = route_proofs
+    return result
+
+
 __all__ = [
     "C2A_ARTICULATION_JOINT_NAMES",
     "C2A_ARM_JOINT_NAMES",
@@ -709,4 +864,5 @@ __all__ = [
     "validate_c2a_v3_scene_record",
     "validate_c2a_v4_scene_record",
     "validate_c2a_v5_scene_record",
+    "validate_c2a_v6_scene_record",
 ]

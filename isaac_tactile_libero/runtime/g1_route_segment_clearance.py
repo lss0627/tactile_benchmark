@@ -492,6 +492,7 @@ def _without_lifecycle(value: Any) -> Any:
         "articulation_object_id",
         "target_latch_identity",
         "diagnostic_ids",
+        "snapshot_sha256",
     }
     if isinstance(value, Mapping):
         return {
@@ -906,6 +907,24 @@ def validate_route_segment_proof_structure(
         _fail(
             "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
             "route proof digest mismatch",
+        )
+    pure_digest = _require_sha256(
+        result.get("pure_route_proof_sha256"),
+        "pure_route_proof_sha256",
+    )
+    pure_payload = {
+        key: value
+        for key, value in result.items()
+        if key not in {
+            "collision_snapshot_sha256",
+            "record_sha256",
+            "pure_route_proof_sha256",
+        }
+    }
+    if pure_digest != canonical_sha256(pure_payload):
+        _fail(
+            "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+            "pure route proof digest mismatch",
         )
     return result
 

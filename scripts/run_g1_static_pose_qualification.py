@@ -741,25 +741,33 @@ def run_c2a_static_qualification(
                         systemic_failure_code = failure_code
                         systemic_failure_message = failure_message
             scene_schema = (
-                "g1.c2a.static.v5"
+                "g1.c2a.static.v6"
                 if any(
-                    sample.get("schema_version") == "g1.c2a.static.v5"
+                    sample.get("schema_version") == "g1.c2a.static.v6"
                     for sample in samples
                 )
                 else (
-                    "g1.c2a.static.v4"
+                    "g1.c2a.static.v5"
                     if any(
-                        sample.get("schema_version") == "g1.c2a.static.v4"
+                        sample.get("schema_version") == "g1.c2a.static.v5"
                         for sample in samples
                     )
                     else (
-                        "g1.c2a.static.v3"
+                        "g1.c2a.static.v4"
                         if any(
                             sample.get("schema_version")
-                            == "g1.c2a.static.v3"
+                            == "g1.c2a.static.v4"
                             for sample in samples
                         )
-                        else "g1.c2a.static.v2"
+                        else (
+                            "g1.c2a.static.v3"
+                            if any(
+                                sample.get("schema_version")
+                                == "g1.c2a.static.v3"
+                                for sample in samples
+                            )
+                            else "g1.c2a.static.v2"
+                        )
                     )
                 )
             )
@@ -872,7 +880,11 @@ def write_c2a_static_evidence(
             ),
         )
     }
-    bounded_v5 = any(
+    hierarchical_v6 = any(
+        version.startswith("g1.c2a.static.v6")
+        for version in observed_scene_versions
+    )
+    bounded_v5 = hierarchical_v6 or any(
         version.startswith("g1.c2a.static.v5")
         for version in observed_scene_versions
     )
@@ -888,6 +900,7 @@ def write_c2a_static_evidence(
                 "g1.c2a.static.v3",
                 "g1.c2a.static.v4",
                 "g1.c2a.static.v5",
+                "g1.c2a.static.v6",
             )
         )
         for item in static_scenes
@@ -903,6 +916,8 @@ def write_c2a_static_evidence(
                 "g1.c2a.static.v4.creation_failure",
                 "g1.c2a.static.v5",
                 "g1.c2a.static.v5.creation_failure",
+                "g1.c2a.static.v6",
+                "g1.c2a.static.v6.creation_failure",
             }
             for item in static_scenes
         ):
@@ -914,6 +929,7 @@ def write_c2a_static_evidence(
             validate_c2a_v3_scene_record,
             validate_c2a_v4_scene_record,
             validate_c2a_v5_scene_record,
+            validate_c2a_v6_scene_record,
         )
 
         static_scenes = tuple(
@@ -927,7 +943,12 @@ def write_c2a_static_evidence(
                         validate_c2a_v5_scene_record(item)
                         if item.get("schema_version")
                         == "g1.c2a.static.v5"
-                        else dict(item)
+                        else (
+                            validate_c2a_v6_scene_record(item)
+                            if item.get("schema_version")
+                            == "g1.c2a.static.v6"
+                            else dict(item)
+                        )
                     )
                 )
             )
@@ -976,6 +997,8 @@ def write_c2a_static_evidence(
     option_d_paths: list[Path] = []
     geometry_disagreements: list[dict[str, Any]] = []
     analytic_representation_records: list[dict[str, Any]] = []
+    route_segment_proofs: list[dict[str, Any]] = []
+    geometry_equivalence_records: list[dict[str, Any]] = []
     if option_d:
         lifecycle_audit_path = destination / "lifecycle_audit.json"
         lifecycle_audit_path.write_text(
@@ -1206,6 +1229,70 @@ def write_c2a_static_evidence(
             ),
             encoding="utf-8",
         )
+        if hierarchical_v6:
+            proofs_by_digest: dict[str, dict[str, Any]] = {}
+            equivalence_by_digest: dict[str, dict[str, Any]] = {}
+            for item in static_scenes:
+                snapshot = item.get("collision_snapshot")
+                diagnostics = item.get("command_bound_route_diagnostics")
+                if not isinstance(snapshot, Mapping) or not isinstance(
+                    diagnostics, Mapping
+                ):
+                    continue
+                for class_record in diagnostics.get("class_diagnostics", ()):
+                    for command_record in class_record.get(
+                        "command_routes", ()
+                    ):
+                        request = command_record.get("route_proof_request")
+                        proof = command_record.get("route_segment_proof")
+                        equivalence = command_record.get(
+                            "geometry_equivalence_record"
+                        )
+                        if not isinstance(request, Mapping) or not isinstance(
+                            proof, Mapping
+                        ) or not isinstance(equivalence, Mapping):
+                            continue
+                        proof_digest = str(proof["record_sha256"])
+                        proofs_by_digest[proof_digest] = dict(proof)
+                        if equivalence.get(
+                            "geometry_equivalence_sha256"
+                        ) != proof.get("geometry_equivalence_sha256"):
+                            raise G1ValidationError(
+                                "G1_C2A_OPTION_D_INVALID",
+                                "writer received mismatched route/equivalence records",
+                            )
+                        equivalence_by_digest[
+                            equivalence["geometry_equivalence_sha256"]
+                        ] = dict(equivalence)
+            route_segment_proofs = [
+                proofs_by_digest[digest]
+                for digest in sorted(proofs_by_digest)
+            ]
+            geometry_equivalence_records = [
+                equivalence_by_digest[digest]
+                for digest in sorted(equivalence_by_digest)
+            ]
+            route_proof_path = destination / "route_segment_proofs.jsonl"
+            route_proof_path.write_text(
+                "".join(
+                    json.dumps(_jsonable(record), sort_keys=True) + "\n"
+                    for record in route_segment_proofs
+                ),
+                encoding="utf-8",
+            )
+            geometry_equivalence_path = (
+                destination / "geometry_equivalence_records.jsonl"
+            )
+            geometry_equivalence_path.write_text(
+                "".join(
+                    json.dumps(_jsonable(record), sort_keys=True) + "\n"
+                    for record in geometry_equivalence_records
+                ),
+                encoding="utf-8",
+            )
+            option_d_paths.extend(
+                (route_proof_path, geometry_equivalence_path)
+            )
         option_d_paths.extend(
             (
                 lifecycle_audit_path,
@@ -1256,15 +1343,19 @@ def write_c2a_static_evidence(
         }
     report = {
         "schema_version": (
-            "g1.c2a.static.v5"
-            if bounded_v5
+            "g1.c2a.static.v6"
+            if hierarchical_v6
             else (
-                "g1.c2a.static.v4"
-                if normalized_v4
+                "g1.c2a.static.v5"
+                if bounded_v5
                 else (
-                    "g1.c2a.static.v3"
-                    if option_d
-                    else "g1.c2a.static.v2"
+                    "g1.c2a.static.v4"
+                    if normalized_v4
+                    else (
+                        "g1.c2a.static.v3"
+                        if option_d
+                        else "g1.c2a.static.v2"
+                    )
                 )
             )
         ),
@@ -1348,6 +1439,21 @@ def write_c2a_static_evidence(
             analytic_primitive_representation_record_sha256s=[
                 record["record_sha256"]
                 for record in analytic_representation_records
+            ],
+        )
+    if hierarchical_v6:
+        report.update(
+            route_segment_proof_count=len(route_segment_proofs),
+            route_segment_proof_sha256s=[
+                record["record_sha256"]
+                for record in route_segment_proofs
+            ],
+            geometry_equivalence_record_count=len(
+                geometry_equivalence_records
+            ),
+            geometry_equivalence_sha256s=[
+                record["geometry_equivalence_sha256"]
+                for record in geometry_equivalence_records
             ],
         )
     report_path = destination / "report.json"

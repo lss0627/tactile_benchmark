@@ -3468,11 +3468,15 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
     )
     assert "materialize_route_micro_segments(" in route_source
     assert "certify_route_segment_clearance(" in route_source
+    assert "route_proof_lifecycle_binding" in route_source
+    assert "route_proof_cache" in route_source
+    assert "geometry_equivalence_record" in route_source
     assert '"g1.pose_conditioned.route_diagnostics.v3"' in route_source
     runner_source = RUNNER_PATH.read_text(encoding="utf-8")
     assert '"g1.c2a.static.v6"' in runner_source
     assert "route_segment_proofs.jsonl" in runner_source
     assert "geometry_equivalence_records.jsonl" in runner_source
+    assert "build_geometry_equivalence_record(" not in runner_source
     query_source = inspect.getsource(
         real_runtime.PhysxResolvedOffsetAdapter._query_colliders
     )
@@ -3504,6 +3508,10 @@ def test_c2a_real_runtime_uses_three_fresh_cpu_mbp_scenes_per_candidate(
     factory_source = inspect.getsource(
         real_runtime.C2ARealSceneFactory.create_static_scene
     )
+    factory_init_source = inspect.getsource(
+        real_runtime.C2ARealSceneFactory.__init__
+    )
+    assert "self.route_proof_cache = RouteProofCache(" in factory_init_source
     assert "geometry_comparison_accumulator.snapshot()" in factory_source
     assert "record_id" in factory_source
     assert "record_sha256" in factory_source

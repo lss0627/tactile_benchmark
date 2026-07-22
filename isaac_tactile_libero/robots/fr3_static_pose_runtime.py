@@ -2257,6 +2257,7 @@ def certify_option_d_preliminary_route_diagnostics(
     trial_id: str,
     lifecycle_record_sha256: str,
     prepared_sweep_context: Any,
+    route_proof_cache: Any | None = None,
 ) -> dict[str, Any]:
     """Evaluate all unchanged command routes without sending controller targets."""
 
@@ -2269,8 +2270,12 @@ def certify_option_d_preliminary_route_diagnostics(
     from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
         G1_TRAJECTORY_CLASS_IDS,
         G1FullRobotClearanceError,
+        ROUTE_DIAGNOSTICS_SCHEMA_VERSION,
+        RouteProofCache,
+        build_geometry_equivalence_record,
         canonical_sha256,
-        certify_articulated_sweep,
+        certify_route_segment_clearance,
+        materialize_route_micro_segments,
     )
     from isaac_tactile_libero.runtime.g1_sweep_work import G1SweepWorkError
 
@@ -2325,6 +2330,8 @@ def certify_option_d_preliminary_route_diagnostics(
     command_minimum_effective: dict[str, float] = {
         command: math.inf for command in commands
     }
+    if route_proof_cache is None:
+        route_proof_cache = RouteProofCache(maximum_entries=64)
     for class_route in route_bundle["class_routes"]:
         class_id = str(class_route["class_id"])
         if class_id not in G1_TRAJECTORY_CLASS_IDS:
@@ -2348,6 +2355,10 @@ def certify_option_d_preliminary_route_diagnostics(
                 )
             predicted_q = q_initial.copy()
             action_records: list[dict[str, Any]] = []
+            route_actions: list[dict[str, Any]] = []
+            route_proof_request: dict[str, Any] | None = None
+            route_segment_proof: dict[str, Any] | None = None
+            geometry_equivalence_record: dict[str, Any] | None = None
             limiting_receipt: dict[str, Any] | None = None
             minimum_solid = math.inf
             minimum_effective = math.inf
@@ -2424,31 +2435,27 @@ def certify_option_d_preliminary_route_diagnostics(
                             "raw_dq": kernel.get("raw_dq"),
                             "clipped_dq": kernel.get("clipped_dq"),
                         }
-                    receipt = certify_articulated_sweep(
-                        snapshot=prepared_sweep_context.snapshot,
-                        action={
-                            "command_decimal": command_decimal,
-                            "class_id": class_id,
-                            "scene_id": scene_id,
-                            "trial_id": trial_id,
+                    assert governed_target is not None
+                    kernel_record_sha256 = canonical_sha256(
+                        {
+                            "action_index": action_index,
+                            "requested_vector_m": requested.tolist(),
+                            "observed_q": predicted_q.tolist(),
+                            "observed_qd": zero_qd.tolist(),
+                            "governed_target": governed_target.tolist(),
+                            "kernel": kernel_summary,
+                        }
+                    )
+                    route_actions.append(
+                        {
                             "action_index": action_index,
                             "observed_q": predicted_q.tolist(),
                             "observed_qd": zero_qd.tolist(),
                             "governed_target": governed_target.tolist(),
-                            "joint_velocity_limits": list(
-                                limits.joint_velocity_abs
-                            ),
-                            "physics_substeps": 3,
-                            "physics_dt_s": float(physics_dt_s),
-                            "tcp_declared_solid_clearance_m": 0.005,
-                            "phase": "preliminary_diagnostic",
-                            "lifecycle_record_sha256": str(
-                                lifecycle_record_sha256
-                            ),
-                        },
-                        phase_policy="c2a_no_contact",
-                        prepared_context=prepared_sweep_context,
+                            "kernel_record_sha256": kernel_record_sha256,
+                        }
                     )
+                    receipt = {}
                 except G1FullRobotClearanceError as error:
                     receipt = dict(error.receipt or {})
                     failure_code = error.code
@@ -2527,6 +2534,97 @@ def certify_option_d_preliminary_route_diagnostics(
                     break
                 assert governed_target is not None
                 predicted_q = governed_target.copy()
+            if failure_code is None and len(route_actions) == 256:
+                route_proof_request = {
+                    "schema_version": "g1.full_robot.route_proof_request.v1",
+                    "selected_pose_id": candidate["candidate_id"],
+                    "selected_pose_sha256": _sha256_json(candidate),
+                    "class_id": class_id,
+                    "command_decimal": command_decimal,
+                    "source_motif_sha256": command_route["motif_digest"],
+                    "shared_kernel_provenance_sha256": canonical_sha256(
+                        {
+                            "kernel_record_sha256s": [
+                                item["kernel_record_sha256"]
+                                for item in route_actions
+                            ]
+                        }
+                    ),
+                    "joint_names": list(joint_names),
+                    "physics_substeps": 3,
+                    "physics_dt_s": float(physics_dt_s),
+                    "joint_velocity_limits": list(
+                        limits.joint_velocity_abs
+                    ),
+                    "actions": route_actions,
+                }
+                route_proof_request["request_sha256"] = canonical_sha256(
+                    route_proof_request
+                )
+                try:
+                    materialize_route_micro_segments(route_proof_request)
+                    geometry_equivalence_record = (
+                        build_geometry_equivalence_record(
+                            snapshot=prepared_sweep_context.snapshot,
+                            request=route_proof_request,
+                        )
+                    )
+                    route_segment_proof = certify_route_segment_clearance(
+                        snapshot=prepared_sweep_context.snapshot,
+                        request=route_proof_request,
+                        phase_policy="c2a_no_contact",
+                        prepared_context=prepared_sweep_context,
+                        proof_cache=route_proof_cache,
+                    )
+                except G1SweepWorkError:
+                    raise
+                except Exception as error:
+                    failure_code = str(
+                        getattr(
+                            error,
+                            "code",
+                            "G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+                        )
+                    )
+                    failure_message = str(error)
+                if route_segment_proof is not None:
+                    minimum_solid = float(
+                        route_segment_proof[
+                            "minimum_certified_solid_lower_bound_m"
+                        ]
+                    )
+                    minimum_effective = float(
+                        route_segment_proof[
+                            "minimum_certified_effective_lower_bound_m"
+                        ]
+                    )
+                    limiting_receipt = dict(
+                        route_segment_proof[
+                            "limiting_certified_pair_block"
+                        ]
+                    )
+                    for action_record in action_records:
+                        action_record.update(
+                            sweep_safe=True,
+                            sweep_record_sha256=route_segment_proof[
+                                "record_sha256"
+                            ],
+                            minimum_solid_separation_m=minimum_solid,
+                            minimum_effective_contact_separation_m=(
+                                minimum_effective
+                            ),
+                            closest_pair=None,
+                            closest_segment=None,
+                            closest_time_fraction=None,
+                            failure_code=None,
+                            failure_message=None,
+                        )
+                        action_record["action_record_sha256"] = (
+                            canonical_sha256(
+                                action_record,
+                                exclude_fields=("action_record_sha256",),
+                            )
+                        )
             complete = (
                 failure_code is None
                 and len(action_records) == 256
@@ -2560,8 +2658,40 @@ def certify_option_d_preliminary_route_diagnostics(
                     else None
                 ),
                 "limiting_receipt": limiting_receipt,
+                "route_proof_request": route_proof_request,
+                "route_segment_proof": route_segment_proof,
+                "geometry_equivalence_record": (
+                    geometry_equivalence_record
+                ),
+                "route_proof_lifecycle_binding": (
+                    None
+                    if route_segment_proof is None
+                    else {
+                        "schema_version": (
+                            "g1.full_robot.route_proof_lifecycle_binding.v1"
+                        ),
+                        "scene_id": scene_id,
+                        "trial_id": trial_id,
+                        "lifecycle_record_sha256": lifecycle_record_sha256,
+                        "collision_snapshot_sha256": snapshot[
+                            "snapshot_sha256"
+                        ],
+                        "geometry_equivalence_sha256": route_segment_proof[
+                            "geometry_equivalence_sha256"
+                        ],
+                        "route_segment_proof_sha256": route_segment_proof[
+                            "record_sha256"
+                        ],
+                    }
+                ),
+                "route_proof_cache_statistics": (
+                    route_proof_cache.statistics()
+                ),
                 "action_records": action_records,
             }
+            binding = command_record["route_proof_lifecycle_binding"]
+            if binding is not None:
+                binding["binding_sha256"] = canonical_sha256(binding)
             command_record["command_route_sha256"] = canonical_sha256(
                 command_record
             )
@@ -2592,7 +2722,8 @@ def certify_option_d_preliminary_route_diagnostics(
         and all(command_completion[command])
     ]
     result = {
-        "schema_version": "g1.c2a.option_d.route_diagnostics.v2",
+        "schema_version": "g1.pose_conditioned.route_diagnostics.v3",
+        "schema_authority": ROUTE_DIAGNOSTICS_SCHEMA_VERSION,
         "route_input_schema_version": route_bundle["schema_version"],
         "route_output_schema_version": (
             "g1.pose_conditioned.command_bound_routes.v2"
@@ -2608,6 +2739,9 @@ def certify_option_d_preliminary_route_diagnostics(
         "phase_policy": "c2a_no_contact",
         "controller_targets_sent": 0,
         "runtime_contact_truth_replaced": False,
+        "route_segment_proof_schema_version": (
+            "g1.full_robot.route_segment_proof.v1"
+        ),
         "class_diagnostics": class_records,
         "complete_safe_commands": safe_commands,
         "geometric_upper_bound_command_decimal": (
@@ -2699,6 +2833,11 @@ class C2ARealSceneFactory:
         self.backend_shape_provenance_accumulator = (
             BackendShapeProvenanceAccumulator(run_id=str(run_id))
         )
+        from isaac_tactile_libero.runtime.g1_full_robot_clearance import (
+            RouteProofCache,
+        )
+
+        self.route_proof_cache = RouteProofCache(maximum_entries=64)
         self._backend_provenance_acquired = False
         self.lifecycle_records: list[dict[str, Any]] = []
         self.lifecycle_close_records: list[dict[str, Any]] = []
@@ -3253,7 +3392,7 @@ class C2ARealSceneFactory:
             self.scene_creation_failures.append(
                 {
                     "schema_version": (
-                        "g1.c2a.static.v5.creation_failure"
+                        "g1.c2a.static.v6.creation_failure"
                     ),
                     "candidate_id": scene_spec["candidate_id"],
                     "scene_id": scene_spec["scene_id"],
@@ -3822,12 +3961,17 @@ class C2ARealStaticScene:
                         "lifecycle_record_sha256"
                     ],
                     prepared_sweep_context=self.prepared_sweep_context,
+                    route_proof_cache=owner.route_proof_cache,
                 )
             )
         else:
             self.command_bound_route_diagnostics = {
                 "schema_version": (
-                    "g1.c2a.option_d.route_diagnostics.v2"
+                    "g1.pose_conditioned.route_diagnostics.v3"
+                ),
+                "schema_authority": "g1.pose_conditioned.route_diagnostics.v3",
+                "route_segment_proof_schema_version": (
+                    "g1.full_robot.route_segment_proof.v1"
                 ),
                 "selected_pose_id": self.candidate["candidate_id"],
                 "selected_pose_sha256": _sha256_json(self.candidate),
@@ -4011,7 +4155,7 @@ class C2ARealStaticScene:
         )
         self._next_action_index += 1
         return {
-            "schema_version": "g1.c2a.static.v5",
+            "schema_version": "g1.c2a.static.v6",
             "candidate_id": self.candidate["candidate_id"],
             "seed": self.owner.seed,
             "readiness_action_index": int(action_index),

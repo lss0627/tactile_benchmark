@@ -6307,6 +6307,9 @@ def _action_vector(value: Any, length: int, field: str) -> np.ndarray:
     return np.asarray(_finite_vector(value, length, field), dtype=np.float64)
 
 
+_ROUTE_LEAF_ACCOUNTING_TOKEN = object()
+
+
 def certify_articulated_sweep(
     *,
     snapshot: Mapping[str, Any],
@@ -6314,6 +6317,7 @@ def certify_articulated_sweep(
     phase_policy: str,
     maximum_depth: int = 24,
     prepared_context: PreparedArticulatedSweepContext | None = None,
+    _route_leaf_accounting_token: object | None = None,
 ) -> dict[str, Any]:
     """Certify command and stopping intervals for every collider pair."""
 
@@ -6415,7 +6419,11 @@ def certify_articulated_sweep(
                 else int(action.get("action_index"))
             ),
         )
-        prepared_context.ledger.consume("sweep_requests")
+        route_leaf = (
+            _route_leaf_accounting_token is _ROUTE_LEAF_ACCOUNTING_TOKEN
+        )
+        if not route_leaf:
+            prepared_context.ledger.consume("sweep_requests")
         sweep_cache_key = (
             str(sealed_snapshot["snapshot_sha256"]),
             str(phase_policy),
@@ -6427,7 +6435,8 @@ def certify_articulated_sweep(
         )
         if cached_receipt is not None:
             return dict(cached_receipt)
-        prepared_context.ledger.consume("unique_sweep_evaluations")
+        if not route_leaf:
+            prepared_context.ledger.consume("unique_sweep_evaluations")
     stopping_delta = (
         np.clip(qd, -velocity_limits, velocity_limits)
         * physics_dt
@@ -7706,14 +7715,23 @@ def certify_route_segment_clearance(
         str(request["request_sha256"]),
         str(phase_policy),
     )
+    if prepared_context is not None:
+        prepared_context.ledger.consume("sweep_requests", 256)
     if proof_cache is not None:
         cached = proof_cache.get(cache_key)
         if cached is not None:
+            proof = {
+                **cached,
+                "collision_snapshot_sha256": sealed["snapshot_sha256"],
+            }
+            proof["record_sha256"] = canonical_sha256(proof)
             return validate_route_segment_proof(
-                cached,
+                proof,
                 snapshot=sealed,
                 request=request,
             )
+    if prepared_context is not None:
+        prepared_context.ledger.consume("unique_sweep_evaluations", 256)
 
     subjects = list(sealed["subject_inventory"])
     obstacles = list(sealed["obstacle_inventory"])
@@ -7849,6 +7867,7 @@ def certify_route_segment_clearance(
                 },
                 phase_policy=phase_policy,
                 prepared_context=prepared_context,
+                _route_leaf_accounting_token=_ROUTE_LEAF_ACCOUNTING_TOKEN,
             )
         receipt = exact_action_receipts[action_index]
         selected_pairs = [
@@ -7900,20 +7919,8 @@ def certify_route_segment_clearance(
         evaluate_block=evaluate_block,
         evaluate_leaf=evaluate_leaf,
     )
-    cache_stats = (
-        proof_cache.statistics()
-        if proof_cache is not None
-        else {
-            "hits": 0,
-            "misses": 0,
-            "evictions": 0,
-            "entries": 0,
-            "maximum_entries": 0,
-        }
-    )
-    proof = {
+    proof_core = {
         "schema_version": ROUTE_SEGMENT_PROOF_SCHEMA_VERSION,
-        "collision_snapshot_sha256": sealed["snapshot_sha256"],
         "geometry_equivalence_sha256": equivalence[
             "geometry_equivalence_sha256"
         ],
@@ -7968,13 +7975,7 @@ def certify_route_segment_clearance(
         "performance": {
             "equivalent_sweep_requests": 256,
             "leaf_gjk_calls": hierarchy["leaf_gjk_calls"],
-            "proof_cache": cache_stats,
         },
-        "work_record": (
-            None
-            if prepared_context is None
-            else prepared_context.work_record(status="RUNNING")
-        ),
         "claim_scope": "DESIGN_TIME_REJECTION_FILTER_ONLY",
         "claim_eligible": False,
         "selected_command_cap_m": None,
@@ -7984,14 +7985,19 @@ def certify_route_segment_clearance(
         "wrench_valid": False,
         "raw_impulse_used_as_force": False,
     }
+    proof_core["pure_route_proof_sha256"] = canonical_sha256(proof_core)
+    if proof_cache is not None:
+        proof_cache.put(cache_key, proof_core)
+    proof = {
+        **proof_core,
+        "collision_snapshot_sha256": sealed["snapshot_sha256"],
+    }
     proof["record_sha256"] = canonical_sha256(proof)
     validated = validate_route_segment_proof(
         proof,
         snapshot=sealed,
         request=request,
     )
-    if proof_cache is not None:
-        proof_cache.put(cache_key, validated)
     return deepcopy(validated)
 
 

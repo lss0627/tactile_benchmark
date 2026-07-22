@@ -1001,6 +1001,46 @@ def _assert_hierarchical_route_segment_contracts(
         validated
     )
     assert cache.statistics()["hits"] == 1
+    fresh_snapshot = json.loads(json.dumps(full_snapshot))
+    fresh_snapshot["stage_lifecycle_token"] = "4" * 64
+    fresh_snapshot["diagnostic_ids"] = {
+        "stage_object_id": 1,
+        "articulation_object_id": 1,
+    }
+    fresh_equivalence = build_equivalence(
+        snapshot=fresh_snapshot,
+        request=request,
+    )
+    assert fresh_equivalence["geometry_equivalence_sha256"] == (
+        equivalence["geometry_equivalence_sha256"]
+    )
+    fresh_proof = certify_route(
+        snapshot=fresh_snapshot,
+        request=request,
+        phase_policy="c2a_no_contact",
+        proof_cache=cache,
+    )
+    assert fresh_proof["geometry_equivalence_sha256"] == (
+        proof["geometry_equivalence_sha256"]
+    )
+    assert fresh_proof["pure_route_proof_sha256"] == (
+        proof["pure_route_proof_sha256"]
+    )
+    assert fresh_proof["record_sha256"] != proof["record_sha256"]
+    assert cache.statistics()["hits"] == 2
+    geometry_mutation = json.loads(json.dumps(full_snapshot))
+    geometry_mutation["subject_inventory"][0]["contact_offset_resolved"] = (
+        float(geometry_mutation["subject_inventory"][0][
+            "contact_offset_resolved"
+        ])
+        + 0.001
+    )
+    assert build_equivalence(
+        snapshot=geometry_mutation,
+        request=request,
+    )["geometry_equivalence_sha256"] != equivalence[
+        "geometry_equivalence_sha256"
+    ]
     entry = next(iter(cache._entries.values()))
     entry.digest = "0" * 64
     with pytest.raises(Exception) as corrupt:
