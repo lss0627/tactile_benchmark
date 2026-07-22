@@ -7763,6 +7763,11 @@ def certify_route_segment_clearance(
                 command_decimal=str(request["command_decimal"]),
                 action_index=action_begin,
             )
+            prepared_context.ledger.consume("pair_certificate_calls")
+            prepared_context.ledger.consume(
+                "interval_evaluations",
+                pair_key=(pair_key[0], pair_key[1], "route_block"),
+            )
         subject, obstacle = pair_records[pair_key]
         block_segments = micro_segments[2 * action_begin : 2 * action_end]
         if len(block_segments) != 2 * (action_end - action_begin):

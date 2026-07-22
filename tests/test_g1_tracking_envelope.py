@@ -1025,6 +1025,33 @@ def _assert_hierarchical_route_segment_contracts(
     assert validated["wrench_valid"] is False
     assert validated["raw_impulse_used_as_force"] is False
 
+    route_context = module.prepare_articulated_sweep_context(
+        full_snapshot,
+        work_limits=importlib.import_module(
+            "isaac_tactile_libero.runtime.g1_sweep_work"
+        ).SweepWorkLimits(),
+        run_id="hierarchical-work-run",
+        scene_id="hierarchical-work-scene",
+        trial_id="hierarchical-work-trial",
+        lifecycle_record_sha256="a" * 64,
+    )
+    certify_route(
+        snapshot=route_context.snapshot,
+        request=request,
+        phase_policy="c2a_no_contact",
+        prepared_context=route_context,
+    )
+    route_work = route_context.work_record(status="COMPLETE")
+    assert route_work["counters"]["sweep_requests"] == 256
+    assert route_work["counters"]["unique_sweep_evaluations"] == 256
+    assert route_work["counters"]["pair_certificate_calls"] == 34
+    assert route_work["counters"]["interval_evaluations"] == 34
+    assert route_work["last_class_id"] == request["class_id"]
+    assert route_work["last_command_decimal"] == request[
+        "command_decimal"
+    ]
+    assert route_work["last_action_index"] == 0
+
     cached = certify_route(
         snapshot=full_snapshot,
         request=request,
