@@ -1,114 +1,98 @@
 # Paper Plan
 
-## Working contribution
+## Working title
 
-A reproducible tactile manipulation benchmark for contact-rich simulated tasks, with stable Isaac Sim 6.0.1 environments, truthful tactile/contact contracts, datasets with replay, and matched visual versus visual-tactile baselines.
+**TactiLIBERO: A Generalization Benchmark for Contact-Rich Manipulation**
+
+## Scientific contribution
+
+Existing tactile manipulation benchmarks commonly report success on a small
+fixed task set. TactiLIBERO asks whether policies generalize across unseen
+objects/geometry, contact/material/physics, and sensor/observation conditions
+under common data, training, and evaluation contracts.
+
+The contribution is:
+
+```text
+4-suite / 16-task benchmark
++ controlled generalization protocols
++ official offline data and online collection
++ unified training pipeline
++ tactile-specific evaluation toolkit
++ baseline zoo and static leaderboard
+```
 
 ## Intended claims
 
-Subject to G4–G6:
+Subject to G4–G6 evidence:
 
-1. The benchmark provides eight accepted contact-rich tasks with reproducible task-state success and stable public APIs.
-2. The dataset and replay pipeline preserve sensor validity, provenance, timing, and task outcomes.
-3. The evaluation protocol separates task performance from runtime-invalid episodes.
-4. Tactile observations improve selected contact-rich task performance over a matched visual baseline, if supported by results.
+1. TactiLIBERO provides 16 accepted contact-rich tasks across Precision,
+   Articulation, Surface Interaction, and Deformable Contact suites.
+2. GP-01/02/03 provide leakage-audited seen/unseen evaluation.
+3. Official data and the online platform share versioned episode, split, and
+   task contracts.
+4. BC, ACT, Diffusion, Transformer, and UniVTAC-compatible configurations can
+   be trained and compared through one interface.
+5. Tactile modalities change generalization performance under matched
+   conditions, only if supported by baseline evidence.
 
-The fourth claim is a hypothesis until G6 evidence exists.
-
-## Non-claims
-
-- Real-robot safety.
-- Formal proof of collision-free articulated motion.
-- Exact reproduction of LIBERO or UniVTAC.
-- Reference-driver validation before G6.
-- Valid vector force/wrench when masks are false.
-
-## Benchmark scale
-
-Paper-v0:
-
-- eight tasks;
-- at least 50 accepted demonstrations per task by default;
-- three training seeds;
-- 50 evaluation episodes per task per seed by default;
-- scripted/oracle, visual, and visual-tactile baselines.
-
-## Task design
-
-Task suite should span:
-
-- button pressing;
-- precision alignment/insertion;
-- sliding or pushing;
-- articulated opening/closing;
-- grasp-and-place with contact;
-- tool/surface interaction;
-- another fine contact task;
-- one multi-stage task.
-
-Each task needs a task card, licensed assets, reset distribution, language instruction, task-state success, budgets, and sensor requirements.
+Claim 5 is a hypothesis until G6.
 
 ## Experimental questions
 
-- Q1: Does tactile input improve success on contact-critical tasks?
-- Q2: Which task types benefit most?
-- Q3: Does tactile input reduce failure after initial contact?
-- Q4: How sensitive are results to data quantity and tactile dropout?
-- Q5: How reproducible are recorded demonstrations under simulator replay?
+- How large is the seen-to-unseen gap for each protocol and task suite?
+- Which contact-rich skills benefit most from tactile input?
+- Does tactile input reduce slip, excessive contact, or failed recovery?
+- How robust are policies to sensor noise, delay, drift, dropout, and transfer?
+- How do offline data and online interaction affect data efficiency?
 
-## Baselines
+## Paper-v1 experimental scale
 
-- Scripted/oracle reference: validates task feasibility and approximate ceiling.
-- Visual baseline: proprioception + RGB/depth as declared.
-- Visual-tactile baseline: identical model/training budget with tactile added.
-- Optional ablations: tactile dropout, Contact-only, data scale, temporal context.
-
-## Metrics
-
-Primary:
-
-- per-task success;
-- macro-average success.
-
-Secondary:
-
-- runtime-valid rate;
-- safe-retract rate;
-- Contact/tactile valid rate;
-- post-contact failure rate;
-- episode length/wall time;
-- replay outcome agreement;
-- failure taxonomy.
+- 16 tasks in four suites;
+- at least 50 accepted training demonstrations per task and 800 total;
+- three core protocols;
+- five learned algorithm configurations plus scripted/oracle;
+- vision-only, tactile-only, and vision–tactile comparisons;
+- three policy seeds;
+- at least 20 evaluation episodes per task condition per seed.
 
 ## Paper structure
 
-1. Motivation and related benchmarks.
-2. Benchmark design and task suite.
-3. Simulator/runtime/sensor contracts.
-4. Dataset and replay.
-5. Evaluation protocol.
-6. Baselines and results.
-7. Ablations and analysis.
-8. Limitations and reproducibility.
+1. Motivation: generalization is missing from tactile manipulation evaluation.
+2. Related work: LIBERO, ManiSkill, tactile benchmarks, imitation/VLA methods.
+3. Task suites, domains, sensors, and contracts.
+4. Data generation, official dataset, and online platform.
+5. Generalization protocols and metrics.
+6. Unified training and baseline zoo.
+7. Results, modality gaps, robustness, recovery, and data efficiency.
+8. Limitations, reproducibility, and extensions.
 
-## Required release artifacts
+## Required tables and figures
 
-- code and environment locks;
-- task cards/assets/licenses;
-- dataset and dataset card;
-- evaluation records;
-- baseline configs/checkpoints as permitted;
-- tables/figures generation scripts;
-- Gate evidence;
-- limitations and driver metadata.
+- suite/task/protocol matrix;
+- split and leakage statistics;
+- dataset quality and replay table;
+- seen/unseen success and generalization gap;
+- tactile metrics and failure taxonomy;
+- modality/algorithm radar chart;
+- data-efficiency curves;
+- static leaderboard snapshot.
+
+## Non-claims
+
+- real-robot safety or sim-to-real;
+- formal proof of collision-free unexecuted motion;
+- hardware cross-sensor transfer without calibrated devices;
+- superiority of tactile input before G6 results;
+- comprehensive 100-task or lifelong benchmark in paper-v1.
 
 ## Milestones
 
 ```text
 M1: G1 PressButton accepted
-M2: G2/G3 contracts frozen
-M3: eight tasks accepted
-M4: dataset + replay complete
-M5: evaluation + baselines complete
-M6: reference-driver rerun + paper release
+M2: G2 registries/contracts frozen
+M3: G3 collection platform accepted
+M4: G4 16 tasks + official data + replay accepted
+M5: G5 unified training + GP-01/02/03 accepted
+M6: G6 baselines + leaderboard + release accepted
 ```

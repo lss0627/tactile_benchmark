@@ -1,213 +1,371 @@
-# Feature Specification: Isaac Tactile LIBERO-Style Benchmark
+# Feature Specification: TactiLIBERO Generalization Benchmark
 
 **Feature Branch**: `001-benchmark-reconstruction`
 **Created**: 2026-07-24
 **Status**: In progress
-**Primary Runtime**: Isaac Sim 6.0.1, Python 3.12
-**Target Outcome**: A reproducible, physics-backed, tactile manipulation benchmark suitable for a research paper
+**Working Title**: TactiLIBERO: A Generalization Benchmark for Contact-Rich Manipulation
 
-## 1. Product Goal
+## 1. Research Goal
 
-Build a compact benchmark in the spirit of LIBERO and UniVTAC: a stable environment API, accepted manipulation tasks, truthful visual/contact/tactile observations, reproducible datasets, evaluation protocols, and baseline results.
+TactiLIBERO evaluates whether contact-rich manipulation policies generalize beyond the objects, contact conditions, materials, and sensor domains observed during training.
 
-The first accepted task is FR3 PressButton. It is the reference implementation used to validate the simulator adapter and benchmark contract before expanding to a paper suite.
+The benchmark is a complete research loop:
 
-This project is not a robot safety-certification system. It must enforce practical runtime safety and truthful evidence, but formal proofs of every collider sweep, PhysX cooked-shape equivalence, or narrow-phase implementation are optional diagnostics and do not block benchmark progress.
+```text
+Task Suite
++ Data Generation
++ Standard Offline Dataset
++ Unified Training Pipeline
++ Generalization Evaluation Protocol
++ Baseline Results and Toolkit
+```
 
-## 2. Scope
+The primary contribution is the generalization protocol and comparable training/evaluation contract—not the number of environments.
 
-### In scope
+The central scientific question is:
 
-- Isaac Sim 6.0.1 and Python 3.12 as the development baseline.
-- FR3 simulation with a movable PressButton mechanism.
-- Stable `make_env → reset → step → close` public behavior.
-- A 7D action contract and stable observation/info schemas.
-- RGB, depth, contact, and tactile observations with explicit validity masks.
-- Runtime guards for finite values, joint/workspace limits, per-step motion, budgets, collision/penetration, abort, and safe retract.
-- Deterministic reset, bounded rollout, physical task success, dataset collection, replay, evaluation, and baseline training.
-- A paper-oriented suite target of eight contact-rich tasks after PressButton acceptance.
-- Evidence manifests, media, hashes, configuration snapshots, and reproducibility instructions.
-- Development on driver `550.144.03` with `driver_validation=UNVALIDATED`.
+> Under identical data, splits, budgets, and evaluation rules, what kinds of generalization do tactile and visuo-tactile manipulation policies achieve, and where do they fail?
+
+## 2. Contribution Hierarchy
+
+1. **Generalization protocols** — leakage-safe seen/unseen evaluation.
+2. **Unified data collection and training** — offline and online research under one contract.
+3. **Task suites** — structured contact-rich coverage.
+4. **Contact-aware metrics** — success, efficiency, force quality, slip, and recovery.
+5. **Baseline zoo** — matched algorithms and modality ablations.
+6. **Evaluation toolkit and leaderboard** — one-command, verifiable reporting.
+7. **Task scale** — useful coverage, but not the primary novelty.
+
+## 3. Paper-v1 Scope
+
+### Required
+
+- Four task suites with four accepted tasks each: 16 canonical task instances.
+- Three official core generalization protocols.
+- An official offline dataset and an online environment/data-generation path.
+- Expert collection from scripted/oracle, controller, teleoperation, trained-policy rollout, and user-provided expert adapters.
+- Automatic resumable batch collection with parallel environments, retries, filtering, statistics, and validation.
+- A unified training interface for Behavior Cloning, ACT, Diffusion Policy, a Transformer policy, and a UniVTAC-compatible baseline.
+- Vision-only, tactile-only where meaningful, and visual-tactile fusion modality configurations.
+- One-command evaluation with generalization and contact-aware metrics.
+- A static, verifiable leaderboard and extensible policy/task/sensor/plugin registries.
+
+### Extension-ready but not paper-v1 blocking
+
+- One hundred-task expansion through additional task-family variants.
+- Trajectory, task-transfer, scene, and continual-learning protocols.
+- OpenVLA and π0 adapters.
+- A hosted untrusted-checkpoint execution service.
+- Real-robot transfer.
 
 ### Out of scope
 
-- Real-robot deployment or hardware safety certification.
-- A formal proof that every possible articulated motion is collision-free.
-- Mandatory validation of private PhysX cooked-shape or narrow-phase internals.
-- Reproducing the entire LIBERO task inventory.
-- Migrating the project to Isaac Lab solely for this benchmark.
-- Treating scalar force magnitude, raw impulse, geometry, button travel, or task success as a three-dimensional force vector or six-dimensional wrench.
-- Retrofitting historical failed evidence into a passing claim.
+- A task-only “UniVTAC++” contribution.
+- Claiming generalization from one aggregate success rate.
+- Treating 16 tasks as 16 unrelated hand-authored code paths.
+- Hidden test data entering training, model selection, or checkpoint selection.
+- Real-robot safety certification.
+- Mandatory proof of every possible articulated collision-free path.
+- Treating invalid force, wrench, Contact, or tactile fields as physical zero.
+- Claiming “first benchmark” before a related-work audit supports the wording.
 
-## 3. Claim Model
+## 4. Task Suites
 
-Formal Gate status remains:
+The first release contains exactly 16 accepted task instances:
+
+| Suite | Required tasks | Generalization variables |
+|---|---|---|
+| Precision | Peg insertion, USB-like insertion, key insertion/turn, pin/socket alignment | geometry, clearance, initial offset, orientation |
+| Articulation | Button press/release, switch actuation, drawer motion, cap/knob twist | damping, stiffness, direction, required travel |
+| Surface Interaction | Sliding, wiping, scraping, surface following | friction, material, speed, contact duration |
+| Deformable Contact | Soft pressing, sponge compression, fabric pull/place, cable/soft-part seating | compliance, deformation, load, contact distribution |
+
+Every task contains:
+
+- scene, object, robot, and tactile sensor configuration;
+- reset and randomization;
+- task-state success and failure;
+- reward or phase labels;
+- budgets;
+- train/validation/test variant rules;
+- scripted/oracle feasibility;
+- asset and license provenance.
+
+## 5. Core Generalization Protocols
+
+### GP-01 Object and Geometry Generalization
+
+Train on declared object identities, dimensions, and geometries; validate on new parameter combinations; test on held-out identities or geometry families.
+
+Forbidden test leakage includes shared mesh instances, transformed duplicates, and undeclared asset-family overlap.
+
+### GP-02 Contact, Material, and Physics Generalization
+
+Train on declared friction, stiffness, compliance, clearance, contact-pattern, and force-profile ranges; test on held-out combinations within published runtime safety limits.
+
+Valid evaluation distinguishes generalization from unsafe out-of-distribution physics.
+
+### GP-03 Sensor and Observation Generalization
+
+Train in one tactile sensor/calibration/noise domain and evaluate on held-out sensor domains, calibration, latency, noise, drift, dropped frames, occlusion, or scene appearance.
+
+Zero-shot, calibration-only, and task-data adaptation results are separate.
+
+### Extension protocols
+
+The contracts remain extensible to:
+
+- trajectory/path generalization;
+- task and skill transfer;
+- scene/layout generalization;
+- robustness and recovery stress tests;
+- continual and lifelong learning.
+
+These may be released after the three core protocols pass without changing paper-v1 claims.
+
+## 6. User Scenarios and Acceptance
+
+### User Story 1 — Run a trustworthy reference environment
+
+As a benchmark maintainer, I can reproduce the repository and run an accepted PressButton environment before expanding the suite.
+
+**Acceptance scenarios**
+
+1. Repository integrity passes from a clean checkout.
+2. PressButton completes 100 resets, a rendered 500-step rollout, and 10 consecutive task-state press/release/safe-retract episodes.
+3. Runtime safety, Contact truth, media, and evidence pass.
+
+### User Story 2 — Define and use the 16-task suite
+
+As a task researcher, I can select a suite/task, choose a split variant, reset the environment, train online or collect data, and evaluate task-state success.
+
+**Acceptance scenarios**
+
+1. Each suite contains exactly four accepted tasks.
+2. Every task has complete configuration, randomization, success/failure, reward/phase, split, and feasibility records.
+3. Variant generation is deterministic.
+4. No task uses geometric or action-count success fallback.
+
+### User Story 3 — Collect official or custom data
+
+As a dataset author, I can collect expert trajectories from multiple sources, resume interrupted collection, validate episodes, and create a versioned dataset.
+
+**Acceptance scenarios**
+
+1. Scripted, controller, teleoperation, trained-policy, and custom expert adapters share one collection contract.
+2. Batch collection supports parallel environments, retries, success filtering, resume, progress, and integrity checks.
+3. Episodes retain visual/tactile/proprioceptive state, actions, task phases, success, timestamps, and all randomization/split parameters.
+4. Community users can register robots, sensors, tasks, experts, and observation modalities through validated plugins.
+
+### User Story 4 — Train policies through one interface
+
+As a policy researcher, I can train multiple algorithms and modality ablations using identical data loading, normalization, horizons, seeds, budgets, validation selection, logging, and checkpoint rules.
+
+**Acceptance scenarios**
+
+1. BC, ACT, Diffusion Policy, Transformer, and UniVTAC-compatible configurations use the unified trainer.
+2. Vision-only, tactile-only, and visual-tactile variants use the same split and action contract.
+3. Checkpoint selection uses validation data only.
+4. Training outputs are reproducible and bound to data/config/source hashes.
+
+### User Story 5 — Evaluate generalization with one command
+
+As a benchmark user, I can evaluate a checkpoint on GP-01, GP-02, or GP-03 and receive complete per-episode and aggregate results.
+
+**Acceptance scenarios**
+
+1. The protocol loader resolves immutable train/validation/test manifests and passes a leakage audit.
+2. Evaluation reports seen/unseen success, generalization gap, runtime validity, completion time, contact metrics, slip, recovery, modality-drop degradation, and valid force metrics.
+3. JSON, CSV, radar data, HTML, manifest, checksums, and a result bundle are generated.
+4. Failed or invalid episodes are never silently replaced.
+
+### User Story 6 — Train and evaluate online
+
+As an online learning researcher, I can interact with the same registered environments and splits used by the offline benchmark.
+
+**Acceptance scenarios**
+
+1. Online rollout uses the same observation/action/task/sensor contracts.
+2. Environment steps expose reward or phase labels and termination semantics.
+3. Online-collected data can be validated and replayed by the official dataset tools.
+4. Offline and online results identify their data regime and cannot be silently aggregated.
+
+### User Story 7 — Compare and publish baseline results
+
+As a result reviewer, I can compare matched baselines and regenerate leaderboard entries from submitted episode records.
+
+**Acceptance scenarios**
+
+1. Every policy publishes modalities, model/compute scale, action conversion, horizon, training budget, and supported protocols.
+2. Aggregates regenerate exactly from episode records.
+3. Duplicate, stale, incomplete, tampered, or incompatible result bundles are rejected.
+4. A static leaderboard and radar/HTML report are generated from validated bundles.
+
+## 7. Functional Requirements
+
+### Foundation and task environments
+
+- **FR-001**: The active repository, contracts, configs, tests, and documentation MUST reproduce from a clean tracked checkout.
+- **FR-002**: The benchmark MUST retain the existing Gate/status/claim and immutable-evidence rules.
+- **FR-003**: PressButton MUST pass active G1 acceptance before formal suite data collection.
+- **FR-004**: Every task MUST define scene, objects, robot, tactile sensors, reset/randomization, task-state success/failure, reward or phase labels, budgets, and split rules.
+- **FR-005**: Task success MUST NOT use geometric, timer, or action-count fallback.
+- **FR-006**: Runtime execution MUST retain finite, joint, workspace, motion, collision, penetration, budget, abort, and safe-retract guards.
+- **FR-007**: Contact, scalar force, vector force, wrench, raw impulse, and tactile fields MUST remain distinct and explicitly masked.
+- **FR-008**: Historical failed evidence MUST remain immutable.
+
+### Task suites and variants
+
+- **FR-009**: Paper-v1 MUST contain exactly 16 accepted task instances.
+- **FR-010**: Each of four official suites MUST contain exactly four accepted tasks.
+- **FR-011**: Every task MUST bind assets/licenses, object/material/physics attributes, language, reset distribution, reward/phase, task-state success, budgets, and protocol eligibility.
+- **FR-012**: Every task MUST have scripted/oracle feasibility and reset-stability evidence.
+- **FR-013**: Task and variant identifiers and semantic versions MUST remain stable across data, training, evaluation, and leaderboard artifacts.
+- **FR-014**: Variant generation MUST be deterministic from tracked config and seed.
+- **FR-015**: Suite coverage reports MUST expose skill, object, contact, material, trajectory, sensor, and difficulty distributions.
+
+### Generalization protocols and splits
+
+- **FR-016**: GP-01, GP-02, and GP-03 MUST be separately versioned protocols.
+- **FR-017**: Every core protocol MUST publish immutable train, validation, test-seen, and test-unseen manifests.
+- **FR-018**: Split manifests MUST bind every identity and randomization field relevant to the protocol.
+- **FR-019**: A leakage auditor MUST reject forbidden object, mesh-family, parameter, generator-seed, sensor-calibration, scene, or privileged-metadata overlap.
+- **FR-020**: Seen and unseen results MUST be reported separately under matched episode populations and budgets.
+- **FR-021**: Generalization Gap MUST equal protocol-defined seen success minus unseen success.
+- **FR-022**: Zero-shot, calibration-only, task-data adaptation, offline, and online regimes MUST be distinct.
+- **FR-023**: Test manifests MUST NOT influence training, tuning, or checkpoint selection.
+
+### Data collection
+
+- **FR-024**: Collection MUST support scripted/oracle, classical controller, teleoperation, trained-policy rollout, and custom expert adapters.
+- **FR-025**: Every collected step MUST retain visual observations, tactile observations, joint state, end-effector pose, action, task phase/reward, success state, timestamps, and randomization/split parameters.
+- **FR-026**: Randomization records MUST include applicable object, material, friction, stiffness/compliance, trajectory, scene, sensor, noise, latency, drift, and seed identities.
+- **FR-027**: The batch collector MUST support task/suite selection, requested episode count, policy selection, parallel environments, retries, success filtering, resume, progress persistence, and statistics.
+- **FR-028**: Collection interruption MUST retain validated completed episodes and resumable progress without duplicating episode IDs.
+- **FR-029**: Dataset validation MUST reject duplicates, non-finite values, schema errors, invalid masks, missing timestamps, split leakage, and stale hashes.
+- **FR-030**: The official offline release MUST contain at least 50 accepted training demonstrations per task and a declared validation set.
+- **FR-031**: Held-out test variants MUST expose no training demonstrations.
+- **FR-032**: Simulator replay MUST report outcome agreement, state/timing/Contact divergence, and first divergence.
+- **FR-033**: Privileged replay/task state MUST remain separate from policy observations.
+- **FR-034**: Community plugins for robots, sensors, tasks, experts, and observation modalities MUST pass versioned registration and contract validation.
+
+### Unified training
+
+- **FR-035**: One training entry point MUST support BC, ACT, Diffusion Policy, Transformer, and UniVTAC-compatible algorithms.
+- **FR-036**: The trainer MUST use shared dataset loading, split resolution, normalization, observation/action horizon, seed, checkpoint, logging, and validation-selection contracts.
+- **FR-037**: Vision-only, tactile-only where meaningful, and visual-tactile fusion MUST be selectable without changing the task or split.
+- **FR-038**: Every training run MUST bind dataset, split, task, sensor, algorithm, source, and config digests.
+- **FR-039**: Checkpoint selection MUST use validation data only.
+- **FR-040**: Baseline fairness MUST record model parameters, training steps, optimizer/schedule, data count, compute, and selection rule.
+- **FR-041**: Online training MUST use the same registered environment and observation/action contracts as offline training.
+- **FR-042**: Online rollouts MUST be exportable through the official dataset writer and validator.
+
+### Metrics and evaluation
+
+- **FR-043**: Evaluation MUST report success, completion time, action/trajectory smoothness, trajectory efficiency, runtime validity, and safe retract.
+- **FR-044**: Evaluation MUST report Contact Efficiency, contact count/duration/stability, slip, recovery, and modality-drop degradation when sources are valid.
+- **FR-045**: Maximum/cumulative force, Force Smoothness, and force-limit metrics MUST be computed only from valid declared force measurements.
+- **FR-046**: GP-01 through GP-03 MUST report matched seen/unseen results and absolute Generalization Gap.
+- **FR-047**: Every evaluation MUST retain complete per-episode records and failure taxonomies.
+- **FR-048**: One evaluation entry point MUST generate JSON, CSV, radar data, HTML, logs, manifest, checksums, and a result bundle.
+- **FR-049**: Aggregates MUST regenerate deterministically from per-episode records.
+- **FR-050**: Evaluation counts, seeds, budgets, and uncertainty methods MUST be frozen before formal runs.
+
+### Baselines, toolkit, and release
+
+- **FR-051**: Paper-v1 MUST provide scripted/oracle plus unified BC, ACT, Diffusion Policy, Transformer, and UniVTAC-compatible baseline configurations.
+- **FR-052**: Policy manifests MUST declare modalities, context/action horizon, model/compute scale, training budget, adaptation mode, and unsupported combinations.
+- **FR-053**: Matched comparisons MUST use identical data, splits, reset seeds, action contracts, budgets, and checkpoint-selection rules.
+- **FR-054**: Result bundles MUST include per-episode results, policy/protocol/runtime metadata, hashes, and checksums.
+- **FR-055**: The leaderboard validator MUST reject incomplete, duplicate, stale, tampered, or incompatible submissions.
+- **FR-056**: The paper release MUST generate a static leaderboard and protocol radar/HTML report.
+- **FR-057**: OpenVLA, π0, additional tasks, and hosted evaluation MUST remain compatible extension points without blocking paper-v1.
+- **FR-058**: The release MUST package task/data/training/evaluation contracts, official data, baseline configs, results, licenses, and limitations.
+- **FR-059**: Development driver `550.144.03` MUST remain `UNVALIDATED`; final release claims require reference/validated-driver revalidation or an explicit limitation.
+- **FR-060**: The paper MUST report protocol-specific results rather than only aggregate success.
+- **FR-061**: “First generalization benchmark” wording MUST be used only if the final related-work audit supports it.
+- **FR-062**: Every active requirement and acceptance scenario MUST map to dependency-ordered tasks, tests, commands, and evidence.
+
+## 8. Success Criteria
+
+- **SC-001**: Clean-checkout integrity and the PressButton reference task pass required Gates.
+- **SC-002**: Exactly 16 accepted tasks exist, four per suite, with zero missing task-card or license records.
+- **SC-003**: GP-01, GP-02, and GP-03 manifests pass leakage audits with zero forbidden overlap.
+- **SC-004**: The official dataset contains at least 800 accepted training demonstrations, at least 50 per task, plus a declared validation set and no test-variant training demonstrations.
+- **SC-005**: Batch collection resumes after interruption without duplicate episode IDs and validates all retained episodes.
+- **SC-006**: At least two expert-source types besides scripted/oracle successfully collect schema-valid data.
+- **SC-007**: BC, ACT, Diffusion Policy, Transformer, and UniVTAC-compatible configurations train through the same entry point and produce validated checkpoints.
+- **SC-008**: Vision-only and visual-tactile variants use identical data/splits/budgets and differ only by declared modality/config changes.
+- **SC-009**: One evaluation command produces every required artifact and exact aggregate regeneration.
+- **SC-010**: Each core protocol reports three policy seeds and at least 20 test episodes per task variant/condition per seed.
+- **SC-011**: Contact/force/slip/recovery metrics are never emitted as valid when required source measurements are invalid.
+- **SC-012**: Offline and online results identify their data regime and are never silently aggregated.
+- **SC-013**: A validated static leaderboard and radar/HTML report regenerate from result bundles.
+- **SC-014**: No released result omits runtime-invalid episodes or silently replaces failed seeds.
+- **SC-015**: Final tables and figures regenerate from the release package on the declared environment.
+- **SC-016**: Paper claims are traceable to completed Gates and protocol-specific evidence.
+
+## 9. Key Entities
+
+- `TaskFamily`
+- `TaskInstance`
+- `SuiteManifest`
+- `DomainVariant`
+- `SensorDomain`
+- `ProtocolDefinition`
+- `SplitManifest`
+- `LeakageAudit`
+- `ExpertAdapter`
+- `CollectionJob`
+- `DemonstrationEpisode`
+- `ReplayRecord`
+- `TrainingRun`
+- `PolicyCapability`
+- `EvaluationCell`
+- `EpisodeResult`
+- `GeneralizationAggregate`
+- `ResultBundle`
+- `LeaderboardEntry`
+- `CommunityPlugin`
+
+## 10. Edge Cases
+
+- One asset appears under different filenames or transforms.
+- Parameter ranges overlap seen/unseen boundaries.
+- A collector restarts after writing an episode but before updating progress.
+- Success filtering removes hard but valid demonstrations and biases the dataset.
+- A custom expert writes a different action convention.
+- Teleoperation timestamps or sensor frames are incomplete.
+- Tactile data is unavailable but the schema contains placeholder arrays.
+- A training algorithm changes normalization or horizon outside the shared config.
+- A test checkpoint was selected using test performance.
+- Online data is mixed with offline data without labeling.
+- An evaluation aborts before task completion.
+- Aggregates are correct but episode records were altered.
+- A community plugin uses an incompatible contract version.
+
+All cases must fail explicitly or follow a published rule; silent fallback is forbidden.
+
+## 11. Gate Order
 
 ```text
-NOT_STARTED
-IN_PROGRESS
-BLOCKED
-PASS_SMOKE
-PASS_BENCHMARK
-```
-
-Existing claim classes remain unchanged. Compatibility and exploratory diagnostics use `runtime_smoke`. Benchmark claims require fresh evidence tied to the evidence-producing commit.
-
-The highest permitted claim is determined by the lowest incomplete required Gate:
-
-| Highest completed Gate | Permitted claim |
-|---|---|
-| G0 | Repository and no-simulator integrity only |
-| G1 | One accepted physics-backed PressButton runtime |
-| G2 | Stable unified benchmark environment API |
-| G3 | Truthful tactile capability and observation contract |
-| G4 | Accepted task suite, dataset, and replay |
-| G5 | Reproducible evaluation protocol and aggregate results |
-| G6 | Release and paper-ready benchmark package |
-
-Optional diagnostics may strengthen a claim but may never raise the Gate status by themselves.
-
-## 4. User Scenarios and Acceptance
-
-### User Story 1 — Reproduce the project from a clean checkout
-
-As a researcher, I can install the pinned Python 3.12 environment, run no-simulator tests, inspect the Isaac Sim 6.0.1 requirements, and reproduce repository-integrity evidence without relying on untracked inputs.
-
-**Acceptance scenarios**
-
-1. A clean checkout resolves every tracked configuration, schema, and test input.
-2. The test inventory, intentional future-RED inventory, hashes, warnings, and skip reasons are recorded.
-3. Isaac Sim 5.1 artifacts remain archived/reference material and do not define the active baseline.
-
-### User Story 2 — Run an accepted PressButton benchmark episode
-
-As a benchmark user, I can create the FR3 PressButton environment, reset it, issue bounded 7D actions, observe RGB/depth/contact/tactile data, press and release the button, retract safely, and close the runtime.
-
-**Acceptance scenarios**
-
-1. One hundred complete reset/lifecycle cycles finish with no stale handles or invalid state.
-2. A rendered 500-step bounded rollout finishes with no NaN/Inf, sustained penetration, budget violation, or post-abort actuation.
-3. Ten consecutive scripted episodes complete approach, press, release, and safe retract.
-4. Success is derived from the movable button state, not a geometric fallback.
-5. Contact/raw-contact facts are retained truthfully; unavailable force vectors and wrenches remain masked invalid.
-6. Evidence includes configuration/asset hashes, runtime metadata, episode summaries, and reviewable media.
-
-### User Story 3 — Use a stable benchmark API
-
-As an algorithm developer, I can use one public factory and stable action/observation contracts across mock, simulator, dataset, replay, and evaluation paths.
-
-**Acceptance scenarios**
-
-1. The 7D action meaning is identical across public backends.
-2. Observation shapes, dtypes, coordinate frames, timestamps, and validity masks are documented and tested.
-3. Reset and close are idempotent at the public boundary.
-4. Runtime-only imports remain lazy so no-simulator workflows work on ordinary Python installations.
-
-### User Story 4 — Build a compact tactile task suite and dataset
-
-As a dataset author, I can define accepted task cards, collect demonstrations, reject duplicates or invalid samples, and replay episodes in simulation.
-
-**Acceptance scenarios**
-
-1. The paper suite contains eight accepted contact-rich task cards, including PressButton.
-2. Each accepted task has explicit assets, initial-state distribution, language instruction, success predicate, budgets, sensor requirements, and license/provenance.
-3. Dataset records bind actions, observations, timestamps, masks, task/config/asset hashes, and termination reasons.
-4. Simulator replay reproduces the recorded task outcome within documented tolerances.
-
-### User Story 5 — Evaluate baselines and publish results
-
-As a paper author, I can train declared baselines, run a fixed evaluation protocol, aggregate results over tasks and seeds, and package code, data, evidence, and limitations.
-
-**Acceptance scenarios**
-
-1. Evaluation separates task success, safety/runtime validity, contact/tactile validity, and efficiency.
-2. Baselines use the same train/evaluation splits and observation contracts.
-3. Tables report task-level and aggregate statistics with seeds and uncertainty.
-4. Release evidence records simulator, Python, driver, GPU, assets, configs, code, and dataset versions.
-5. Final release results are revalidated on a current NVIDIA reference/validated driver, or the release remains explicitly non-reference and cannot claim reference-driver validation.
-
-## 5. Functional Requirements
-
-- **FR-001**: The repository MUST be reproducible from a clean tracked checkout.
-- **FR-002**: External assets and licenses MUST be declared with stable paths, versions, and digests.
-- **FR-003**: Gate status, claim class, blockers, freshness, and evidence roles MUST follow the existing schemas.
-- **FR-004**: The active development runtime MUST be Isaac Sim 6.0.1 with Python `>=3.12,<3.13`.
-- **FR-005**: The public environment lifecycle MUST remain `make_env`, `reset`, `step`, and `close`.
-- **FR-006**: The public action MUST be a documented 7D command with bounded translation, bounded rotation, and gripper semantics.
-- **FR-007**: PressButton MUST use a movable physics mechanism and a task-state success predicate.
-- **FR-008**: Benchmark success MUST NOT use a geometric, TCP-distance, or action-count fallback.
-- **FR-009**: Runtime execution MUST enforce finite-value, joint, workspace, per-step motion, total-step, wall-time, abort, and post-abort-actuation guards.
-- **FR-010**: Runtime collision and sustained-penetration checks MUST fail closed when their required provenance is unavailable.
-- **FR-011**: Contact readings and raw contacts MUST retain validity, freshness, body-pair, timestamp, physics-step, and count provenance when available.
-- **FR-012**: Scalar force magnitude MUST NOT populate vector-force or wrench fields.
-- **FR-013**: Unvalidated vector-force and wrench masks MUST remain false.
-- **FR-014**: G1 MUST include 100 complete reset/lifecycle cycles.
-- **FR-015**: G1 MUST include a rendered 500-step bounded rollout.
-- **FR-016**: G1 MUST include 10 consecutive successful PressButton episodes with release and safe retract.
-- **FR-017**: G1 evidence MUST include machine-readable artifacts, media, checksums, asset/config hashes, runtime metadata, and an evidence review.
-- **FR-018**: Full-robot continuous-sweep, GJK, cooked-shape, and backend-authority investigations MUST be optional diagnostics, not G1 acceptance dependencies.
-- **FR-019**: Optional diagnostics MUST remain bounded, evidence-producing, and incapable of silently overriding runtime Contact/collision truth.
-- **FR-020**: The unified observation contract MUST declare shape, dtype, frame, timestamp, synchronization, and validity mask for every field.
-- **FR-021**: RGB and depth MUST be captured by real rendering ticks and satisfy declared shape/dtype/finite/update checks.
-- **FR-022**: The tactile contract MUST distinguish native measurements, derived measurements, unavailable values, and mocks.
-- **FR-023**: Every accepted task MUST have a versioned task card and deterministic validation.
-- **FR-024**: Dataset collection MUST reject incomplete, non-finite, duplicate, stale, or schema-invalid episodes.
-- **FR-025**: Dataset replay MUST execute through the simulator and report outcome/timing divergence.
-- **FR-026**: Evaluation MUST produce per-episode records, task aggregates, seed aggregates, and failure taxonomies.
-- **FR-027**: Baseline comparisons MUST use matched data, observations, task splits, budgets, and evaluation rules.
-- **FR-028**: G6 MUST package code, environment locks, task cards, dataset cards, evaluation outputs, evidence, licenses, and limitations.
-- **FR-029**: Driver `550.144.03` MAY be used for development only with `driver_validation=UNVALIDATED`; it MUST NOT be represented as NVIDIA reference validation.
-- **FR-030**: Reference/validated-driver reruns are a G6 release requirement and MUST NOT block G1 development acceptance.
-- **FR-031**: Historical evidence MUST remain immutable and keep its original status.
-- **FR-032**: Every active task MUST map to a functional requirement, success criterion, or acceptance statement.
-
-## 6. Success Criteria
-
-- **SC-001**: Clean-checkout tests and evidence review pass with the approved test inventory and no unexpected failures.
-- **SC-002**: The active runtime reports Isaac Sim 6.0.1, Python 3.12, CPU physics/MBP, explicit rendering device, and driver-validation metadata.
-- **SC-003**: One hundred PressButton reset/lifecycle cycles complete with zero stale handles and zero invalid-after-ready-window sensors.
-- **SC-004**: A rendered 500-step rollout completes within configured budgets with zero NaN/Inf and zero sustained penetration beyond the absolute limit.
-- **SC-005**: Ten consecutive PressButton episodes achieve observed press, release, and safe retract with zero post-abort actuation.
-- **SC-006**: Every G1 episode preserves truthful Contact/raw-contact provenance and keeps force-vector/wrench masks false unless independently validated.
-- **SC-007**: RGB/depth frames satisfy the public contract and include synchronization evidence.
-- **SC-008**: G1 has reviewable media and a fresh manifest bound to the evidence-producing commit.
-- **SC-009**: The unified public API passes contract snapshots across supported backends.
-- **SC-010**: Eight task cards pass schema, asset, reset, success, and license checks.
-- **SC-011**: The released dataset passes schema and duplicate checks and simulator replay reports documented tolerances.
-- **SC-012**: Evaluation produces task-level and aggregate metrics for all declared seeds with no missing episode records.
-- **SC-013**: At least the scripted/oracle reference and one learned baseline are evaluated under identical rules.
-- **SC-014**: G6 release artifacts reproduce tables and figures from versioned inputs.
-- **SC-015**: Optional formal diagnostics never convert a failed runtime sample into an accepted sample and never elevate a Gate alone.
-
-## 7. Required Gate Order
-
-```text
-P0/G-1A/G-1B migration checkpoints
+P0/G-1A/G-1B migration
 → G0 repository integrity
-→ G1 PressButton benchmark runtime
-→ G2 unified environment contract
-→ G3 tactile capability
-→ G4 task suite, dataset, and replay
-→ G5 evaluation
-→ G6 baselines and paper release
+→ G1 PressButton reference runtime
+→ G2 task/sensor/data/training/evaluation contracts and registries
+→ G3 tactile sensor interoperability and collection foundation
+→ G4 16 tasks, official data, online collection, and replay
+→ G5 unified training, three generalization protocols, metrics, and evaluation toolkit
+→ G6 baseline results, static leaderboard, paper, and release
 ```
 
-Later Gates MUST NOT be used to claim that an earlier required Gate passed.
+Offline schema/design work may proceed in parallel, but formal data collection or benchmark claims cannot bypass predecessor Gates.
 
-## 8. Current State After Rebaseline
+## 12. Assumptions
 
-- Migration to Isaac Sim 6.0.1 and Python 3.12 is complete.
-- G0 is `PASS_BENCHMARK` for repository integrity.
-- G1 remains `BLOCKED` until the new benchmark-oriented reset, rollout, episode, media, and evidence requirements are executed.
-- Historical full-robot sweep, geometry-authority, and performance diagnostics remain valid historical evidence but are removed from the mandatory G1 dependency graph.
-- G2–G6 remain `NOT_STARTED`.
-- T151/T152 are historical completed migration/diagnostic tasks.
-- T070 is superseded by the new G1 acceptance tasks in `tasks.md`; it is not to be retroactively checked.
-
-## 9. Assumptions
-
-- Simulation is the benchmark authority; this specification does not claim real-world safety or sim-to-real validity.
-- CPU physics and MBP remain the validated development path until a separate GPU Contact effort passes.
-- Rendering may use the RTX 4090 while physics remains on CPU.
-- The first paper release favors a small, well-tested task suite over a large but weakly validated task count.
-- The benchmark may cite LIBERO and UniVTAC as design inspiration without claiming exact task or implementation equivalence.
+- Paper-v1 uses 16 high-quality tasks rather than 100 shallow variants.
+- The official dataset starts with at least 50 accepted training demonstrations per task and expands based on quality/data-scaling studies.
+- Default formal evaluation uses three policy seeds and at least 20 test episodes per task condition per seed.
+- At least two tactile sensor domains are available for GP-03; exact names depend on adapter, asset, and license validation.
+- Scripted/oracle, BC, ACT, Diffusion Policy, Transformer, and UniVTAC-compatible configurations are paper-v1 scope.
+- OpenVLA, π0, continual learning, and hosted leaderboard execution are planned extensions.

@@ -1,48 +1,65 @@
-# Training Protocol
+# Unified Training Protocol
 
-## Frozen inputs
+## Interface
 
-Before training:
+```bash
+python scripts/train.py \
+  --algo act \
+  --suite articulation \
+  --protocol contact_material_physics \
+  --modalities vision tactile proprio \
+  --dataset manifests/tactilibero-v1.json \
+  --seed 0
+```
 
-- G4 dataset version and splits;
-- task-card versions;
-- observation/action contracts;
-- preprocessing;
-- model family and budget;
-- optimizer/schedule;
-- seed list;
-- checkpoint selection rule.
+The same interface supports BC, ACT, Diffusion Policy, Transformer, and
+UniVTAC-compatible configurations.
 
-## Default seeds
+## Shared preprocessing
 
-Use three declared training seeds. Never replace a failed seed without retaining the failure and documenting the replacement.
+Before training, freeze:
 
-## Data handling
+- dataset and split manifests;
+- task and observation/action contract versions;
+- train-only normalization statistics;
+- image/tactile resizing and augmentation;
+- observation and action horizons;
+- padding/mask semantics;
+- optimizer, schedule, update budget, and seed list;
+- validation metric and checkpoint selection rule.
 
-- use only accepted training episodes;
-- preserve modality masks;
-- no test/OOD leakage;
-- no privileged replay metadata;
-- log duplicate filtering and sample weights;
-- keep visual and visual-tactile data selection matched.
+All modality variants reuse the same eligible episode IDs. Missing modalities
+are represented through declared masks, never filled with privileged state.
 
-## Checkpoint selection
+## Offline training
 
-Select checkpoints using the declared validation metric only. Test results cannot influence selection.
+Offline runs consume only accepted training episodes from the official
+dataset. Validation selects the checkpoint. Seen/unseen test results cannot
+affect selection.
 
-## Reproducibility record
+## Online training
+
+Online methods use the same registered environments and episode schema.
+Reports include environment steps, raw/accepted episodes, retries, collection
+policy, update count, and wall time. Online interaction may not access
+test-only variant identities through reset or privileged metadata.
+
+## Checkpoints and logs
 
 Store:
 
-- environment/source/data/config hashes;
-- seed;
-- command;
-- hardware/runtime metadata;
-- training logs;
+- algorithm/capability/version;
+- source, data, split, config, and normalization digests;
+- seed and command;
+- runtime/hardware metadata;
+- scalar logs and failure codes;
 - checkpoint hashes;
-- selection result;
-- failure codes.
+- validation selection record.
 
-## Compute fairness
+Resume requires all authoritative digests to match.
 
-Match training steps and optimization settings. If tactile input changes parameters or compute materially, report both and include a matched-compute or matched-capacity comparison.
+## Fairness
+
+Paper-v1 uses three declared seeds. Failed seeds remain in the record.
+Differences in parameters, training compute, environment interactions, or
+pretraining are disclosed and normalized or analyzed separately.

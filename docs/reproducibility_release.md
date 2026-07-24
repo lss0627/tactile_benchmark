@@ -2,40 +2,55 @@
 
 ## Release bundle
 
-- source commit/tag;
-- Python/Isaac environment locks;
+- tagged source and Python/Isaac locks;
 - simulator/driver/GPU/physics metadata;
-- task cards and configs;
+- four suite manifests and 16 task cards;
+- sensor, expert, policy, and protocol registries;
 - asset/license manifest;
-- dataset and dataset card;
-- replay report;
-- evaluation protocol/results;
-- baseline configs/checkpoints as permitted;
-- table/figure generation;
-- Gate evidence/checksums;
-- limitations.
+- collection commands and official dataset;
+- dataset card, split manifests, leakage and replay reports;
+- training configs/logs/checkpoints as permitted;
+- evaluation records and result bundles;
+- JSON/CSV/radar/HTML generation;
+- static leaderboard;
+- Gate evidence, checksums, and limitations.
 
 ## Reproduction levels
 
-1. No-simulator: schemas, contracts, dataset/evaluation tooling.
-2. Runtime: accepted task and sensor smokes.
-3. Dataset: validation and replay.
-4. Evaluation: regenerate per-episode aggregates/tables.
-5. Training: reproduce baseline checkpoints/results.
+1. **No simulator**: contracts, dataset loading, training/evaluation fixtures,
+   and report generation.
+2. **Runtime**: accepted tasks, sensors, and online interaction.
+3. **Collection**: reproduce reference collection jobs and validation.
+4. **Dataset**: validate official data and simulator replay.
+5. **Training**: reproduce selected offline/online baseline runs.
+6. **Evaluation**: regenerate protocol aggregates, figures, and leaderboard.
+
+## One-command workflows
+
+Documented commands must cover:
+
+```text
+collect_data.py
+validate_dataset.py
+replay_dataset.py
+train.py
+evaluate.py
+build_leaderboard.py
+```
+
+Each output is immutable and bound to source/config/task/split/data/checkpoint
+hashes.
 
 ## Driver rule
 
-Development results on `550.144.03` remain explicitly `UNVALIDATED`. G6 requires rerunning final physical, dataset, replay, and evaluation evidence on a current NVIDIA reference/validated driver.
-
-If that rerun cannot be performed, the development artifact may be shared but G6 remains blocked and the paper/release cannot claim reference-driver validation.
-
-## Immutable evidence
-
-- Evidence directories are never overwritten.
-- Failed attempts remain failed.
-- Every formal result is bound to source/config/task/asset/data hashes.
-- Checksums and freshness are reviewed before claims.
+Development results on `550.144.03` remain `UNVALIDATED`. G6 requires final
+physical, dataset/replay, and evaluation evidence on a current NVIDIA
+reference/validated driver. If unavailable, the development artifact may be
+shared but the corresponding release claim remains blocked.
 
 ## Paper artifact
 
-The paper artifact must regenerate reported tables and figures from machine-readable episode results and identify any external assets or credentials needed for simulator execution.
+The paper artifact regenerates tables, plots, HTML reports, and the static
+leaderboard solely from validated machine-readable result bundles. Offline
+data remains usable without Isaac Sim; online reproduction states all external
+assets, credentials, and hardware requirements.

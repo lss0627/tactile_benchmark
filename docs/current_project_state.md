@@ -4,75 +4,77 @@
 
 ## Goal
 
-Publish a reproducible LIBERO/UniVTAC-style tactile manipulation benchmark, not a formal simulator-geometry certification system.
+Deliver *TactiLIBERO: A Generalization Benchmark for Contact-Rich
+Manipulation*. Paper-v1 is not an eight-scene UniVTAC extension: it is a
+four-suite/16-task platform with offline and online data, unified training,
+three core generalization protocols, baseline results, and a static
+leaderboard.
 
 ## Gate status
 
 | Gate | Status | Meaning |
 |---|---|---|
-| Migration P0/G-1A/G-1B | Complete | Isaac Sim 6.0.1/Python 3.12 baseline established |
+| Migration P0/G-1A/G-1B | Complete | Isaac Sim 6.0.1/Python 3.12 baseline |
 | G0 | `PASS_BENCHMARK` | Repository integrity only |
-| G1 | `BLOCKED` | New benchmark runtime evidence not yet executed |
-| G2 | `NOT_STARTED` | Unified API waits for G1 |
-| G3 | `NOT_STARTED` | Tactile contract waits for G2 |
-| G4 | `NOT_STARTED` | Tasks/dataset/replay wait for G2/G3 |
-| G5 | `NOT_STARTED` | Evaluation waits for G4 |
-| G6 | `NOT_STARTED` | Baselines/release wait for G5 |
+| G1 | `BLOCKED` | PressButton acceptance evidence incomplete |
+| G2 | `NOT_STARTED` | Public API and registries |
+| G3 | `NOT_STARTED` | Sensors and data-collection foundation |
+| G4 | `NOT_STARTED` | 16 tasks, splits, official data, replay |
+| G5 | `NOT_STARTED` | Unified training and generalization evaluation |
+| G6 | `NOT_STARTED` | Baselines, static leaderboard, paper release |
 
-## What is complete
+## Complete foundations
 
 - Isaac Sim 6.0.1 and Python 3.12 migration.
-- Independent runtime environment and archived 5.1 reference.
+- Archived Isaac Sim 5.1 reference baseline.
 - First-party deprecated Isaac import cleanup.
-- G0 clean-checkout/evidence infrastructure.
-- FR3, PressButton, controller, Contact, camera, and evidence building blocks.
-- Extensive historical diagnostics for target latching, tracking, geometry, Contact retention, lifecycle, and performance.
+- Clean-checkout/evidence infrastructure.
+- FR3, PressButton, Contact, camera, controller, and evidence components.
+- Historical G1 diagnostics retained as optional engineering evidence.
 
-## What changed
+## Active reference-task blocker
 
-The project no longer requires full-robot continuous-sweep/GJK/cooked-shape proof to pass G1. Those investigations remain historical optional diagnostics.
-
-Active G1 blockers are now:
+G1 still needs current evidence for:
 
 ```text
-G1_RESET_STABILITY_NOT_PROVEN
-G1_BOUNDED_ROLLOUT_NOT_PROVEN
-G1_REQUIRES_10_CONSECUTIVE_EPISODES
-G1_MEDIA_EVIDENCE_NOT_PRODUCED
+100 stable reset cycles
+1 rendered 500-step bounded rollout
+10 consecutive approach/press/release/retract episodes
+truthful Contact and task-state success
+media, manifest, checksums, and review
 ```
 
-## Immediate next work
+Formal proof of every unexecuted articulated trajectory is not a G1
+requirement.
 
-1. Refresh G0 after the documentation/contract rebaseline.
-2. Add RED tests for benchmark-oriented G1.
-3. Implement a single `run_g1_press_button_benchmark.py` path.
-4. Run one pilot.
-5. Run 100 resets.
-6. Run a rendered 500-step rollout.
-7. Run 10 consecutive formal episodes.
-8. Review evidence and either pass G1 or retain exact benchmark blockers.
+## Product work after G1
 
-## Runtime boundary
+1. G2: freeze environment/task/sensor/expert/policy registries and contracts.
+2. G3: implement tactile lifecycle plus batch/resumable/user-extensible
+   collection.
+3. G4: accept four suites/16 tasks, GP-01/02/03 splits, at least 800 official
+   training demos, validation, and replay.
+4. G5: run one offline/online training interface and generalization evaluator.
+5. G6: produce scripted/oracle and learned baseline results, static
+   leaderboard, artifact package, and reference-driver rerun.
+
+## Truth and runtime boundary
 
 ```text
 Isaac Sim 6.0.1
 Python 3.12
-CPU physics
-MBP broadphase
+CPU physics / MBP
 GPU dynamics disabled
 RTX rendering
 Driver 550.144.03 / UNVALIDATED
 ```
 
-## Truth boundary
+Task success comes from task state. Missing tactile/force data is masked, not
+invented. Scalar force, raw impulse, vector force, and wrench remain distinct.
+No historical failed evidence is relabeled.
 
-- Task success must come from button state.
-- Runtime raw Contact/collision remains fail closed.
-- Scalar force is not vector force.
-- Raw impulse is not force.
-- Unvalidated vector force/wrench masks remain false.
-- Historical failed evidence remains failed.
+## Progress interpretation
 
-## Paper progress interpretation
-
-The simulator migration is complete, but the benchmark is not yet paper-ready. G1 establishes the reference task; G2–G6 still deliver the API, tactile capability, eight-task suite, dataset, evaluation, baselines, and release.
+Migration and repository reproducibility are complete. The paper benchmark is
+not complete until G1–G6 pass. Documentation of the future platform does not
+constitute implementation or baseline evidence.

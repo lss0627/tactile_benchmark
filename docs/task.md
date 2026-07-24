@@ -1,30 +1,33 @@
 # Active Work Summary
 
-The authoritative task list is:
+The authoritative dependency-ordered task list is:
 
 `specs/001-benchmark-reconstruction/tasks.md`
 
-## Current milestone
+## Immediate milestone
 
-Complete the rebaselined G1 PressButton benchmark:
+Complete G1 PressButton:
 
-1. refresh G0;
-2. freeze new G1 RED contracts;
-3. implement one benchmark runner;
-4. run one pilot;
-5. pass 100 resets;
-6. pass a rendered 500-step rollout;
-7. pass 10 consecutive episodes;
-8. review and close G1.
+1. preserve/refresh repository-integrity evidence;
+2. run 100 stable resets;
+3. run one rendered 500-step bounded rollout;
+4. run 10 consecutive task-state press/release/retract episodes;
+5. retain truthful Contact, media, manifests, and checksums;
+6. review and either pass G1 or retain exact runtime blockers.
 
-Do not resume the historical formal-geometry chain as a G1 prerequisite.
+Historical formal-geometry diagnostics are not G1 prerequisites.
 
-## After G1
+## Product sequence
 
 ```text
-G2 unified API
-→ G3 tactile capability
-→ G4 eight tasks + dataset + replay
-→ G5 evaluation
-→ G6 baselines + paper release
+G1 reference task
+→ G2 API and registries
+→ G3 sensors and data collection
+→ G4 4 suites / 16 tasks + official dataset + replay
+→ G5 unified training + GP-01/02/03 evaluation
+→ G6 baselines + static leaderboard + paper release
 ```
+
+The active tasks explicitly cover offline and online data, community
+registration, BC/ACT/Diffusion/Transformer/UniVTAC-compatible training,
+matched modality baselines, and machine-readable/CSV/radar/HTML output.

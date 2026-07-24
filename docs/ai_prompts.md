@@ -2,94 +2,141 @@
 
 ## Mandatory context
 
-Every implementation agent must read:
+Before editing, read:
 
 - `specs/001-benchmark-reconstruction/spec.md`
 - `specs/001-benchmark-reconstruction/plan.md`
 - `specs/001-benchmark-reconstruction/tasks.md`
 - `specs/001-benchmark-reconstruction/acceptance.md`
-- `specs/001-benchmark-reconstruction/g1-benchmark-rebaseline.md`
+- `specs/001-benchmark-reconstruction/contracts/benchmark-runtime.md`
+- `specs/001-benchmark-reconstruction/contracts/data-training.md`
+- `specs/001-benchmark-reconstruction/contracts/generalization-evaluation.md`
+- `specs/001-benchmark-reconstruction/tactilibero-generalization-rebaseline.md`
 - `docs/current_project_state.md`
 
-Historical G1 formal-geometry documents are reference-only. They do not override active acceptance.
+Historical G1 geometry/performance documents are reference-only and cannot
+override active acceptance.
 
 ## Master implementation prompt
 
 ```text
-You are implementing Isaac Tactile LIBERO-Style Benchmark on the current repository branch.
+Implement TactiLIBERO on the current repository branch.
 
-Goal:
-Build a reproducible, physics-backed, simulation-only tactile manipulation benchmark suitable for a paper. The immediate milestone is G1 PressButton acceptance, followed by G2–G6. This is not a formal robot safety-certification project.
+Product objective:
+Build a paper-ready generalization benchmark for contact-rich manipulation,
+not an eight-task UniVTAC extension and not a task-count demo. Paper-v1 is one
+complete platform:
 
-Read the active specification, plan, tasks, acceptance, runtime contract, rebaseline decision, and current project state before editing.
+Task Suite
++ Data Generation
++ Standard Dataset
++ Training Pipeline
++ Evaluation Protocol
++ Baseline Results
+
+Fixed paper-v1 scope:
+- four suites and exactly 16 accepted tasks;
+- GP-01 object/geometry, GP-02 contact/material/physics, and GP-03
+  sensor/observation;
+- official offline dataset plus online collection/training;
+- at least 50 accepted training demonstrations per task and 800 total;
+- test-only variants contribute zero training demonstrations;
+- one training interface for BC, ACT, Diffusion Policy, Transformer, and
+  UniVTAC-compatible policies;
+- matched vision-only, tactile-only, and vision–tactile configurations;
+- three policy seeds and at least 20 evaluation episodes per task condition
+  per seed;
+- JSON, CSV, radar, HTML, result bundle, and static leaderboard outputs.
 
 Rules:
-1. Follow tasks.md dependency order.
+1. Follow tasks.md dependencies and complete the largest coherent verified
+   phase whose predecessor Gates pass.
 2. Use RED→GREEN for behavior changes.
-3. Preserve historical evidence and failed attempts unchanged.
-4. Keep runtime hard guards, task-state success, Contact/raw-contact truth, false unavailable force/wrench masks, budgets, safe retract, and zero post-abort actuation.
-5. Full-robot continuous-sweep/GJK/cooked-shape/private narrow-phase work is optional diagnostic work and must not block or pass G1.
-6. Do not change thresholds, action semantics, task success, budgets, task count, dataset splits, or evaluation counts without a written decision.
-7. Keep CPU physics/MBP/GPU dynamics disabled for the accepted path; RTX rendering may use the GPU.
-8. Driver 550.144.03 must remain UNVALIDATED; reference-driver rerun is a G6 requirement.
-9. Never fabricate vector force, wrench, Contact, task success, or missing evidence.
-10. Do not mix unrelated dirty-worktree changes into commits.
+3. Preserve failed/historical evidence and unrelated dirty-worktree changes.
+4. Keep task-state success, hard guards, Contact truth, masks, safe retract,
+   budgets, and zero post-abort actuation.
+5. Never treat scalar force/raw impulse/geometry as vector force or wrench.
+6. All task episodes bind suite/task/protocol/split/randomization/source hashes.
+7. All splits are frozen before training and pass leakage audit.
+8. Shared data loader, normalization, horizons, checkpoint selection, and
+   evaluation must enforce baseline fairness.
+9. Runtime-invalid episodes and failed seeds remain visible.
+10. Driver 550.144.03 remains UNVALIDATED; G6 requires reference-driver rerun.
 
-Start with the first unchecked task whose dependencies are complete. Continue through the largest coherent phase that can be verified without crossing a real runtime safety blocker.
+Non-blocking extensions:
+100-task expansion, trajectory/task/scene/continual protocols, OpenVLA/π0,
+hosted untrusted-checkpoint evaluation, and real robots.
 
-For G1, the required acceptance is:
-- 100 complete reset cycles;
-- one rendered 500-step bounded rollout;
-- 10 consecutive PressButton approach/press/release/safe-retract episodes;
-- task-state-only success;
-- truthful Contact/raw Contact;
-- zero NaN/Inf, sustained penetration beyond limit, and post-abort actuation;
-- media, manifest, checksums, and review.
-
-At each checkpoint report:
-- completed task IDs;
-- commits and files;
-- exact tests/results;
-- evidence paths/checksums;
-- current Gate status and blockers;
-- whether the next task is authorized by the active plan.
+At each checkpoint report completed task IDs, commits/files, tests, evidence
+paths/checksums, Gate status, exact blockers, and whether the next dependency
+is satisfied. Do not claim a task, dataset, training, evaluation, or baseline
+Gate from documentation or G0 evidence.
 ```
 
-## Next-phase prompt: G0 refresh and G1 implementation
+## Immediate prompt: finish G1, then stop
 
 ```text
-Implement active tasks T009–T039 from specs/001-benchmark-reconstruction/tasks.md.
+Execute the current G1 tasks in tasks.md only.
 
-Scope:
-1. Complete cross-artifact analysis and commit the documentation-only rebaseline without unrelated changes.
-2. Add tests for the new Gate dependency graph and refresh G0.
-3. Add G1 RED tests for task-state-only success, 100 resets, 500 rendered steps, 10 consecutive episodes, Contact truth, failure retention, media/evidence, and optional-diagnostic isolation.
-4. Implement the smallest complete PressButton benchmark runner and supporting changes.
-5. Run one pilot. Fix software/evidence bugs with RED→GREEN.
-6. Run 100 resets and one 500-step rendered rollout.
-7. If those pass, run exactly 10 consecutive formal episodes in a fresh output namespace.
-8. Produce and review G1 evidence.
+Produce one accepted PressButton reference environment through the public
+make_env → reset → step → close path. Pass 100 resets, a rendered 500-step
+bounded rollout, and 10 consecutive approach/press/release/safe-retract
+episodes. Use task-state success and truthful Contact/raw-contact evidence.
 
-Do not:
-- resume full-sweep/GJK/cooked-shape work as a G1 dependency;
-- use geometric success fallback;
-- lower safety thresholds or expand budgets;
-- enable GPU physics/native GPU Contact;
-- fabricate unavailable force/wrench;
-- discard failed formal episodes;
-- overwrite evidence.
+Do not resume optional exhaustive geometry proof, relax thresholds, expand
+budgets, enable GPU dynamics/native GPU Contact, overwrite evidence, or
+fabricate unavailable force/wrench.
 
-If a real runtime Contact/collision, sustained penetration, NaN/Inf, post-abort actuation, task-state failure, or safe-retract failure occurs, retain the failing sample, mark G1 BLOCKED, and stop before G2.
-
-If G1 passes all G1-01 through G1-09, update status and continue with T040–T049 (G2). Otherwise report only the exact benchmark blockers.
+If a real safety/task/lifecycle blocker occurs, retain the sample, keep G1
+BLOCKED, and stop. If and only if all G1 acceptance items pass, update G1 and
+stop before G2 for review.
 ```
 
-## Later phases
+## Platform implementation prompt after G1
 
-- G2 prompt: T040–T049 only.
-- G3 prompt: T050–T057 only.
-- G4 prompt: T058–T070 only.
-- G5 prompt: T071–T080 only.
-- G6 prompt: T081–T091 only.
+```text
+Continue from the first unchecked post-G1 task and implement G2 through G5 in
+dependency order, stopping at any failed Gate.
 
-Do not ask an agent to “finish the whole paper” before predecessor Gates pass.
+G2:
+- environment/task/sensor/expert/policy registries;
+- stable action/observation/info/lifecycle contracts;
+- deterministic seeds and lazy imports.
+
+G3:
+- tactile capability/lifecycle/synchronization;
+- collect_data.py with scripted/controller/teleop/trained/human/custom experts;
+- parallel workers, retry, resume, progress, rejection logs, statistics, and
+  validation;
+- user extension contracts.
+
+G4:
+- four suites and 16 accepted task cards;
+- GP-01/02/03 train/validation/seen/unseen generation and leakage audits;
+- >=50 accepted train demos per task and >=800 total;
+- validation data, zero test-only leakage, dataset card, and simulator replay.
+
+G5:
+- shared loader/normalization/horizons/checkpoint/logging;
+- BC, ACT, Diffusion, Transformer, UniVTAC-compatible adapters;
+- offline and online training modes;
+- evaluate.py with success, generalization gap, time, force when valid,
+  smoothness, contact, slip, recovery, tactile-missing degradation, safety;
+- JSON/CSV/radar/HTML/result bundles.
+
+Do not begin baseline result claims until G5 passes. Do not substitute
+synthetic fixtures for accepted simulator/data evidence.
+```
+
+## G6 prompt
+
+```text
+After G5 passes, run the frozen three-seed paper-v1 matrix for scripted/oracle
+and the five learned algorithm configurations, including matched vision-only,
+tactile-only, and fusion comparisons. Execute at least 20 episodes per task
+condition per seed for GP-01/02/03. Validate all result bundles, build the
+static leaderboard, regenerate paper tables/figures, run the reference-driver
+revalidation, and complete the release audit. Any missing cell, leakage,
+unmatched budget, invalid episode handling, or driver blocker keeps G6
+incomplete.
+```

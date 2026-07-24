@@ -1,52 +1,74 @@
 # Baseline Protocol
 
-## Required baselines
+## Required configurations
 
-1. Scripted/oracle reference.
-2. Visual policy.
-3. Matched visual-tactile policy.
+Reference:
 
-Optional:
+1. scripted/oracle feasibility policy.
 
-- Contact-only;
-- tactile dropout;
-- data-scale;
-- temporal-context;
-- architecture ablations.
+Learned:
+
+1. Behavior Cloning;
+2. ACT;
+3. Diffusion Policy;
+4. Transformer policy;
+5. UniVTAC-compatible policy.
+
+Each compatible learned algorithm must expose vision-only, tactile-only, and
+vision–tactile fusion modality configurations where its architecture permits.
+Unsupported combinations are explicit capability failures, not silently
+modified models.
+
+## Shared interface
+
+All learned baselines use the same dataset loader, split manifests,
+normalization artifacts, observation/action horizons, action schema,
+checkpoint/logging contract, seeds, validation selection rule, and evaluator.
+
+Target command:
+
+```bash
+python scripts/train.py \
+  --algo diffusion_policy \
+  --suite precision \
+  --protocol object_geometry \
+  --modalities vision tactile proprio \
+  --seed 0
+```
 
 ## Matching rules
 
-Visual and visual-tactile comparisons must match:
+Modality ablations match:
 
-- task cards and assets;
-- demonstrations and splits;
-- action contract;
-- evaluation resets/seeds;
-- optimizer/schedule;
-- training steps;
-- selection rule;
-- evaluation episodes;
-- model capacity or declared compute normalization.
+- accepted episodes and split;
+- task cards, variants, and randomization;
+- training/evaluation seed schedule;
+- optimizer, schedule, and update budget;
+- checkpoint selection;
+- action space and rollout budget;
+- model capacity or declared compute-normalized comparison.
 
-The tactile model cannot receive privileged replay/task state not available to the visual model.
+No model receives privileged replay/task state unless that input is an
+explicitly reported baseline condition.
 
-## Scripted/oracle role
+## Offline and online reporting
 
-The scripted policy establishes task feasibility and reference behavior. It is not a learned baseline and is reported separately.
+Offline baselines report dataset version, samples/updates, and compute.
+Online baselines additionally report environment interactions, collected and
+accepted episodes, retries, and wall time. Offline and online scores are not
+pooled without a declared regime.
 
-## Reporting
+## Required report
 
-For each baseline:
+For every run:
 
-- code/config/source digest;
-- observations used;
-- parameters and compute;
-- training seeds;
+- source/config/data/checkpoint digests;
+- capability and modalities;
+- parameters, FLOPs or declared compute proxy;
+- seed and exact command;
 - selected checkpoint rule;
-- per-task and aggregate results;
-- runtime-invalid count;
-- failure taxonomy.
+- seen/unseen per-task and aggregate metrics;
+- runtime-invalid and failure counts;
+- generalization gaps.
 
-## No-force rule
-
-Do not label a baseline force-aware unless valid force fields are actually provided. A false-masked vector/wrench field is unavailable, not zero-force input.
+The scripted/oracle result is a feasibility reference, not a learned baseline.

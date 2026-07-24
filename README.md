@@ -1,17 +1,24 @@
-# Isaac Tactile LIBERO-Style Benchmark
+# TactiLIBERO
 
-A physics-backed tactile manipulation benchmark built on Isaac Sim 6.0.1 and FR3, designed for reproducible research and a paper release.
+TactiLIBERO is a simulation-first generalization benchmark for contact-rich
+manipulation, built on Isaac Sim 6.0.1 and FR3. Its contribution is a
+reproducible evaluation protocol—not merely a larger set of UniVTAC-like
+scenes.
 
-The project follows the useful parts of LIBERO/UniVTAC benchmark design:
+The paper-v1 platform contains six inseparable deliverables:
 
-- stable environment and task contracts;
-- contact-rich manipulation tasks;
-- truthful visual/contact/tactile observations;
-- reproducible demonstrations and simulator replay;
-- fixed evaluation protocols;
-- matched visual and visual-tactile baselines.
+```text
+Task Suite
++ Data Generation
++ Standard Dataset
++ Training Pipeline
++ Evaluation Protocol
++ Baseline Results
+```
 
-It is not a real-robot safety-certification project.
+It supports both offline learning from an official dataset and online
+interaction, collection, training, and evaluation in the simulator. It is not
+a real-robot safety-certification project.
 
 ## Current status
 
@@ -21,10 +28,10 @@ It is not a real-robot safety-certification project.
 | G0 repository integrity | `PASS_BENCHMARK` |
 | G1 PressButton runtime | `BLOCKED` pending new benchmark evidence |
 | G2 unified API | `NOT_STARTED` |
-| G3 tactile capability | `NOT_STARTED` |
-| G4 tasks/dataset/replay | `NOT_STARTED` |
-| G5 evaluation | `NOT_STARTED` |
-| G6 baselines/release | `NOT_STARTED` |
+| G3 sensors and collection foundation | `NOT_STARTED` |
+| G4 16 tasks, official data, and replay | `NOT_STARTED` |
+| G5 training and generalization evaluation | `NOT_STARTED` |
+| G6 baselines, leaderboard, and release | `NOT_STARTED` |
 
 G1 now requires 100 stable resets, a rendered 500-step rollout, and 10 consecutive task-state PressButton episodes with truthful Contact evidence and safe retract. Historical full-robot GJK/cooked-shape investigations remain available as optional diagnostics and no longer block the benchmark.
 
@@ -45,9 +52,9 @@ The final G6 release requires a rerun on a current NVIDIA reference/validated dr
 ## Repository layout
 
 ```text
-isaac_tactile_libero/   benchmark library
-configs/                robot, task, sensor, dataset, and evaluation configs
-scripts/                runtime, evidence, dataset, replay, and evaluation CLIs
+isaac_tactile_libero/   environments, registries, collection, training, evaluation
+configs/                suites, tasks, sensors, datasets, algorithms, protocols
+scripts/                runtime, collection, training, replay, evaluation CLIs
 tests/                  contract and behavior tests
 docs/                   user and paper-facing documentation
 specs/                  Spec Kit requirements, plan, tasks, and decisions
@@ -67,18 +74,30 @@ outputs/evidence/       generated Gate evidence (not source authority)
 
 - G0 means the repository is reproducible; it does not mean the simulator task passed.
 - G1 means one accepted PressButton simulated runtime; it does not mean a multi-task benchmark or paper result.
-- Dataset, evaluation, baseline, and paper claims require G4–G6.
+- Dataset, training, generalization, baseline, and paper claims require G4–G6.
 - Scalar force, raw impulse, geometry, and task success are never presented as vector force or wrench.
 - Historical failures are preserved and are not retroactively relabeled.
 
-## Paper target
+## Paper-v1 target
 
-The paper-v0 target is:
+- four task suites and exactly 16 accepted task instances;
+- three core generalization protocols:
+  - object and geometry;
+  - contact, material, and physics;
+  - sensor and observation;
+- at least 50 accepted training demonstrations per task (at least 800 total),
+  plus declared validation data and zero training demonstrations for test-only
+  variants;
+- official offline data and online collection/training support;
+- scripted/oracle, BC, ACT, Diffusion Policy, Transformer, and
+  UniVTAC-compatible configurations;
+- matched vision-only, tactile-only, and vision–tactile comparisons;
+- three policy seeds and at least 20 evaluation episodes per task condition per
+  seed;
+- machine-readable results, CSV, radar plots, HTML reports, and a static
+  leaderboard.
 
-- eight accepted contact-rich tasks;
-- at least 50 accepted demonstrations per task, subject to quality review;
-- scripted/oracle, visual, and visual-tactile baselines;
-- three seeds and 50 evaluation episodes per task per seed by default;
-- complete code/data/evidence/limitations package.
-
-The immediate next milestone is the new G1 PressButton benchmark acceptance, not additional formal geometry investigation.
+OpenVLA, π0, 100-task expansion, hosted untrusted-checkpoint evaluation,
+continual learning, and real-robot experiments are compatible extensions, not
+paper-v1 blockers. The immediate engineering milestone remains G1 PressButton
+acceptance.

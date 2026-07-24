@@ -2,17 +2,21 @@
 
 | Risk | Impact | Mitigation | Gate |
 |---|---|---|---|
-| Formal diagnostics consume the entire project | No benchmark or paper | Keep them optional and bounded; G1 uses empirical runtime acceptance | G1 |
-| Task success uses a proxy | Invalid results | Require task-state predicates and tests | G1/G4 |
-| Contact/force fields are conflated | False scientific claims | Source labels and validity masks; no proxy vectors/wrenches | G1/G3 |
-| Reset is unstable | Invalid datasets/evaluation | 100-cycle G1 acceptance and deterministic reset tests | G1/G2 |
-| Camera frames are stale | Invalid visual baseline | Render-tick/update/timing checks | G1/G2 |
-| Too many tasks too early | Low-quality suite | Accept PressButton first; target eight tasks | G1/G4 |
-| Dataset count hides duplicates or invalid records | Inflated data claims | Hash, schema, duplicate, balance, and replay checks | G4 |
-| Runtime-invalid episodes distort metrics | Misleading evaluation | Separate runtime validity and failure taxonomy | G5 |
-| Visual/tactile baselines are unmatched | Invalid comparison | Freeze data, model budget, tasks, splits, and evaluation | G6 |
-| Driver is non-reference | Weak release reproducibility | Record `UNVALIDATED`; rerun on reference/validated driver at G6 | G6 |
-| Historical blockers are relabeled | Evidence integrity loss | Keep evidence immutable and distinguish rebaseline from retroactive pass | All |
-| Reuse from UniVTAC/LIBERO violates license/API assumptions | Legal or technical risk | Review licenses, assets, simulator version, and contracts before reuse | G4/G6 |
-| Eight-task target is still too large | Schedule slip | Stage task acceptance; release fewer only through explicit paper-scope review | G4 |
-| Tactile hardware/plugin is unavailable | Blocks tactile claim | Capability negotiation; benchmark may expose unavailable masks, but tactile paper claim waits | G3/G6 |
+| G1 formal diagnostics consume the project | No benchmark/paper | Use empirical accepted runtime; keep optional diagnostics bounded | G1 |
+| Scope grows toward 100 tasks | Shallow, unfinished benchmark | Freeze paper-v1 at four suites/16 tasks | All |
+| Work looks like UniVTAC task expansion | Weak novelty | Make controlled generalization protocol the primary contribution | G4–G6 |
+| Environments exist without training/collection | Scene collection, not a platform | Require official/online data and unified trainer | G3–G5 |
+| Success uses a proxy | Invalid results | Task-state predicates and phase tests | G1/G4 |
+| Contact/force fields are conflated | False claims | Source labels, masks, no proxy vectors/wrenches | G1/G3 |
+| Reset/sensor lifecycle is unstable | Invalid data/evaluation | deterministic reset, readiness, freshness tests | G1–G3 |
+| Randomization metadata is missing | Splits cannot be audited | Episode-level factor provenance | G3/G4 |
+| Seen/unseen leakage | Invalid generalization claims | immutable split manifests and leakage audit | G4/G5 |
+| Dataset count hides duplicates/failures | Inflated data claims | schema/hash/duplicate/replay/rejection reports | G4 |
+| Baselines use different preprocessing | Unfair comparison | shared loader/normalization/horizon/selection | G5/G6 |
+| Online methods use more interactions | Misleading comparison | report interactions, accepted data, updates, wall time | G5/G6 |
+| Sensor transfer is only simulated | Overstated cross-sensor claim | distinguish calibrated devices from simulated domain shift | G3/G5 |
+| Runtime-invalid episodes are dropped | Inflated metrics | retain validity/failure taxonomy in result bundles | G5 |
+| Hosted leaderboard executes untrusted code | Security/operations burden | paper-v1 uses validated static result bundles | G6 |
+| Driver is non-reference | Weak release reproducibility | retain `UNVALIDATED`; rerun at G6 | G6 |
+| External assets/plugins violate licenses | Legal risk | manifests, license checks, registry acceptance | G4/G6 |
+| Historical blockers are relabeled | Evidence-integrity loss | immutable evidence and explicit rebaseline decisions | All |

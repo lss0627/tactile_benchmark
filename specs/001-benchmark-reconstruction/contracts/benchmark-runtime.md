@@ -3,112 +3,81 @@
 ## Public lifecycle
 
 ```python
-env = make_env(config)
+env = make_env(task=task_id, variant=variant_id, sensors=sensor_ids)
 observation, info = env.reset(seed=seed)
 observation, reward, terminated, truncated, info = env.step(action_7d)
 env.close()
 ```
 
-`close()` is safe to call after success, failure, abort, or partial initialization.
+Offline collection, online training, and evaluation use this same boundary.
 
 ## Action
 
-```text
-shape: [7]
-dtype: float32 or float64 at input; normalized internally
-fields:
-  0:3 translation delta
-  3:6 rotation delta
-  6   gripper command
-```
-
-Requirements:
-
-- exact length seven;
+- exact shape `[7]`;
 - finite;
-- declared frame and units;
+- declared translation/rotation frame and units;
 - bounded before execution;
 - requested and executed values retained;
-- invalid input fails before actuation.
+- invalid action fails before actuation.
 
 ## Observation
 
 Required groups:
 
-- robot proprioception;
+- proprioception;
+- end-effector pose;
 - task state;
-- RGB;
-- depth;
+- reward or task phase;
+- RGB/depth;
 - Contact/raw Contact;
 - optional tactile;
-- timestamps and validity masks.
+- timestamps;
+- source/validity masks.
 
 Every field has a versioned shape, dtype, units, frame, source, and validity rule.
 
-## PressButton success
+## Task
 
-```text
-success = observed_button_press
-       && observed_button_release
-       && safe_retract
-       && runtime_valid
-```
+Task cards define:
 
-No geometric fallback is allowed for benchmark evidence.
+- reset/randomization;
+- success/failure;
+- reward or phase labels;
+- budgets;
+- variant/split identity;
+- required sensor capabilities.
+
+Success derives from task state.
 
 ## Runtime safety
 
-Mandatory guards:
+Mandatory:
 
-- finite values;
+- finite state/action;
 - joint/workspace limits;
-- configured exact per-step motion limit;
-- collision and sustained-penetration checks;
-- action/step/wall-time budgets;
+- configured motion limits;
+- collision/sustained-penetration checks;
+- step/time/action budgets;
 - abort latch;
 - zero post-abort actuation;
-- safe retract.
+- safe retract where required.
 
-## Contact truth
+## Contact and tactile truth
 
-- Raw Contact/collision evidence is authoritative when valid.
+- Raw Contact/collision is retained when valid.
 - Scalar force remains scalar.
-- Vector force and wrench remain unavailable unless separately validated.
+- Vector force/wrench remains unavailable unless validated.
 - Raw impulse is not force.
-- A failed sample is retained before abort whenever it was observed.
+- Failed samples are retained before abort when observed.
 
-## Reset contract
+## Randomization record
 
-A ready reset establishes:
+Every reset exposes protocol-relevant randomization parameters through `info` and the episode writer, including applicable object, material, physics, trajectory, scene, sensor, noise, latency, drift, and seed values.
 
-- valid articulation and joint order;
-- declared initial task state;
-- live Contact/camera/tactile handles within the readiness window;
-- deterministic seed provenance;
-- no stale handle from the previous lifecycle.
+## Determinism
 
-## Evidence contract
+Task variant plus reset seed uniquely determines the declared randomized initial condition. Runtime nondeterminism is measured and documented rather than hidden.
 
-The runner records:
+## Optional diagnostics
 
-- runtime/config/task/asset/source identity;
-- reset, rollout, and episode records;
-- requested/executed actions;
-- observations and masks;
-- task-state success;
-- safety and failure codes;
-- camera timing and media;
-- checksums and freshness.
-
-Evidence is written before the unique simulator shutdown.
-
-## Optional diagnostic contract
-
-Formal motion/geometry diagnostics:
-
-- are opt-in;
-- use bounded time/work;
-- use `runtime_smoke`;
-- cannot alter public action or success;
-- cannot override runtime Contact/collision;
-- cannot pass or block G1 by themselves.
+Formal sweep/GJK/cooked-shape diagnostics remain opt-in, bounded, and unable to change task success or Gate status alone.

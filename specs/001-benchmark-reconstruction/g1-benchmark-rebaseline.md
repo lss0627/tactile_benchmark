@@ -65,3 +65,11 @@ It does not support:
 - a formal collision-free motion claim.
 
 Those claims require later Gates or are explicitly out of scope.
+
+## Product-scope follow-up
+
+This G1 decision only shortens the reference-task acceptance path. The
+paper-facing product has since been rebaselined as TactiLIBERO: four task
+suites, 16 tasks, official and online data generation, unified training, three
+core generalization protocols, baseline results, and a static leaderboard.
+See [TactiLIBERO Generalization Rebaseline](tactilibero-generalization-rebaseline.md).

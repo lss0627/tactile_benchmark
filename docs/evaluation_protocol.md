@@ -1,77 +1,76 @@
 # Evaluation Protocol
 
-## Default design
+## Command
 
-```text
-tasks: 8
-training seeds: 3
-evaluation episodes per task per seed: 50
+```bash
+python scripts/evaluate.py \
+  --checkpoint outputs/checkpoints/act-precision-seed0.ckpt \
+  --protocol object_geometry \
+  --split test_unseen \
+  --output outputs/evaluation/act-precision-seed0-gp01
 ```
 
-Another count requires a documented variance/power and compute review before evaluation begins.
+The evaluator resolves the checkpoint capability declaration, suite/task
+cards, split manifest, sensor configuration, seed schedule, and budgets before
+constructing environments.
+
+## Paper-v1 minimum
+
+```text
+policy seeds: 3
+episodes per task condition per seed: >= 20
+protocols: GP-01, GP-02, GP-03
+```
+
+The exact cell grid is versioned before baseline runs. Missing or invalid cells
+remain visible and cannot be replaced after observing results.
 
 ## Episode classification
 
-Each episode is classified separately as:
-
-- runtime valid/invalid;
-- task success/failure;
-- safe retract success/failure;
-- Contact/tactile valid/invalid;
-- terminated/truncated.
-
-Runtime-invalid episodes are never silently converted into task success.
+Each episode separately records runtime validity, task outcome, termination,
+safe retract, Contact/tactile validity, protocol cell, and failure taxonomy.
+Runtime-invalid episodes are not silently counted as success or dropped.
 
 ## Primary metrics
 
-- per-task success rate;
-- macro-average task success;
-- seed mean and declared uncertainty interval.
+- seen and unseen success rate;
+- macro success by task, suite, and protocol;
+- generalization gap: `seen_success - unseen_success`;
+- three-seed mean and declared confidence interval.
 
-## Secondary metrics
+## Tactile-specific secondary metrics
 
-- runtime-valid rate;
-- safe-retract rate;
-- Contact valid rate;
-- tactile valid rate;
+- completion time;
+- maximum and cumulative contact force when valid;
+- action smoothness;
+- contact and slip counts;
+- recovery success rate;
 - post-contact failure rate;
-- episode steps and wall time;
-- replay outcome agreement;
-- failure-code distribution.
+- performance degradation under tactile missingness;
+- runtime-valid and safe-retract rates.
 
-Force/wrench quality metrics are reported only when their masks are valid and their measurement source is declared.
+Force/wrench metrics are absent—not zero—when the source or mask is invalid.
 
 ## Fairness
 
-All baselines use:
+All baselines share task/split manifests, official training data, evaluation
+reset seeds, action and timing budgets, policy observation rules except the
+declared modality ablation, checkpoint selection, and either matched compute
+or an explicit normalization.
 
-- identical task/data splits;
-- identical evaluation seeds and reset distributions;
-- identical action space and budgets;
-- identical policy observation rules except the declared modality ablation;
-- matched model/training budget or an explicit parameter/compute normalization.
+Online methods additionally report environment interactions, accepted
+episodes, wall time, and update count.
 
-## Aggregation
+## Outputs
 
-- retain all per-episode records;
-- aggregate by task, seed, and suite;
-- macro average weights tasks equally;
-- report missing/invalid counts;
-- do not drop failed seeds or episodes;
-- generate tables and figures from machine-readable results.
+Every run emits:
 
-## Robustness
+- per-episode JSONL;
+- aggregate JSON;
+- tabular CSV;
+- failure and leakage audit;
+- radar-plot data and images;
+- HTML report;
+- checksums and result-bundle manifest.
 
-Robustness splits may include pose, occlusion, friction, clearance, or geometry variation only after each split is versioned and checked for train leakage.
-
-## Evidence
-
-G5 evidence includes:
-
-- protocol/config hashes;
-- per-episode results;
-- aggregates;
-- uncertainty method;
-- failure taxonomy;
-- table/figure generation logs;
-- checksums and review.
+The paper and static leaderboard consume only validated result bundles.

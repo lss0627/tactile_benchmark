@@ -2,62 +2,79 @@
 
 ## 当前判断
 
-项目已经完成 Isaac Sim 6.0.1 迁移和大量底层诊断，但还不是可投稿 benchmark。主要缺口不是更多形式化几何证明，而是：
+Isaac Sim 6.0.1 迁移和 G0 仓库完整性已经完成，但项目还不是可投稿
+的 generalization benchmark。缺口也不再定义成“补更多环境”，而是完成一套
+可公平比较的闭环：
 
-- 一个真正通过的参考任务；
-- 冻结的公共 API 和触觉合同；
-- 八个经过验收的 contact-rich 任务；
-- 可验证、可 replay 的数据集；
-- 公平的评估和 baseline；
-- 可复现的论文 artifact。
+```text
+Task Suite
++ Data Generation
++ Standard Dataset
++ Training Pipeline
++ Evaluation Protocol
++ Baseline Results
+```
+
+只有任务和 success rate 会与 UniVTAC 高度重合；真正的论文贡献应是训练和
+测试分布如何构造、泛化如何测量、模型如何在相同数据和预算下比较。
+
+## 论文主问题
+
+> 接触丰富操作策略能否泛化到训练时未见的物体/几何、接触/物理条件和
+> 传感器/观测条件？
+
+对应三个 paper-v1 协议：
+
+1. GP-01 Object and Geometry Generalization；
+2. GP-02 Contact, Material, and Physics Generalization；
+3. GP-03 Sensor and Observation Generalization。
 
 ## 最小投稿路线
 
 ```text
-G1 PressButton
-→ G2 API
-→ G3 tactile
-→ G4 8 tasks + dataset + replay
-→ G5 evaluation
-→ G6 baselines + release
+G1 PressButton reference
+→ G2 public API and registries
+→ G3 sensors and collection foundation
+→ G4 4 suites / 16 tasks + official data + replay
+→ G5 unified training + 3 protocols + evaluation toolkit
+→ G6 baselines + static leaderboard + paper release
 ```
-
-## 核心论文问题
-
-1. 触觉是否提高 contact-rich manipulation 成功率？
-2. 哪些任务类型获益最大？
-3. 触觉是否降低首次接触之后的失败？
-4. 数据集 replay 与评测结果是否可复现？
-5. 运行时无效、任务失败和传感器无效能否被清楚区分？
 
 ## 必须补齐
 
-| 缺口 | 交付 |
+| 缺口 | Paper-v1 交付 |
 |---|---|
-| 参考任务未验收 | G1 100 resets、500 steps、10 episodes |
-| 接口可能漂移 | G2 contract snapshots |
-| 触觉 truth 未冻结 | G3 capability/mask contract |
-| 任务规模未落地 | G4 8 task cards |
-| 数据质量未知 | schema、duplicate、replay、dataset card |
-| 评估公平性未知 | fixed splits/seeds/budgets/aggregation |
-| 论文比较缺失 | scripted、visual、visual-tactile |
-| 发布环境非参考驱动 | G6 reference-driver rerun |
+| 参考任务未验收 | G1：100 resets、500 rendered steps、10 consecutive episodes |
+| 接口和扩展点未冻结 | G2：environment/task/sensor/expert/policy registries |
+| 采集平台缺失 | G3：批量采集、续跑、重试、过滤、统计、校验、自定义 adapter |
+| 任务与 split 未落地 | G4：4 suites、16 tasks、GP-01/02/03 split manifests |
+| 官方数据缺失 | 每任务至少 50 条 accepted train demos，总计至少 800 |
+| 训练入口不统一 | BC、ACT、Diffusion、Transformer、UniVTAC-compatible |
+| 模态比较不公平 | vision-only、tactile-only、fusion 共用 split/预算/预处理 |
+| 泛化评测缺失 | seen/unseen、gap、Contact/force/slip/recovery/safety |
+| 复现和展示缺失 | JSON/CSV/radar/HTML、result bundle、static leaderboard |
 
-## 不再作为投稿前置
+## 不再作为 paper-v1 前置
 
-- 每个动作的全机器人连续碰撞证明；
-- 所有 collider pair 的穷举 GJK；
-- PhysX 私有 cooked-shape/narrow-phase 权威证明；
-- 30 或 130 个任务；
-- 真实机器人安全认证。
+- 100 个任务；
+- trajectory/task/scene/continual 的全部扩展协议；
+- OpenVLA/π0 的正式结果；
+- 托管不可信 checkpoint 的在线 leaderboard；
+- 全机器人未执行轨迹的形式化几何证明；
+- 真实机器人安全或 sim-to-real 结论。
 
-这些可以成为后续方法研究或诊断工具，但不应阻塞 benchmark 主线。
+它们都应保持接口兼容，但不能拖延完整的 16-task 论文闭环。
 
-## 推荐 paper-v0
+## 论文完整度标准
 
-- 八个任务；
-- 每任务至少 50 条合格 demonstration，质量审查优先于数量；
-- 三个训练 seed；
-- 每任务每 seed 50 次评估；
-- task success、runtime validity、safe retract、contact/tactile validity 和 failure taxonomy；
-- 视觉与视觉+触觉的严格匹配比较。
+- 四个任务族，每族四个任务；
+- 三个有明确 train/val/test 生成规则的泛化协议；
+- 官方 offline dataset，同时支持 online collection/training；
+- scripted/oracle 和五类 learned algorithm 配置；
+- 三个 policy seeds；
+- 每个 task condition、每个 seed 至少 20 次评测；
+- 成功、效率、接触质量、恢复、模态缺失和泛化差距；
+- 一条命令生成机器可读结果、论文图表和静态榜单。
+
+这比堆叠大量相似场景更接近 LIBERO 的贡献方式，也能清楚区别于
+“UniVTAC++”。

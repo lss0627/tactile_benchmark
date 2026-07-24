@@ -46,6 +46,11 @@ Each native tactile modality declares:
 - saturation/background rule;
 - calibration/config digest.
 
+The sensor profile also declares which protocol dimensions it supports:
+device/model identity, resolution, noise, delay, dropout, drift, calibration,
+and modality availability. GP-03 test configurations cannot leak into training
+normalization or augmentation.
+
 ## Synchronization
 
 Record control, physics, camera, Contact, and tactile timestamps. Maximum permitted skew is declared by the observation contract and validated at G3.
@@ -63,3 +68,12 @@ After reset:
 ## Public observation
 
 Fields may include stable names for compatibility, but consumers must use validity/source metadata. An unavailable field is not a physical zero.
+
+## Collection and training
+
+- Dataset records retain native values plus calibration/config provenance.
+- Training normalization uses train-split statistics only.
+- Sensor dropout and missing modalities use explicit masks.
+- Tactile-only, vision-only, and fusion policies receive no hidden modality.
+- Community sensors register shape, timing, frame, lifecycle, and calibration
+  contracts before producing benchmark-compatible episodes.

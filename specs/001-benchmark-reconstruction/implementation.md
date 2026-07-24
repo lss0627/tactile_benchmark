@@ -1,165 +1,167 @@
 # Implementation Guide
 
-## Purpose
-
-Implement a paper-oriented simulated manipulation benchmark, beginning with FR3 PressButton. Prefer the smallest complete benchmark path over additional formal diagnostics.
-
 ## Required order
 
 ```text
 G0 refresh
-→ G1 PressButton runtime
-→ G2 public API
-→ G3 tactile contract
-→ G4 tasks/dataset/replay
-→ G5 evaluation
-→ G6 baselines/release
+→ G1 PressButton
+→ G2 contracts/registries
+→ G3 sensors/collection foundation
+→ G4 16 tasks + official data + replay
+→ G5 unified training + generalization evaluation
+→ G6 baseline results + leaderboard + release
 ```
 
-Do not start a later Gate to avoid an earlier failing acceptance item.
+## Development method
 
-## G1 implementation sequence
+1. Freeze behavior with RED tests.
+2. Implement the smallest contract-complete path.
+3. Run no-simulator verification.
+4. Run bounded simulator smoke where required.
+5. Produce fresh evidence before changing status.
+6. Preserve failed attempts and all invalid/rejected counts.
 
-1. Freeze RED tests for task-state success, reset cycles, rollout, episodes, Contact truth, and optional-diagnostic isolation.
-2. Remove any benchmark-success fallback based on TCP distance, action count, or geometry.
-3. Keep existing hard runtime guards and evidence-before-shutdown behavior.
-4. Stabilize one task-ready reset and the public 7D control path.
-5. Implement one runner that can execute:
-   - a single pilot episode;
-   - 100 reset cycles;
-   - a 500-step rendered rollout;
-   - 10 consecutive formal episodes.
-6. Retain the first failing sample before abort.
-7. Produce machine-readable evidence, media, checksums, and a review.
-8. Pass G1 only against `acceptance.md`.
+## G1
 
-## Runtime configuration
+Use the benchmark-oriented PressButton runner:
 
-```text
-simulator: Isaac Sim 6.0.1
-python: 3.12
-physics_device: cpu
-broadphase_type: MBP
-gpu_dynamics: false
-native_gpu_contact: false
-rendering: RTX on the declared GPU
-driver_validation: UNVALIDATED on 550.144.03
-```
+- task-state-only success;
+- 100 resets;
+- rendered 500-step rollout;
+- 10 consecutive formal episodes;
+- hard guards, Contact truth, media, and checksums.
 
-Changing to GPU physics is a separate experiment and cannot be mixed into G1 evidence.
+Optional full-sweep/geometry diagnostics cannot block or pass G1.
 
-## Public task truth
+## Registries
 
-PressButton success is determined by the mechanism:
+Implement typed/versioned registration for:
 
-```text
-pressed = button_travel/state crosses the declared press threshold
-released = button returns to the declared released state
-episode_success = pressed && released && safe_retract
-```
+- robot;
+- task family and task instance;
+- tactile sensor;
+- expert;
+- observation modality;
+- training algorithm;
+- policy adapter.
 
-Controller intent and geometric proximity are diagnostics only.
+Registration validates capability and contract versions before factory use.
 
-## Safety boundary
+## Task implementation
 
-Mandatory:
+Each task family exposes:
 
-- finite values;
-- joint/workspace limits;
-- exact configured per-step displacement limit;
-- collision and sustained-penetration monitoring;
-- step/wall-time budgets;
-- abort latch;
-- zero post-abort actuation;
-- safe retract.
+- stage/assets/robot/sensors;
+- reset and randomization;
+- task state;
+- success/failure;
+- reward or phase labels;
+- budgets;
+- variant generation;
+- scripted/oracle expert.
 
-Optional:
+Canonical cards are generated, reviewed, and promoted; generation alone is not acceptance.
 
-- exhaustive articulated sweep proofs;
-- every-pair GJK evaluation;
-- cooked-shape authority;
-- private narrow-phase equivalence.
+## Collection implementation
 
-Optional diagnostics must be disabled by default in the benchmark runner and must not alter success or cap selection.
+`scripts/collect_data.py` orchestrates:
 
-## Contact and tactile truth
+- schedule generation;
+- parallel environments;
+- expert adapters;
+- unique episode IDs;
+- retries;
+- retention/filter policy;
+- crash-safe journal;
+- episode validation;
+- atomic promotion;
+- statistics.
 
-Normalize and retain:
-
-- validity and freshness;
-- body pairs;
-- contact/raw-contact counts;
-- position, normal, impulse, time, and physics step when available;
-- scalar force magnitude only as scalar;
-- measurement source and mask.
-
-Never infer vector force or wrench from scalar force, geometry, raw impulse, or task state during G1.
-
-## Camera validation
-
-RGB:
-
-- contract shape;
-- `uint8`;
-- finite;
-- non-constant;
-- frame updates.
-
-Depth:
-
-- aligned shape;
-- `float32`;
-- documented background rule;
-- positive finite valid pixels;
-- clipping-range compliance.
-
-Timing:
-
-- render tick occurs;
-- physics step, camera tick, and capture timestamp are recorded;
-- skew is within one declared camera tick.
-
-## Evidence lifecycle
-
-Writers must:
-
-1. validate and retain samples;
-2. build report/manifest;
-3. write checksums;
-4. review write success;
-5. close the simulator exactly once with the computed exit status.
-
-Missing evidence is not zero. A writer or shutdown failure is a structured blocker.
+The collector must retain randomization and split parameters at every episode.
 
 ## Dataset implementation
 
-After G2/G3:
+One schema supports visual, tactile, proprioceptive, action, task-state, reward/phase, timestamp, randomization, mask, and provenance data.
 
-- collect only accepted task episodes;
-- bind every record to task/config/asset/source digests;
-- reject duplicate or incomplete episodes;
-- preserve masks and timing;
-- replay through the simulator;
-- record first divergence and outcome agreement.
+Validation rejects:
+
+- duplicate IDs/content;
+- incomplete arrays;
+- non-finite values;
+- invalid masks;
+- missing timestamps;
+- action/observation mismatch;
+- split leakage;
+- stale hashes.
+
+Replay executes through the simulator and records first divergence.
+
+## Training implementation
+
+`scripts/train.py` owns shared:
+
+- dataset/split loading;
+- modalities and masks;
+- normalization;
+- horizons;
+- seeds;
+- training budget;
+- checkpoint/log lifecycle;
+- validation selection;
+- resume and provenance.
+
+Algorithm adapters own model, loss, optimizer-specific logic, and inference only.
+
+Paper-v1 adapters:
+
+- BC;
+- ACT;
+- Diffusion Policy;
+- Transformer;
+- UniVTAC-compatible.
 
 ## Evaluation implementation
 
-- keep runtime-invalid separate from task failure;
-- aggregate from complete per-episode records;
-- use matched task/data/budget conditions;
-- report seeds and uncertainty;
-- generate tables/figures from machine-readable outputs.
+`scripts/evaluate.py`:
 
-## Change-control rules
+1. validates checkpoint/policy capability;
+2. loads protocol and split manifest;
+3. verifies leakage audit;
+4. builds the complete fixed schedule;
+5. runs every episode without replacement;
+6. validates episode results;
+7. aggregates seen/unseen metrics;
+8. builds JSON/CSV/radar/HTML;
+9. writes a submission bundle and checksums.
 
-Require a written decision before changing:
+## Metric implementation
 
-- action meaning;
-- task success;
-- hard safety thresholds;
-- task budgets;
-- dataset splits;
-- evaluation counts;
-- measurement truth/masks.
+Every metric declares source fields, formula/version, units, validity predicate, aggregation, and unavailable behavior.
 
-Do not require a written architecture review for ordinary bug fixes whose intended behavior is already fixed by the active specification and tests.
+Force, slip, and recovery metrics never consume invalid proxy values.
+
+## Offline/online separation
+
+Training and results record `data_regime=OFFLINE|ONLINE`.
+
+Online runs additionally record environment steps, generated episodes, initial checkpoint/data, update budget, and exploration privileges.
+
+## Leaderboard
+
+Leaderboard ingestion validates result bundles and recomputes aggregates. It never trusts submitted summary values alone.
+
+Static HTML/CSV is required; hosted execution is optional.
+
+## Change control
+
+Require a written versioned decision before changing:
+
+- task success/failure;
+- randomization or split definitions;
+- sensor/calibration domains;
+- dataset fields;
+- normalization/horizons;
+- training/evaluation budgets;
+- metric formulas;
+- modality privileges;
+- result/leaderboard schemas.

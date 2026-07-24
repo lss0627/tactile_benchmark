@@ -1,139 +1,84 @@
-# Dataset Protocol
+# Standard Dataset Protocol
 
 ## Goal
 
-Release a dataset that is trainable, replayable, auditable, and bound to the eight-task benchmark.
+Release a trainable, replayable, leakage-audited official dataset for all 16
+paper-v1 tasks while preserving online collection compatibility.
 
-## Default scale
+## Minimum scale
 
 ```text
-tasks: 8
-accepted demonstrations per task: >= 50
-default total accepted demonstrations: >= 400
+accepted task instances: 16
+accepted training demonstrations per task: >= 50
+accepted training demonstrations total: >= 800
+validation data: declared per suite/protocol
+test-only variant demonstrations in training: 0
 ```
 
-A G4 quality review may approve another count; raw count alone cannot pass G4.
+Counts are acceptance minima, not permission to lower quality requirements.
 
 ## Episode contents
 
 Each episode stores:
 
-- task/version/instruction/seed/split;
+- suite/task/version/instruction/seed/split/protocol;
+- object, material, trajectory, contact, sensor, and randomization IDs;
 - simulator/runtime/source/config/asset hashes;
-- requested and executed 7D actions;
-- robot and task state;
-- RGB/depth references;
-- Contact/raw Contact and validity/freshness;
-- optional tactile references;
-- force magnitude, vector force, wrench, and raw impulse as distinct masked fields;
-- physics/render/sensor timestamps;
-- task-state press/release/success;
-- termination/truncation/failure codes;
-- media references where configured.
+- requested and executed actions;
+- joint state and end-effector pose;
+- RGB/depth and tactile observations;
+- Contact/raw Contact and source/validity/freshness;
+- scalar force, vector force, wrench, and raw impulse as distinct masked fields;
+- task phase/reward, success/failure, termination, and timestamps;
+- expert/policy provenance and collection-job identity.
 
-Privileged object/task state used for replay or metrics must be separated from policy observations.
-
-## Units and frames
-
-All fields declare:
-
-- units;
-- coordinate frame;
-- shape;
-- dtype;
-- source;
-- validity mask.
-
-Default units:
-
-```text
-position: m
-rotation: rad
-time: s
-depth: m
-force magnitude/vector: N when valid
-wrench torque: N m when valid
-```
-
-## Synchronization
-
-Required timestamps:
-
-- control/action;
-- physics;
-- robot state;
-- task state;
-- RGB/depth;
-- Contact/tactile.
-
-Validation:
-
-- monotonic;
-- no missing control step;
-- arrays have the same declared step count;
-- sensor skew within the contract;
-- background/missing frames explicitly masked.
-
-## Truth rules
-
-- Invalid vector force/wrench is stored as unavailable with false mask.
-- Raw impulse is not converted to force for this release.
-- Runtime-invalid episodes are rejected from training/evaluation releases but retained in rejection logs.
-- Geometric fallback success is forbidden.
-
-## Validation
-
-The validator reports:
-
-```json
-{
-  "task_count": 8,
-  "accepted_episode_count": 400,
-  "rejected_episode_count": 0,
-  "duplicate_count": 0,
-  "missing_key_rate": 0.0,
-  "shape_error_rate": 0.0,
-  "nonfinite_rate": 0.0,
-  "timestamp_error_rate": 0.0,
-  "invalid_mask_encoding_rate": 0.0,
-  "replay_outcome_agreement": 1.0
-}
-```
-
-The numeric values above are target examples, not predeclared results.
+Privileged state used for replay or metrics is excluded from policy
+observations unless explicitly declared by the algorithm contract.
 
 ## Splits
 
-- `train`
-- `val`
-- `test_seen`
-- declared robustness/OOD splits only after their generation rules are frozen.
+Every protocol provides immutable manifests for:
 
-Test episodes and language/object/randomization identities must not leak into training beyond the declared split policy.
+- `train`;
+- `validation`;
+- `test_seen`;
+- `test_unseen`.
+
+The leakage audit checks object/geometry, material/physics, sensor/observation,
+seed, trajectory, and episode hashes. Unseen membership is generated from
+declared factors, never assigned after inspecting model performance.
+
+## Validation
+
+The validator rejects or reports:
+
+- missing keys, shape/dtype/unit/frame errors;
+- non-finite values and invalid mask encodings;
+- timestamp gaps or excessive sensor skew;
+- duplicate episodes or trajectories;
+- split leakage;
+- absent randomization provenance;
+- invalid runtime or untruthful success;
+- replay divergence beyond the task tolerance.
 
 ## Replay
 
-Replay executes the recorded reset and actions in Isaac Sim and records:
+Replay restores the recorded reset/randomization and executes recorded actions
+in Isaac Sim. It records outcome agreement, state divergence, timing skew,
+Contact alignment, first divergence, and failure codes.
 
-- outcome match;
-- task-state trajectory difference;
-- timing skew;
-- Contact-event alignment;
-- first divergence;
-- failure codes.
+## Offline and online relationship
 
-Replay tolerance is declared per task; failed replay blocks dataset acceptance until reviewed.
+- **Offline benchmark**: download the official frozen dataset and train under
+  fixed splits/budgets.
+- **Online benchmark**: collect new data and interact with the same registered
+  tasks while retaining the same episode and evaluation contracts.
+
+User-collected data is not silently merged with the official dataset. It
+receives a new dataset manifest and is reported separately.
 
 ## Dataset card
 
-Required:
-
-- summary and intended use;
-- benchmark/schema/runtime versions;
-- tasks and modalities;
-- collection and rejection procedure;
-- splits;
-- quality/replay reports;
-- licenses and asset provenance;
-- limitations;
-- citation and contact.
+The release card records intended use, versions, tasks, protocols, modalities,
+collection policies, rejection statistics, splits, replay results, licenses,
+asset provenance, known biases, limitations, citation, and contact.

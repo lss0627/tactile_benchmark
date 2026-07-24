@@ -1,206 +1,370 @@
 # Data Model
 
-## 1. TaskCard
+## TaskFamily
 
-Required fields:
+```yaml
+family_id: string
+version: semver
+suite_id: string
+skill_tags: [string]
+generator_config_sha256: string
+```
+
+## TaskInstance
 
 ```yaml
 task_id: string
 task_version: semver
+family_id: string
+suite_id: string
 language_instruction: string
-robot: string
-assets:
-  - path: string
-    sha256: string
-    license_id: string
-initial_state_distribution: object
-action_contract_version: string
-observation_contract_version: string
+assets: [object]
+robot_config: string
+sensor_configs: [string]
+reset_distribution: object
+randomization_schema: object
 success_predicate: object
-release_predicate: object | null
+failure_predicates: [object]
+reward_or_phase_schema: object
 budgets: object
-required_capabilities: [string]
+split_eligibility: object
+protocol_eligibility: [string]
+card_sha256: string
 ```
 
-Validation:
+State:
 
-- stable ID/version;
-- assets resolve and hashes match;
-- success is task-state based;
-- budgets are positive and finite;
-- capability requirements are explicit.
-
-## 2. RuntimeMetadata
-
-```yaml
-simulator: "6.0.1"
-python: string
-driver: string
-driver_validation: VALIDATED | UNVALIDATED
-gpu: string
-physics_device: cpu | gpu
-broadphase_type: string
-gpu_dynamics: bool
-native_gpu_contact: bool
-rendering_backend: string
-source_commit: string
-repository_dirty: bool
+```text
+DRAFT → GENERATED → REVIEWED → FEASIBLE → ACCEPTED → DEPRECATED
 ```
 
-## 3. ActionRecord
+## SuiteManifest
 
 ```yaml
-requested_7d: [float, float, float, float, float, float, float]
-executed_7d: [float, float, float, float, float, float, float]
-translation_frame: string
-rotation_representation: string
-gripper_semantics: string
-clipped: bool
-accepted: bool
-failure_code: string | null
+suite_id: precision | articulation | surface_interaction | deformable_contact
+suite_version: semver
+task_ids: [string]
+required_task_count: 4
+coverage_summary: object
+manifest_sha256: string
 ```
 
-Both vectors must be finite and exactly length seven.
-
-## 4. ObservationRecord
+## DomainVariant
 
 ```yaml
-episode_id: string
-step_index: integer
-physics_step: integer
-timestamp_s: float
-robot_state: object
-task_state: object
-rgb_ref: string | null
-depth_ref: string | null
-tactile_ref: string | null
-contact: ContactRecord
-validity_masks: object
-```
-
-Every field declares or inherits shape, dtype, units, frame, and source.
-
-## 5. ContactRecord
-
-```yaml
-reading_valid: bool
-fresh: bool
-in_contact: bool
-force_magnitude: float | null
-force_magnitude_valid: bool
-force_vector: [float, float, float] | null
-force_vector_valid: bool
-wrench: [float, float, float, float, float, float] | null
-wrench_valid: bool
-raw_contact_valid: bool
-raw_contacts:
-  - body0: string
-    body1: string
-    position: [float, float, float] | null
-    normal: [float, float, float] | null
-    impulse: [float, float, float] | null
-    time_s: float | null
-    physics_step: integer | null
-raw_impulse_used_as_force: false
-```
-
-No invalid field may be populated with a proxy.
-
-## 6. EpisodeRecord
-
-```yaml
-episode_id: string
+variant_id: string
 task_id: string
-task_version: string
+split_candidate: string
+object_geometry: object
+contact_material_physics: object
+sensor_observation: object
+trajectory_scene: object
 seed: integer
-reset_record_sha256: string
-runtime_metadata_sha256: string
-steps: [ObservationRecord]
-pressed: bool
-released: bool
-safe_retract: bool
+variant_sha256: string
+```
+
+## SensorDomain
+
+```yaml
+sensor_domain_id: string
+sensor_family: string
+model_version: string
+geometry_sha256: string
+calibration_sha256: string
+resolution: [integer, integer]
+rate_hz: float
+latency_model: object
+noise_model: object
+drift_model: object
+drop_model: object
+preprocessing_sha256: string
+capabilities: object
+```
+
+## ProtocolDefinition
+
+```yaml
+protocol_id: GP-01 | GP-02 | GP-03
+protocol_version: semver
+hypothesis: string
+train_query: object
+validation_query: object
+test_seen_query: object
+test_unseen_query: object
+forbidden_overlap_fields: [string]
+adaptation_regime: OFFLINE | ONLINE | ZERO_SHOT | CALIBRATION_ONLY | TASK_ADAPTATION
+metrics: [string]
+evaluation_seeds: [integer]
+episodes_per_condition_per_seed: integer
+definition_sha256: string
+```
+
+## SplitManifest
+
+```yaml
+protocol_id: string
+train_variants: [string]
+validation_variants: [string]
+test_seen_variants: [string]
+test_unseen_variants: [string]
+manifest_sha256: string
+```
+
+## LeakageAudit
+
+```yaml
+protocol_id: string
+split_manifest_sha256: string
+checks: object
+violation_count: integer
+violations: [object]
+passed: bool
+audit_sha256: string
+```
+
+## ExpertAdapter
+
+```yaml
+expert_id: string
+expert_type: SCRIPTED | CONTROLLER | TELEOP | TRAINED_POLICY | HUMAN | CUSTOM
+version: string
+action_contract_version: string
+required_observations: [string]
+checkpoint_or_config_sha256: string | null
+source_and_license: object
+```
+
+## CollectionJob
+
+```yaml
+job_id: string
+suite_ids: [string]
+task_ids: [string]
+protocol_split: string
+expert_id: string
+requested_episodes: integer
+num_parallel_envs: integer
+retry_policy: object
+retention_policy: object
+seed_schedule: [integer]
+progress_journal: string
+completed_episode_ids: [string]
+statistics: object
+job_sha256: string
+```
+
+State:
+
+```text
+PLANNED → RUNNING → INTERRUPTED → RESUMED → VALIDATED → PROMOTED
+                              ↘ FAILED
+```
+
+## DemonstrationEpisode
+
+```yaml
+episode_id: string
+collection_job_id: string
+expert_id: string
+task_id: string
+variant_id: string
+split: TRAIN | VALIDATION
+sensor_domain_id: string
+seed: integer
+randomization_parameters: object
+runtime_metadata: object
+visual_observations: object
+tactile_observations: object
+joint_state: object
+end_effector_pose: object
+actions: object
+contact_and_force: object
+task_phase_or_reward: object
+task_state: object
+timestamps: object
 success: bool
-terminated: bool
-truncated: bool
+runtime_valid: bool
 failure_codes: [string]
-post_abort_actuation_count: integer
-wall_time_s: float
 source_digests: object
 ```
 
-Success requires task-state press, required release, and safe retract.
-
-## 7. ResetCycleRecord
-
-```yaml
-cycle_index: integer
-seed: integer
-ready_within_window: bool
-articulation_valid: bool
-button_reset: bool
-contact_handles_valid: bool
-camera_valid: bool
-stale_handle_count: integer
-cleanup_success: bool
-failure_codes: [string]
-```
-
-## 8. DatasetManifest
-
-```yaml
-dataset_id: string
-dataset_version: string
-task_cards: [string]
-episode_count: integer
-accepted_episode_count: integer
-rejected_episode_count: integer
-duplicate_count: integer
-splits: object
-schema_version: string
-source_digests: object
-license_summary: object
-```
-
-## 9. ReplayRecord
+## ReplayRecord
 
 ```yaml
 episode_id: string
 outcome_match: bool
 task_state_error: object
-timing_skew: object
+timing_error: object
 contact_alignment: object
 first_divergence_step: integer | null
+runtime_valid: bool
 failure_codes: [string]
+record_sha256: string
 ```
 
-## 10. EvaluationEpisode
+## DatasetManifest
 
 ```yaml
-baseline_id: string
+dataset_id: string
+dataset_version: semver
+task_ids: [string]
+train_episode_ids: [string]
+validation_episode_ids: [string]
+test_training_episode_count: 0
+collection_job_digests: [string]
+schema_version: string
+split_manifest_digests: object
+validation_report_sha256: string
+replay_report_sha256: string
+manifest_sha256: string
+```
+
+## CommunityPlugin
+
+```yaml
+plugin_id: string
+plugin_type: ROBOT | SENSOR | TASK | EXPERT | MODALITY
+version: semver
+entry_point: string
+supported_contract_versions: [string]
+capabilities: object
+source_and_license: object
+test_report_sha256: string
+```
+
+## TrainingConfig
+
+```yaml
+algorithm: BC | ACT | DIFFUSION | TRANSFORMER | UNIVTAC
+suite_ids: [string]
+task_ids: [string]
+modalities: [VISION, TACTILE, PROPRIO]
+dataset_manifest_sha256: string
+split_manifest_sha256: string
+normalization_sha256: string
+observation_horizon: integer
+action_horizon: integer
 seed: integer
+optimizer_and_schedule: object
+training_budget: object
+validation_selection: object
+config_sha256: string
+```
+
+## TrainingRun
+
+```yaml
+run_id: string
+training_config_sha256: string
+source_commit: string
+runtime_and_compute: object
+checkpoints: [object]
+best_checkpoint_sha256: string
+selection_evidence: object
+logs_sha256: string
+status: string
+```
+
+## PolicyCapability
+
+```yaml
+policy_id: string
+policy_version: string
+algorithm_family: string
+modalities: [string]
+action_contract_versions: [string]
+context_length: integer
+action_horizon: integer
+supported_protocols: [string]
+adaptation_regimes: [string]
+model_and_compute: object
+manifest_sha256: string
+```
+
+## EvaluationCell
+
+```yaml
+protocol_id: string
+split: TEST_SEEN | TEST_UNSEEN
 task_id: string
-episode_id: string
+variant_id: string
+sensor_domain_id: string
+policy_seed: integer
+episode_seed: integer
+identity_sha256: string
+```
+
+## EpisodeResult
+
+```yaml
+evaluation_run_id: string
+policy_id: string
+cell_identity_sha256: string
+data_regime: OFFLINE | ONLINE
 task_success: bool
 runtime_valid: bool
 safe_retract: bool
-contact_valid_rate: float
-tactile_valid_rate: float | null
-episode_steps: integer
-wall_time_s: float
+completion_time_s: float
+action_smoothness: float
+trajectory_efficiency: float
+contact_metrics: object
+force_metrics: object
+slip_metrics: object
+recovery_metrics: object
 failure_codes: [string]
+record_sha256: string
 ```
 
-## 11. GateEvidence
+## GeneralizationAggregate
 
-The existing manifest/status schemas remain authoritative. A Gate evidence bundle binds:
+```yaml
+protocol_id: string
+policy_id: string
+data_regime: OFFLINE | ONLINE
+seen_metrics: object
+unseen_metrics: object
+generalization_gap: object
+modality_drop_degradation: object
+seed_statistics: object
+missing_invalid_counts: object
+source_episode_digest: string
+aggregate_sha256: string
+```
 
-- Gate/status/claim class;
-- evidence-producing commit;
-- runtime metadata;
-- source/config/task/asset/dataset hashes;
-- artifact checksums;
-- acceptance results;
-- blockers;
-- freshness review.
+## ResultBundle
 
-Optional diagnostic evidence uses `runtime_smoke` and cannot satisfy a required Gate item alone.
+```yaml
+bundle_version: string
+benchmark_version: string
+policy_capability_sha256: string
+protocol_definition_sha256: string
+split_manifest_sha256: string
+leakage_audit_sha256: string
+episode_result_digest: string
+aggregate_digest: string
+runtime_metadata: object
+checksums_sha256: string
+```
+
+State:
+
+```text
+CREATED → VALIDATED → ACCEPTED → PUBLISHED
+                     ↘ REJECTED
+```
+
+## LeaderboardEntry
+
+```yaml
+entry_id: string
+bundle_sha256: string
+policy_id: string
+protocol_id: string
+data_regime: OFFLINE | ONLINE
+seen_success: float
+unseen_success: float
+generalization_gap: float
+runtime_valid_rate: float
+contact_recovery_score: float | null
+publication_metadata: object
+```
