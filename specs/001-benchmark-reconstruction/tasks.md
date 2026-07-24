@@ -34,18 +34,18 @@
 
 **Independent test**: PressButton passes 100 resets, one rendered 500-step rollout, and 10 consecutive task-state episodes with complete Contact/media evidence.
 
-- [ ] T021 [P] [US1] Add RED tests for task-state-only PressButton success/failure in `tests/test_press_button_task.py`
-- [ ] T022 [P] [US1] Add RED tests for 100 reset cycles and sensor readiness in `tests/test_g1_press_button_benchmark.py`
-- [ ] T023 [P] [US1] Add RED tests for rendered 500-step rollout and camera timing in `tests/test_g1_press_button_benchmark.py`
-- [ ] T024 [P] [US1] Add RED tests for 10 consecutive press/release/safe-retract episodes in `tests/test_g1_press_button_benchmark.py`
-- [ ] T025 [P] [US1] Add RED tests for Contact truth, invalid force masks, and failure-sample retention in `tests/test_g1_press_button_benchmark.py`
-- [ ] T026 [US1] Make button mechanism state authoritative in `isaac_tactile_libero/tasks/press_button.py`
-- [ ] T027 [US1] Stabilize task-ready reset and deterministic seed handling in `isaac_tactile_libero/envs/isaacsim_fr3_press_button_env.py`
-- [ ] T028 [US1] Preserve finite/joint/workspace/motion/collision/penetration/budget guards in `isaac_tactile_libero/robots/fr3_runtime_safety.py`
-- [ ] T029 [US1] Normalize truthful Contact/raw Contact records in `isaac_tactile_libero/sensors/isaacsim6_contact.py`
-- [ ] T030 [US1] Validate RGB/depth update and synchronization in `isaac_tactile_libero/sensors/isaacsim6_camera.py`
-- [ ] T031 [US1] Implement approach/press/release/retract phases in `isaac_tactile_libero/runtime/g1_press_button_benchmark.py`
-- [ ] T032 [US1] Implement the G1 runner and writer-before-close lifecycle in `scripts/run_g1_press_button_benchmark.py`
+- [x] T021 [P] [US1] Add RED tests for task-state-only PressButton success/failure in `tests/test_press_button_task.py`
+- [x] T022 [P] [US1] Add RED tests for 100 reset cycles and sensor readiness in `tests/test_g1_press_button_benchmark.py`
+- [x] T023 [P] [US1] Add RED tests for rendered 500-step rollout and camera timing in `tests/test_g1_press_button_benchmark.py`
+- [x] T024 [P] [US1] Add RED tests for 10 consecutive press/release/safe-retract episodes in `tests/test_g1_press_button_benchmark.py`
+- [x] T025 [P] [US1] Add RED tests for Contact truth, invalid force masks, and failure-sample retention in `tests/test_g1_press_button_benchmark.py`
+- [x] T026 [US1] Make button mechanism state authoritative in `isaac_tactile_libero/tasks/press_button.py`
+- [x] T027 [US1] Stabilize task-ready reset and deterministic seed handling in `isaac_tactile_libero/envs/isaacsim_fr3_press_button_env.py`
+- [x] T028 [US1] Preserve finite/joint/workspace/motion/collision/penetration/budget guards in `isaac_tactile_libero/robots/fr3_runtime_safety.py`
+- [x] T029 [US1] Normalize truthful Contact/raw Contact records in `isaac_tactile_libero/sensors/isaacsim6_contact.py`
+- [x] T030 [US1] Validate RGB/depth update and synchronization in `isaac_tactile_libero/sensors/isaacsim6_camera.py`
+- [x] T031 [US1] Implement approach/press/release/retract phases in `isaac_tactile_libero/runtime/g1_press_button_benchmark.py`
+- [x] T032 [US1] Implement the G1 runner and writer-before-close lifecycle in `scripts/run_g1_press_button_benchmark.py`
 - [ ] T033 [US1] Run one pilot episode under `outputs/evidence/G1/press-button-pilot-<commit>/`
 - [ ] T034 [US1] Run 100 reset cycles under `outputs/evidence/G1/press-button-resets-<commit>/`
 - [ ] T035 [US1] Run one rendered 500-step rollout under `outputs/evidence/G1/press-button-rollout-<commit>/`
@@ -53,6 +53,12 @@
 - [ ] T037 [US1] Capture G1 media under `outputs/evidence/G1/press-button-final-<commit>/media/`
 - [ ] T038 [US1] Review G1-01 through G1-09 in `specs/001-benchmark-reconstruction/g1-benchmark-evidence-review.md`
 - [ ] T039 [US1] Set G1 status from reviewed evidence in `outputs/evidence/G1/press-button-final-<commit>/manifest.json`
+
+> Phase 3 checkpoint: T021–T032 provide import-safe, no-simulator
+> implementation and verification foundations only. T033–T039 remain blocked
+> behind the current G0/G1 prerequisites and require formal Isaac Sim physical
+> execution and review. No G1 acceptance claim is made, and T040 has not
+> started.
 
 ## Phase 4 — User Story 2: Four suites and 16 tasks
 
