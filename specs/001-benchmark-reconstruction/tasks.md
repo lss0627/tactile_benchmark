@@ -13,7 +13,7 @@
 - [x] T005 Generate the dependency-ordered active task graph in `specs/001-benchmark-reconstruction/tasks.md`
 - [x] T006 Synchronize paper-facing scope across `README.md` and active `docs/*.md`
 - [x] T007 Run Spec Kit cross-artifact analysis and requirements coverage validation for `spec.md`, `plan.md`, and `tasks.md`
-- [ ] T008 Commit and push a documentation-only generalization rebaseline from `README.md`, `docs/`, and `specs/001-benchmark-reconstruction/` without unrelated runtime/test changes
+- [x] T008 Commit and push a documentation-only generalization rebaseline from `README.md`, `docs/`, and `specs/001-benchmark-reconstruction/` without unrelated runtime/test changes
 
 ## Phase 2 — Foundational contracts and repository integrity
 
