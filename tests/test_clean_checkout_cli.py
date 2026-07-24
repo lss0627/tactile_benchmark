@@ -21,10 +21,10 @@ APPROVED_ATTEMPT02_CHECKSUM = (
     "cc53c4b4bc3cefdc7a2363c6446741e3abfc65e768ac0db71123aa593be528ed"
 )
 APPROVED_COLLECTION_DIGEST = (
-    "81f3775aa7f436e091ca5a5d3ed0552cdb8304146ac08ff8bbbf5c85755aec10"
+    "13b9077715a1150f2a87561e5d8702d659a748a094f7bb1f0f444f6006472057"
 )
 APPROVED_SORTED_DIGEST = (
-    "adc2478567818fd12ebd674df556ad96c963c739ead43e1539b88ba35d9f7c60"
+    "d41cf8b44eae78aa2ec5061e235bff02abf44b729331ab6ec67c2a56ce2c638e"
 )
 PORTABLE_CURRENT_SOURCE_BLOB = "1dcf6af963793b28daad3e157fd87753f2fce55a"
 HISTORICAL_SOURCE_BLOB = "b9864a8b8eea289fa61eb7e3e41633c35947c5ef"
@@ -107,7 +107,7 @@ def _write_external_attestation(
 
 def _full_partition_fixture() -> tuple[list[str], list[str], list[str]]:
     future = FUTURE_RED_MANIFEST.read_text(encoding="utf-8").splitlines()
-    portable = [f"tests/test_portable_{index:04d}.py::test_green" for index in range(1005)]
+    portable = [f"tests/test_portable_{index:04d}.py::test_green" for index in range(1025)]
     return [*portable, EXTERNAL_NODE_ID, *future], future, [EXTERNAL_NODE_ID]
 
 
@@ -462,7 +462,7 @@ def test_clean_checkout_rejects_missing_manifest_node() -> None:
     validate = _capability("validate_test_node_partition")
     collected, future, external = _full_partition_fixture()
 
-    with pytest.raises(ValueError, match="1131|not collected|unclassified|partition"):
+    with pytest.raises(ValueError, match="1151|not collected|unclassified|partition"):
         validate(collected[:-1], future_ids=future, external_ids=external)
 
 
@@ -531,8 +531,8 @@ def test_clean_checkout_parses_future_red_junit_without_calling_failures_passes(
     validate_portable = _capability("validate_portable_green_run")
     validate_portable(
         0,
-        {"tests": 1005, "failures": 0, "errors": 0, "skipped": 0, "passed": 1005},
-        expected_count=1005,
+        {"tests": 1025, "failures": 0, "errors": 0, "skipped": 0, "passed": 1025},
+        expected_count=1025,
     )
 
 
@@ -580,9 +580,9 @@ def test_clean_checkout_rejects_invalid_future_red_junit_outcomes(
 
 def test_clean_checkout_report_records_future_red_count_and_digest() -> None:
     module = _module()
-    assert module["EXPECTED_FULL_COLLECTION_COUNT"] == 1131
-    assert module["EXPECTED_CURRENT_GREEN_COUNT"] == 1006
-    assert module["EXPECTED_PORTABLE_GREEN_COUNT"] == 1005
+    assert module["EXPECTED_FULL_COLLECTION_COUNT"] == 1151
+    assert module["EXPECTED_CURRENT_GREEN_COUNT"] == 1026
+    assert module["EXPECTED_PORTABLE_GREEN_COUNT"] == 1025
     assert module["APPROVED_CURRENT_GREEN_COLLECTION_SHA256"] == (
         APPROVED_COLLECTION_DIGEST
     )
@@ -592,21 +592,21 @@ def test_clean_checkout_report_records_future_red_count_and_digest() -> None:
     nodeids = FUTURE_RED_MANIFEST.read_text(encoding="utf-8").splitlines()
     future_summary = {"tests": 125, "failures": 125, "errors": 0, "skipped": 0, "passed": 0}
     green_summary = {
-        "tests": 1005,
+        "tests": 1025,
         "failures": 0,
         "errors": 0,
         "skipped": 0,
-        "passed": 1005,
+        "passed": 1025,
     }
     external_junit = {"tests": 1, "failures": 0, "errors": 0, "skipped": 0}
 
     report = build(
-        total_collected=1131,
+        total_collected=1151,
         manifest_ids=nodeids,
         manifest_sha256=FUTURE_RED_SHA256,
         future_summary=future_summary,
         green_summary=green_summary,
-        green_pytest_summary="1005 passed, 126 deselected",
+        green_pytest_summary="1025 passed, 126 deselected",
         future_pytest_summary="125 failed",
         external_ids=[EXTERNAL_NODE_ID],
         external_manifest_sha256=hashlib.sha256(
@@ -618,10 +618,10 @@ def test_clean_checkout_report_records_future_red_count_and_digest() -> None:
         sorted_digest=APPROVED_SORTED_DIGEST,
     )
 
-    assert report["total_collected"] == 1131
-    assert report["current_green_total"] == 1006
-    assert report["portable_green_selected_count"] == 1005
-    assert report["portable_green_passed_count"] == 1005
+    assert report["total_collected"] == 1151
+    assert report["current_green_total"] == 1026
+    assert report["portable_green_selected_count"] == 1025
+    assert report["portable_green_passed_count"] == 1025
     assert report["external_evidence_count"] == 1
     assert report["external_evidence_nodeids"] == [EXTERNAL_NODE_ID]
     assert report["intentional_future_red_count"] == 125
@@ -632,7 +632,7 @@ def test_clean_checkout_report_records_future_red_count_and_digest() -> None:
     assert report["future_red_manifest_sha256"] == FUTURE_RED_SHA256
     assert report["future_red_nodeids"] == nodeids
     assert report["portable_green_junit"] == {
-        "tests": 1005,
+        "tests": 1025,
         "failures": 0,
         "errors": 0,
         "skipped": 0,
@@ -643,7 +643,7 @@ def test_clean_checkout_report_records_future_red_count_and_digest() -> None:
         "errors": 0,
         "skipped": 0,
     }
-    assert report["green_pytest_summary"] == "1005 passed, 126 deselected"
+    assert report["green_pytest_summary"] == "1025 passed, 126 deselected"
     assert report["future_pytest_summary"] == "125 failed"
     assert report["collection_order_digest"] == APPROVED_COLLECTION_DIGEST
     assert report["sorted_digest"] == APPROVED_SORTED_DIGEST
