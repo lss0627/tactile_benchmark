@@ -57,9 +57,16 @@ class FakeArticulation:
 
 
 def test_experimental_fr3_controller_maps_bounded_7d_delta_to_dls_targets() -> None:
+    validated_targets: list[np.ndarray] = []
+
+    def validate_target(target: np.ndarray) -> bool:
+        validated_targets.append(np.asarray(target).copy())
+        return True
+
     controller = IsaacSim6FR3Controller(
         articulation_factory=FakeArticulation,
         max_joint_delta_rad=0.02,
+        target_validator=validate_target,
     )
     controller.initialize()
     result = controller.apply_action([0.01, 0.0, 0.0, 0.0, 0.0, 0.1, -1.0])
@@ -70,6 +77,19 @@ def test_experimental_fr3_controller_maps_bounded_7d_delta_to_dls_targets() -> N
     assert controller.articulation.targets.shape == (1, 9)
     assert controller.articulation.targets[0, 7] == 0.0
     assert controller.articulation.targets[0, 8] == 0.0
+    assert len(validated_targets) == 1
+    assert result["planned_joint_target_validated"] is True
+
+    blocked = IsaacSim6FR3Controller(
+        articulation_factory=FakeArticulation,
+        target_validator=lambda _target: False,
+    )
+    blocked.initialize()
+    with pytest.raises(RuntimeError, match="planned joint target") as caught:
+        blocked.apply_action(np.zeros(7, dtype=np.float32))
+    assert caught.value.code == "FR3_PLANNED_JOINT_TARGET_REJECTED"
+    assert len(caught.value.planned_joint_target) == 9
+    assert blocked.articulation.target_sends == []
 
 
 def test_experimental_fr3_controller_zero_action_holds_position() -> None:

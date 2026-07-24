@@ -16,6 +16,7 @@ physics_dt: 0.016666666666666666
 rendering_dt: 0.05
 
 robot_config_path: configs/robots/fr3_real_articulation.yaml
+safety_config_path: configs/robots/fr3_press_button_safe.yaml
 camera_resolution: [64, 64]
 camera_depth_clip_m: [0.05, 10.0]
 camera_min_valid_depth_ratio: 0.95

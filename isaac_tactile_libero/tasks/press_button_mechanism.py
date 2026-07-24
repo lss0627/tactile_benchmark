@@ -938,9 +938,12 @@ class PressButtonMechanism:
         config: PressButtonMechanismConfig,
         *,
         joint_position_reader: Callable[[], float] | None = None,
+        joint_position_writer: Callable[[float], bool | None]
+        | None = None,
     ) -> None:
         self.config = config
         self._joint_position_reader = joint_position_reader
+        self._joint_position_writer = joint_position_writer
 
     def scene_contract(self) -> dict[str, Any]:
         geometry_contract = self.config.geometry_contract
@@ -1008,6 +1011,50 @@ class PressButtonMechanism:
         rng = np.random.default_rng(int(seed))
         noise = float(rng.uniform(0.0, self.config.reset_noise_m))
         return self.config.rest_position_m + noise
+
+    def apply_reset_position(
+        self,
+        stage: Any,
+        requested_position_m: float,
+    ) -> PressButtonMechanismState:
+        """Apply the deterministic reset target to the physical joint drive."""
+
+        state = self.observe_joint_position(requested_position_m)
+        if self._joint_position_writer is not None:
+            if (
+                self._joint_position_writer(state.joint_position_m)
+                is False
+            ):
+                raise RuntimeError(
+                    "PressButton reset joint writer rejected the target"
+                )
+            return state
+        if stage is None:
+            raise RuntimeError(
+                "PressButton reset requires an authoritative stage or writer"
+            )
+        from pxr import UsdPhysics  # type: ignore
+
+        joint = stage.GetPrimAtPath(self.config.joint_prim_path)
+        if joint is None or not joint.IsValid():
+            raise RuntimeError(
+                f"button joint not found: {self.config.joint_prim_path}"
+            )
+        drive = UsdPhysics.DriveAPI.Get(
+            stage,
+            self.config.joint_prim_path,
+            "linear",
+        )
+        if not drive or not drive.GetPrim().IsValid():
+            raise RuntimeError("PressButton linear joint drive is unavailable")
+        target = drive.GetTargetPositionAttr()
+        if not target or not target.IsValid():
+            target = drive.CreateTargetPositionAttr()
+        if target.Set(state.joint_position_m) is False:
+            raise RuntimeError(
+                "PressButton linear joint drive rejected the reset target"
+            )
+        return state
 
     def observe_joint_position(self, joint_position_m: float) -> PressButtonMechanismState:
         position = float(joint_position_m)

@@ -10,8 +10,10 @@ import json
 from pathlib import Path
 import platform
 import shlex
+import shutil
 import sys
 from typing import Any, Callable, Mapping, Sequence
+from uuid import uuid4
 
 import numpy as np
 import yaml
@@ -25,16 +27,45 @@ from isaac_tactile_libero.evidence.manifest import (  # noqa: E402
     validate_evidence_manifest,
 )
 from isaac_tactile_libero.runtime.g1_press_button_benchmark import (  # noqa: E402
+    RESET_CYCLES_REQUIRED,
+    ROLLOUT_STEPS_REQUIRED,
     validate_reset_records,
 )
 from isaac_tactile_libero.sensors.isaacsim6_camera import (  # noqa: E402
     CameraAcceptanceConfig,
     evaluate_rendered_rollout,
 )
+from isaac_tactile_libero.sensors.isaacsim6_contact import (  # noqa: E402
+    validate_press_button_contact_trace,
+)
 from scripts import run_fr3_press_button_press_smoke as legacy_runner  # noqa: E402
 
 
 MODES = ("pilot", "resets", "rollout", "episodes")
+
+
+class EvidenceWriteError(RuntimeError):
+    """Evidence could not be atomically published to its final namespace."""
+
+
+def _required_cardinality(mode: str) -> int:
+    if mode == "resets":
+        return RESET_CYCLES_REQUIRED
+    if mode == "rollout":
+        return ROLLOUT_STEPS_REQUIRED
+    raise ValueError(f"mode has no fixed reset/rollout cardinality: {mode}")
+
+
+def _component_gate_decision(*, technical_ok: bool) -> dict[str, str]:
+    """Keep one component smoke result distinct from the complete G1 Gate."""
+
+    return {
+        "status": "BLOCKED",
+        "component_status": (
+            "PASS_SMOKE" if technical_ok else "BLOCKED"
+        ),
+        "blocker": "G1_COMPONENT_EVIDENCE_NOT_COMPLETE_GATE",
+    }
 
 
 def parse_args() -> argparse.Namespace:
@@ -85,11 +116,13 @@ def _finalize_benchmark_run(
 ) -> dict[str, Any]:
     """Persist and flush evidence before closing any runtime owner."""
 
-    summary = emit()
-    for closeable in closeables:
-        close = getattr(closeable, "close", None)
-        if callable(close):
-            close()
+    try:
+        summary = emit()
+    finally:
+        for closeable in closeables:
+            close = getattr(closeable, "close", None)
+            if callable(close):
+                close()
     return summary
 
 
@@ -103,96 +136,122 @@ def _emit_benchmark_evidence(
     media_sources: Sequence[tuple[str, bytes]] = (),
     started_at: str,
 ) -> dict[str, Any]:
-    output = Path(args.output)
-    output.mkdir(parents=True, exist_ok=False)
-    media_dir = output / "media"
-    media_dir.mkdir()
-    command = [sys.executable, *sys.argv]
-    (output / "command.log").write_text(
-        shlex.join(command) + "\n",
-        encoding="utf-8",
+    final_output = Path(args.output)
+    if final_output.exists():
+        raise FileExistsError(final_output)
+    final_output.parent.mkdir(parents=True, exist_ok=True)
+    output = final_output.parent / (
+        f".{final_output.name}.tmp-{uuid4().hex}"
     )
-    _write_json(output / "benchmark-summary.json", dict(summary))
-    _write_jsonl(output / "reset-records.jsonl", reset_records)
-    _write_jsonl(output / "rollout-records.jsonl", rollout_records)
-    _write_jsonl(output / "contact-records.jsonl", contact_records)
-
-    media_index: list[dict[str, Any]] = []
-    for name, payload in media_sources:
-        destination = media_dir / name
-        destination.write_bytes(payload)
-        media_index.append(
-            {
-                "uri": str(destination.relative_to(output)),
-                "sha256": hashlib.sha256(payload).hexdigest(),
-            }
+    try:
+        output.mkdir()
+        media_dir = output / "media"
+        media_dir.mkdir()
+        command = [sys.executable, *sys.argv]
+        (output / "command.log").write_text(
+            shlex.join(command) + "\n",
+            encoding="utf-8",
         )
-    _write_json(output / "media-index.json", {"items": media_index})
+        _write_json(output / "benchmark-summary.json", dict(summary))
+        _write_jsonl(output / "reset-records.jsonl", reset_records)
+        _write_jsonl(output / "rollout-records.jsonl", rollout_records)
+        _write_jsonl(output / "contact-records.jsonl", contact_records)
 
-    artifact_names = [
-        "command.log",
-        "benchmark-summary.json",
-        "reset-records.jsonl",
-        "rollout-records.jsonl",
-        "contact-records.jsonl",
-        "media-index.json",
-        *[item["uri"] for item in media_index],
-    ]
-    checksum_text = "".join(
-        f"{hashlib.sha256((output / name).read_bytes()).hexdigest()}  {name}\n"
-        for name in artifact_names
-    )
-    (output / "checksums.sha256").write_text(
-        checksum_text,
-        encoding="utf-8",
-    )
-    artifact_names.append("checksums.sha256")
+        media_index: list[dict[str, Any]] = []
+        for name, payload in media_sources:
+            destination = media_dir / name
+            destination.write_bytes(payload)
+            media_index.append(
+                {
+                    "uri": str(destination.relative_to(output)),
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                }
+            )
+        _write_json(output / "media-index.json", {"items": media_index})
 
-    task_config = Path(args.config).resolve()
-    backend_config = Path(args.backend_config).resolve()
-    status = str(summary["status"])
-    blockers = [str(item) for item in summary.get("blockers", [])]
-    manifest = build_evidence_manifest(
-        gate_id="G1",
-        claim_class="physical_runtime",
-        status=status,
-        command=command,
-        configuration=[
-            task_config,
-            backend_config,
-            Path(__file__).resolve(),
-            ROOT
-            / "isaac_tactile_libero/runtime/g1_press_button_benchmark.py",
-        ],
-        assets=[ROOT / "assets/asset_manifest.csv"],
-        artifacts=[output / name for name in artifact_names],
-        dependency_lock=ROOT / "requirements/lock-py312.txt",
-        repository=legacy_runner._repository_identity(),
-        environment={
-            "python": platform.python_version(),
-            "platform": platform.platform(),
-            "isaac_sim": "6.0.1",
-            "gpu": "cuda:0",
-            "physics_device": "cpu",
-            "observed_driver": "550.144.03",
-            "reference_driver": "595.58.03",
-            "driver_validation": "UNVALIDATED",
-        },
-        blockers=blockers,
-        notes=(
-            "G1 PressButton component evidence; the unvalidated development "
-            "driver caps local status at PASS_SMOKE."
-        ),
-        run_id=output.name,
-        started_at=started_at,
-        finished_at=_utc_now(),
-    )
-    errors = validate_evidence_manifest(manifest)
-    if errors:
-        raise RuntimeError(
-            "invalid G1 benchmark manifest: " + "; ".join(errors)
+        artifact_names = [
+            "command.log",
+            "benchmark-summary.json",
+            "reset-records.jsonl",
+            "rollout-records.jsonl",
+            "contact-records.jsonl",
+            "media-index.json",
+            *[item["uri"] for item in media_index],
+        ]
+        checksum_text = "".join(
+            (
+                f"{hashlib.sha256((output / name).read_bytes()).hexdigest()}"
+                f"  {name}\n"
+            )
+            for name in artifact_names
         )
-    _write_json(output / "manifest.json", manifest)
+        (output / "checksums.sha256").write_text(
+            checksum_text,
+            encoding="utf-8",
+        )
+        artifact_names.append("checksums.sha256")
+
+        task_config = Path(args.config).resolve()
+        backend_config = Path(args.backend_config).resolve()
+        status = str(summary["status"])
+        blockers = [str(item) for item in summary.get("blockers", [])]
+        manifest = build_evidence_manifest(
+            gate_id="G1",
+            claim_class="physical_runtime",
+            status=status,
+            command=command,
+            configuration=[
+                task_config,
+                backend_config,
+                Path(__file__).resolve(),
+                ROOT
+                / "isaac_tactile_libero/runtime/g1_press_button_benchmark.py",
+            ],
+            assets=[ROOT / "assets/asset_manifest.csv"],
+            artifacts=[output / name for name in artifact_names],
+            dependency_lock=ROOT / "requirements/lock-py312.txt",
+            repository=legacy_runner._repository_identity(),
+            environment={
+                "python": platform.python_version(),
+                "platform": platform.platform(),
+                "isaac_sim": "6.0.1",
+                "gpu": "cuda:0",
+                "physics_device": "cpu",
+                "observed_driver": "550.144.03",
+                "reference_driver": "595.58.03",
+                "driver_validation": "UNVALIDATED",
+            },
+            blockers=blockers,
+            notes=(
+                "G1 PressButton component evidence only. A successful "
+                "component may record component_status=PASS_SMOKE, while "
+                "the G1 Gate remains BLOCKED until all acceptance components "
+                "are formally reviewed together."
+            ),
+            run_id=final_output.name,
+            started_at=started_at,
+            finished_at=_utc_now(),
+        )
+        for reference, name in zip(
+            manifest["artifacts"],
+            artifact_names,
+        ):
+            reference["uri"] = str(final_output / name)
+        errors = validate_evidence_manifest(manifest)
+        if errors:
+            raise RuntimeError(
+                "invalid G1 benchmark manifest: " + "; ".join(errors)
+            )
+        _write_json(output / "manifest.json", manifest)
+        output.rename(final_output)
+    except Exception as exc:
+        if output.exists():
+            shutil.rmtree(output)
+        if isinstance(exc, (FileExistsError, EvidenceWriteError)):
+            raise
+        raise EvidenceWriteError(
+            f"failed to atomically publish G1 evidence: {exc}"
+        ) from exc
     return dict(summary)
 
 
@@ -277,21 +336,31 @@ def _run_environment_mode(
                     observation, _reward, terminated, truncated, info = env.step(
                         action
                     )
-                    if terminated or truncated:
-                        runtime_errors.append(
-                            f"ROLLOUT_TERMINATED_AT_{step}"
+                    safety = info.get("safety")
+                    budget = info.get("budget")
+                    collision = info.get("collision")
+                    action_result = info.get("action_result")
+                    contact = dict(info["contact"]["record"])
+                    guard_valid = not (
+                        not isinstance(safety, Mapping)
+                        or safety.get("allow_actuation") is not True
+                        or not isinstance(budget, Mapping)
+                        or budget.get("allow_actuation") is not True
+                        or not isinstance(collision, Mapping)
+                        or collision.get("valid") is not True
+                        or not isinstance(action_result, Mapping)
+                        or action_result.get("command_sent") is not True
+                        or action_result.get(
+                            "planned_joint_target_validated"
                         )
-                        break
+                        is not True
+                        or contact.get("usable") is not True
+                    )
                     state = np.asarray(
                         observation["state"]["joint_pos"],
                         dtype=float,
                     )
-                    if not np.all(np.isfinite(state)):
-                        runtime_errors.append(
-                            f"ROLLOUT_NONFINITE_STATE_AT_{step}"
-                        )
-                        break
-                    contact = dict(info["contact"]["record"])
+                    state_finite = bool(np.all(np.isfinite(state)))
                     contact_records.append(contact)
                     if env.last_camera is None:
                         runtime_errors.append(
@@ -304,18 +373,101 @@ def _run_environment_mode(
                             "step": step,
                             "seed": env.seed,
                             "action": action.tolist(),
-                            "task_state": dict(observation["task_state"]),
+                            "task_state": dict(info["task_state"]),
                             "camera_tick": env.last_camera.camera_tick,
                             "physics_step": env.last_camera.physics_step,
                             "capture_timestamp": (
                                 env.last_camera.capture_timestamp
                             ),
+                            "source_frame_id": (
+                                env.last_camera.source_frame_id
+                            ),
+                            "source_timestamp": (
+                                env.last_camera.source_timestamp
+                            ),
+                            "camera_metadata_source": (
+                                env.last_camera.metadata_source
+                            ),
                             "contact_sample_index": contact["sample_index"],
-                            "terminated": False,
+                            "safety": (
+                                dict(safety)
+                                if isinstance(safety, Mapping)
+                                else {"invalid_type": type(safety).__name__}
+                            ),
+                            "budget": (
+                                dict(budget)
+                                if isinstance(budget, Mapping)
+                                else {"invalid_type": type(budget).__name__}
+                            ),
+                            "collision": (
+                                dict(collision)
+                                if isinstance(collision, Mapping)
+                                else {
+                                    "invalid_type": type(collision).__name__
+                                }
+                            ),
+                            "command_sent": (
+                                action_result.get("command_sent")
+                                if isinstance(action_result, Mapping)
+                                else None
+                            ),
+                            "terminated": bool(terminated),
+                            "truncated": bool(truncated),
+                        }
+                    )
+                    if terminated or truncated:
+                        runtime_errors.append(
+                            f"ROLLOUT_TERMINATED_AT_{step}"
+                        )
+                        break
+                    if not guard_valid:
+                        runtime_errors.append(
+                            f"ROLLOUT_RUNTIME_GUARD_INVALID_AT_{step}"
+                        )
+                        break
+                    if not state_finite:
+                        runtime_errors.append(
+                            f"ROLLOUT_NONFINITE_STATE_AT_{step}"
+                        )
+                        break
+                except Exception as exc:
+                    failure_records = list(
+                        getattr(env, "runtime_failure_records", ())
+                    )
+                    retained_failure = (
+                        dict(failure_records[-1])
+                        if failure_records
+                        else {
+                            "record_schema_version": (
+                                "g1.runtime_failure.v1"
+                            ),
+                            "seed": getattr(env, "seed", None),
+                            "timestep": step + 1,
+                            "requested_action": action.tolist(),
+                            "command_sent": False,
+                            "planned_joint_target": None,
+                            "planned_joint_target_validated": False,
+                            "safety": {},
+                            "budget": {},
+                            "collision": {},
+                            "contact": None,
+                            "failure_code": str(exc),
+                        }
+                    )
+                    retained_contact = retained_failure.get("contact")
+                    if isinstance(retained_contact, Mapping):
+                        contact_records.append(dict(retained_contact))
+                    rollout_records.append(
+                        {
+                            "step": step,
+                            "seed": getattr(env, "seed", None),
+                            "action": action.tolist(),
+                            "failure_retained": True,
+                            "failure": retained_failure,
+                            "terminated": True,
                             "truncated": False,
                         }
                     )
-                except Exception as exc:
                     runtime_errors.append(
                         f"ROLLOUT_{step}_{type(exc).__name__}:{exc}"
                     )
@@ -324,12 +476,13 @@ def _run_environment_mode(
         if args.mode == "resets":
             acceptance = validate_reset_records(
                 reset_records,
-                required_cycles=int(args.cycles),
+                required_cycles=_required_cardinality(args.mode),
+                task_config_path=args.config,
             )
         else:
             acceptance = evaluate_rendered_rollout(
                 frames,
-                required_steps=int(args.steps),
+                required_steps=_required_cardinality(args.mode),
                 expected_tick_stride=max(
                     1,
                     int(
@@ -340,6 +493,9 @@ def _run_environment_mode(
                             / float(backend_cfg.get("physics_dt", 1.0 / 60.0))
                         )
                     ),
+                ),
+                expected_frame_period_s=float(
+                    backend_cfg.get("rendering_dt", 1.0 / 20.0)
                 ),
                 config=CameraAcceptanceConfig(
                     resolution=tuple(
@@ -362,14 +518,57 @@ def _run_environment_mode(
                     ),
                 ),
             )
+            contact_acceptance = validate_press_button_contact_trace(
+                contact_records,
+                required_samples=_required_cardinality(args.mode),
+                expected_physics_stride=max(
+                    1,
+                    int(
+                        round(
+                            float(
+                                backend_cfg.get(
+                                    "rendering_dt",
+                                    1.0 / 20.0,
+                                )
+                            )
+                            / float(
+                                backend_cfg.get(
+                                    "physics_dt",
+                                    1.0 / 60.0,
+                                )
+                            )
+                        )
+                    ),
+                ),
+                expected_sensor_period_s=float(
+                    backend_cfg.get("rendering_dt", 1.0 / 20.0)
+                ),
+            )
+            acceptance["contact"] = contact_acceptance
+            acceptance["errors"] = list(
+                dict.fromkeys(
+                    [
+                        *acceptance["errors"],
+                        *contact_acceptance["errors"],
+                    ]
+                )
+            )
+            acceptance["ok"] = bool(
+                acceptance["ok"] and contact_acceptance["ok"]
+            )
         technical_ok = acceptance["ok"] and not runtime_errors
         blockers = list(runtime_errors)
         blockers.extend(str(item) for item in acceptance.get("errors", []))
         blockers.append("REFERENCE_DRIVER_REVALIDATION_REQUIRED")
+        component_gate = _component_gate_decision(
+            technical_ok=technical_ok
+        )
+        blockers.append(component_gate["blocker"])
         summary = {
             "gate_id": "G1",
             "mode": args.mode,
-            "status": "PASS_SMOKE" if technical_ok else "BLOCKED",
+            "status": component_gate["status"],
+            "component_status": component_gate["component_status"],
             "claim_class": "physical_runtime",
             "physical_execution": True,
             "acceptance": acceptance,
@@ -400,6 +599,9 @@ def _run_environment_mode(
             ),
             closeables=[env],
         )
+    except EvidenceWriteError:
+        env.close()
+        raise
     except Exception as exc:
         # Evidence-writer failures must propagate; retrying into an already
         # created immutable namespace would risk overwriting partial evidence.
@@ -423,6 +625,7 @@ def _run_environment_mode(
             "wrench_valid": False,
             "blockers": [
                 "G1_ENVIRONMENT_SETUP_FAILED",
+                "G1_COMPONENT_EVIDENCE_NOT_COMPLETE_GATE",
                 "REFERENCE_DRIVER_REVALIDATION_REQUIRED",
             ],
             "errors": [detail],
@@ -472,6 +675,49 @@ def _legacy_namespace(args: argparse.Namespace) -> argparse.Namespace:
     )
 
 
+def _run_legacy_atomically(args: argparse.Namespace) -> dict[str, Any]:
+    final_output = Path(args.output)
+    if final_output.exists():
+        raise FileExistsError(final_output)
+    final_output.parent.mkdir(parents=True, exist_ok=True)
+    staging_output = final_output.parent / (
+        f".{final_output.name}.tmp-{uuid4().hex}"
+    )
+    legacy_args = _legacy_namespace(args)
+    legacy_args.output = str(staging_output)
+    try:
+        summary = legacy_runner.run_g1_evidence(legacy_args)
+        manifest_path = staging_output / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["run_id"] = final_output.name
+        for reference in manifest.get("artifacts", []):
+            uri = Path(str(reference.get("uri", "")))
+            try:
+                relative = uri.relative_to(staging_output)
+            except ValueError:
+                continue
+            reference["uri"] = str(final_output / relative)
+        errors = validate_evidence_manifest(manifest)
+        if errors:
+            raise RuntimeError(
+                "invalid delegated G1 manifest: " + "; ".join(errors)
+            )
+        _write_json(manifest_path, manifest)
+        staging_output.rename(final_output)
+    except Exception as exc:
+        if staging_output.exists():
+            shutil.rmtree(staging_output)
+        if isinstance(exc, (FileExistsError, EvidenceWriteError)):
+            raise
+        raise EvidenceWriteError(
+            f"failed to atomically publish delegated G1 evidence: {exc}"
+        ) from exc
+    result = dict(summary)
+    if "evidence_path" in result:
+        result["evidence_path"] = str(final_output)
+    return result
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     started_at = _utc_now()
     if args.dry_run:
@@ -482,7 +728,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             started_at=started_at,
         )
     if args.mode in {"pilot", "episodes"}:
-        return legacy_runner.run_g1_evidence(_legacy_namespace(args))
+        return _run_legacy_atomically(args)
     return _run_environment_mode(args, started_at=started_at)
 
 
@@ -494,6 +740,7 @@ def main() -> int:
         0
         if args.dry_run
         or summary.get("status") in {"PASS_SMOKE", "PASS_BENCHMARK"}
+        or summary.get("component_status") == "PASS_SMOKE"
         else 1
     )
 

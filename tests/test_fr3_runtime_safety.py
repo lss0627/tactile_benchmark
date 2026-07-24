@@ -34,8 +34,10 @@ def _limits(module):
         required_direction=(0.0, 0.0, -1.0),
         min_direction_alignment=0.0,
         max_penetration_m=0.005,
+        persistent_penetration_threshold_m=0.001,
         max_persistent_penetration_steps=2,
         max_step_motion_m=0.01,
+        max_rotation_per_step_rad=0.02,
         max_cumulative_drift_m=0.05,
     )
 
@@ -48,6 +50,7 @@ def _safe_sample(module, **changes):
         "joint_positions": (0.0, 0.0),
         "joint_velocities": (0.0, 0.0),
         "requested_delta": (0.0, 0.0, -0.005),
+        "requested_rotation_delta": (0.0, 0.0, 0.0),
         "observed_delta": (0.0, 0.0, -0.005),
         "collision": False,
         "penetration_m": 0.0,
@@ -77,6 +80,15 @@ def test_all_normal_boundaries_pass_without_safety_event() -> None:
     assert decision.safe is True
     assert decision.allow_actuation is True
     assert decision.violations == ()
+
+    rotation = module.FR3RuntimeSafety(_limits(module)).check(
+        _safe_sample(
+            module,
+            requested_rotation_delta=(0.0, 0.0, 0.0201),
+        )
+    )
+    assert rotation.allow_actuation is False
+    assert rotation.violations[0].code == "REQUESTED_ROTATION_LIMIT"
 
 
 @pytest.mark.parametrize(
@@ -111,9 +123,16 @@ def test_persistent_penetration_aborts_on_configured_count() -> None:
     module = _target()
     monitor = module.FR3RuntimeSafety(_limits(module))
 
-    assert monitor.check(_safe_sample(module, penetration_m=0.001)).safe is True
-    assert monitor.check(_safe_sample(module, penetration_m=0.001)).safe is True
-    decision = monitor.check(_safe_sample(module, penetration_m=0.001))
+    for _ in range(4):
+        assert (
+            monitor.check(
+                _safe_sample(module, penetration_m=0.000999)
+            ).safe
+            is True
+        )
+    assert monitor.check(_safe_sample(module, penetration_m=0.0011)).safe is True
+    assert monitor.check(_safe_sample(module, penetration_m=0.0011)).safe is True
+    decision = monitor.check(_safe_sample(module, penetration_m=0.0011))
 
     assert decision.violations[0].code == "PERSISTENT_PENETRATION"
 
@@ -174,6 +193,7 @@ def _physical_config_sample(
         joint_positions=joint_positions,
         joint_velocities=tuple(0.0 for _ in joint_positions),
         requested_delta=(0.0, 0.0, -0.0005),
+        requested_rotation_delta=(0.0, 0.0, 0.0),
         observed_delta=(0.0, 0.0, 0.0),
         collision=False,
         penetration_m=0.0,
@@ -337,6 +357,8 @@ def test_physical_joint_limits_accept_runtime_float32_boundary_noise_but_not_exc
     )
     assert boundary.allow_actuation is True
     assert limits.joint_position_tolerance_rad == pytest.approx(1.0e-6)
+    assert limits.persistent_penetration_threshold_m == pytest.approx(0.001)
+    assert limits.max_rotation_per_step_rad == pytest.approx(0.02)
 
     excursion = list(observed)
     excursion[3] = limits.joint_position_upper[3] + 2.0e-6

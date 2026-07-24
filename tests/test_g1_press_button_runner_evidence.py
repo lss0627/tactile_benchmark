@@ -72,8 +72,11 @@ def test_g1_runner_dry_run_emits_complete_blocked_evidence(tmp_path: Path) -> No
 
 
 def _passing_episode(index: int) -> dict:
-    return {
-        "episode_id": f"episode-{index}",
+    episode = {
+        "record_schema_version": "g1.physical_episode.v2",
+        "episode_id": f"g1-physical-{index:04d}",
+        "episode_index": index,
+        "seed": 1701 + index,
         "physical_execution": True,
         "success": True,
         "observed_button_press": True,
@@ -89,7 +92,31 @@ def _passing_episode(index: int) -> dict:
         "collision_monitor_valid": True,
         "penetration_samples_available": True,
         "termination_reason": "success",
+        "final_state": "COMPLETE",
+        "state_machine": {
+            "state": "COMPLETE",
+            "can_actuate": False,
+            "transitions": [
+                {"from": "APPROACH", "to": "PRESS"},
+                {"from": "PRESS", "to": "HOLD"},
+                {"from": "HOLD", "to": "RELEASE"},
+                {"from": "RELEASE", "to": "RETRACT"},
+                {"from": "RETRACT", "to": "COMPLETE"},
+            ],
+            "abort": None,
+        },
+        "steps_executed": 25,
+        "requested_action_count": 25,
+        "executed_action_count": 25,
+        "task_state_sample_count": 25,
+        "control_frequency_hz": 20.0,
+        "physics_dt_s": 1.0 / 60.0,
+        "physics_substeps_per_action": 3,
+        "raw_contact_samples": 4,
+        "maximum_button_travel_m": 0.0095,
+        "contact_lifecycle": {"ok": True, "errors": []},
     }
+    return runner._seal_g1_episode_record(episode)
 
 
 def test_g1_gate_policy_caps_unvalidated_driver_pass_at_smoke() -> None:
@@ -97,10 +124,31 @@ def test_g1_gate_policy_caps_unvalidated_driver_pass_at_smoke() -> None:
         [_passing_episode(index) for index in range(10)],
         required_episodes=10,
         driver_validation="UNVALIDATED",
+        phase3_contract_required=False,
     )
 
     assert status == "PASS_SMOKE"
     assert blockers == ["REFERENCE_DRIVER_REVALIDATION_REQUIRED"]
+
+    minimal = [
+        {
+            "physical_execution": True,
+            "success": True,
+            "observed_button_press": True,
+            "button_released": True,
+            "button_reset": True,
+            "safe_retract": True,
+        }
+        for _ in range(10)
+    ]
+    minimal_status, minimal_blockers = runner._g1_gate_decision(
+        minimal,
+        required_episodes=10,
+        driver_validation="VALIDATED",
+    )
+    assert minimal_status == "BLOCKED"
+    assert any("EPISODE_RECORD_INVALID" in item for item in minimal_blockers)
+    assert "G1_LEGACY_EVIDENCE_NOT_PHASE3_VALIDATED" in minimal_blockers
 
 
 def test_g1_gate_policy_retains_any_failed_episode_as_blocker() -> None:
@@ -331,6 +379,39 @@ def test_g1_finalizer_emits_evidence_before_fast_shutdown() -> None:
 
     assert summary == {"status": "BLOCKED"}
     assert events == ["evidence", "runtime_close", "app_close:1"]
+
+    events.clear()
+
+    def failed_emit():
+        events.append("evidence_failed")
+        raise RuntimeError("synthetic emit failure")
+
+    with pytest.raises(RuntimeError, match="synthetic emit failure"):
+        runner._finalize_g1_physical_run(
+            emit=failed_emit,
+            runtime=Runtime(),
+            simulation_app=App(),
+        )
+    assert events == ["evidence_failed", "runtime_close", "app_close:1"]
+
+    class ConstructorApp:
+        def close(self, *, exit_code: int) -> None:
+            events.append(f"constructor_app_close:{exit_code}")
+
+    def broken_runtime(**_kwargs):
+        raise RuntimeError("synthetic runtime constructor failure")
+
+    with pytest.raises(
+        RuntimeError,
+        match="synthetic runtime constructor failure",
+    ):
+        runner._construct_g1_physical_runtime(
+            simulation_app_factory=lambda _config: ConstructorApp(),
+            runtime_factory=broken_runtime,
+            app_config={"headless": True},
+            runtime_kwargs={},
+        )
+    assert events[-1] == "constructor_app_close:1"
 
 
 def test_g1_cpu_physics_policy_is_applied_and_verified_before_play() -> None:
@@ -602,6 +683,36 @@ def test_physical_shared_kernel_retains_requested_governed_and_executed_distinct
     assert result["governed_target"] == governed_target
     assert result["executed_joint_target"] == governed_target
     assert result["send_result"] is True
+
+    retained = []
+    pending = runner._retain_g1_executed_send(
+        retained,
+        episode_id="g1-physical-0000",
+        step=1,
+        phase="PRESS",
+        requested_action=requested,
+        send_record=result,
+        physics_substeps=3,
+    )
+    assert retained == [pending]
+    assert pending["command_sent"] is True
+    assert pending["observation_status"] == "pending"
+    assert pending["executed_joint_target"] == governed_target
+
+    hold_records = []
+    hold_sends = []
+    hold_pending = runner._send_and_retain_g1_hold(
+        executed_actions=hold_records,
+        send_target=lambda target: hold_sends.append(list(target)) or True,
+        joint_position_target=governed_target,
+        episode_id="g1-physical-0000",
+        step=2,
+        physics_substeps=3,
+    )
+    assert hold_sends == [governed_target]
+    assert hold_records == [hold_pending]
+    assert hold_pending["runtime_state"] == "HOLD"
+    assert hold_pending["observation_status"] == "pending"
 
 
 def test_physical_shared_kernel_abort_preserves_state_budget_contact_and_truth() -> None:

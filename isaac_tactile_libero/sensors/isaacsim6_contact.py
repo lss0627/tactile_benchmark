@@ -15,6 +15,25 @@ G1_CONTACT_RAW_SOURCE_SCHEMA = (
 G1_CONTACT_RAW_SOURCE_KEYS = frozenset(
     {"body0", "body1", "position", "normal", "impulse", "time", "dt"}
 )
+G1_CONTACT_NORMALIZED_RAW_KEYS = frozenset(
+    {
+        "raw_index",
+        "source_schema",
+        "body0_id",
+        "body1_id",
+        "body0_prim_path",
+        "body1_prim_path",
+        "body0_rigid_body_prim_path",
+        "body1_rigid_body_prim_path",
+        "body0_contact_report_api",
+        "body1_contact_report_api",
+        "position_m",
+        "normal",
+        "impulse_n_s",
+        "time_s",
+        "dt_s",
+    }
+)
 G1_CONTACT_BLOCKER_CODES = frozenset(
     {
         "CONTACT_RECORD_STRUCTURE_INVALID",
@@ -599,6 +618,86 @@ def _require_keys(value: Any, required: set[str], label: str) -> Mapping[str, An
     return value
 
 
+def _finite_vector(value: Any, *, size: int) -> bool:
+    return (
+        isinstance(value, Sequence)
+        and not isinstance(value, (str, bytes, Mapping))
+        and len(value) == size
+        and all(
+            isinstance(item, (int, float))
+            and not isinstance(item, bool)
+            and math.isfinite(float(item))
+            for item in value
+        )
+    )
+
+
+def _validate_classified_raw_contacts(
+    raw_contacts: list[Any],
+    *,
+    sensor_time_s: float,
+    report_paths: set[str],
+) -> None:
+    for index, raw_value in enumerate(raw_contacts):
+        raw = _require_keys(
+            raw_value,
+            set(G1_CONTACT_NORMALIZED_RAW_KEYS),
+            f"normalized raw Contact record {index}",
+        )
+        try:
+            paths = (
+                _absolute_prim_path(raw["body0_prim_path"]),
+                _absolute_prim_path(raw["body1_prim_path"]),
+                _absolute_prim_path(raw["body0_rigid_body_prim_path"]),
+                _absolute_prim_path(raw["body1_rigid_body_prim_path"]),
+            )
+        except ValueError as exc:
+            raise ContactProvenanceError(
+                "CONTACT_RAW_BODY_PATH_INVALID",
+                f"normalized raw Contact record {index} has invalid paths",
+            ) from exc
+        api_flags = (
+            raw["body0_contact_report_api"],
+            raw["body1_contact_report_api"],
+        )
+        valid = (
+            raw["raw_index"] == index
+            and raw["source_schema"] == G1_CONTACT_RAW_SOURCE_SCHEMA
+            and type(raw["body0_id"]) is int
+            and type(raw["body1_id"]) is int
+            and raw["body0_id"] >= 0
+            and raw["body1_id"] >= 0
+            and all(
+                _finite_vector(raw[field], size=3)
+                for field in ("position_m", "normal", "impulse_n_s")
+            )
+            and isinstance(raw["time_s"], (int, float))
+            and not isinstance(raw["time_s"], bool)
+            and math.isfinite(float(raw["time_s"]))
+            and math.isclose(
+                float(raw["time_s"]),
+                sensor_time_s,
+                rel_tol=0.0,
+                abs_tol=1.0e-9,
+            )
+            and isinstance(raw["dt_s"], (int, float))
+            and not isinstance(raw["dt_s"], bool)
+            and math.isfinite(float(raw["dt_s"]))
+            and float(raw["dt_s"]) > 0.0
+            and all(type(flag) is bool for flag in api_flags)
+            and any(api_flags)
+            and all(
+                not verified or path in report_paths
+                for path, verified in zip(paths[2:], api_flags)
+            )
+        )
+        if not valid:
+            raise ContactProvenanceError(
+                "CONTACT_RAW_RECORD_INVALID",
+                f"normalized raw Contact record {index} is inconsistent",
+            )
+
+
 def classify_g1_contact_provenance(
     record: Any,
     *,
@@ -652,6 +751,43 @@ def classify_g1_contact_provenance(
             "CONTACT_RECORD_STRUCTURE_INVALID",
             "Contact execution consumer/phase is invalid",
         )
+    optional_identifiers = (
+        execution["trial_id"],
+        execution["candidate_id"],
+        execution["class_id"],
+    )
+    if (
+        any(
+            not isinstance(execution[field], str)
+            or not execution[field]
+            for field in ("consumer", "scene_id", "phase")
+        )
+        or any(
+            value is not None
+            and (not isinstance(value, str) or not value)
+            for value in optional_identifiers
+        )
+        or any(
+            type(execution[field]) is not int
+            or execution[field] < 0
+            for field in ("scene_index", "action_index")
+        )
+        or (
+            execution["window_index"] is not None
+            and (
+                type(execution["window_index"]) is not int
+                or execution["window_index"] < 0
+            )
+        )
+        or not _finite_vector(
+            execution["requested_vector_m"],
+            size=3,
+        )
+    ):
+        raise ContactProvenanceError(
+            "CONTACT_RECORD_STRUCTURE_INVALID",
+            "Contact execution fields are invalid",
+        )
     if expected_execution is not None:
         for key, value in expected_execution.items():
             if execution.get(key) != value:
@@ -672,6 +808,32 @@ def classify_g1_contact_provenance(
         },
         "Contact reading",
     )
+    reading_numeric = (
+        reading["force_magnitude_n"],
+        reading["sensor_time_s"],
+    )
+    if (
+        type(reading["contact_valid"]) is not bool
+        or reading["contact_valid"] is not True
+        or type(reading["in_contact"]) is not bool
+        or any(
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(float(value))
+            or float(value) < 0.0
+            for value in reading_numeric
+        )
+        or type(reading["read_sequence_index"]) is not int
+        or reading["read_sequence_index"] < 0
+        or type(reading["observed_physics_step"]) is not int
+        or reading["observed_physics_step"] < 0
+        or reading["observed_physics_step_source"]
+        != "isaacsim.core.simulation_manager.get_num_physics_steps"
+    ):
+        raise ContactProvenanceError(
+            "CONTACT_READING_INVALID",
+            "Contact reading fields are invalid",
+        )
     raw_contacts = root["raw_contacts"]
     if (
         type(root["raw_contact_count"]) is not int
@@ -700,8 +862,6 @@ def classify_g1_contact_provenance(
             "CONTACT_READING_INVALID",
             "Contact reading validity is false",
         )
-    if reading["in_contact"] is True or root["raw_contact_count"] > 0:
-        return "contact"
     sensor = _require_keys(
         root["sensor"],
         {
@@ -717,6 +877,48 @@ def classify_g1_contact_provenance(
         },
         "Contact sensor authority",
     )
+    try:
+        sensor_prim_path = _absolute_prim_path(
+            sensor["sensor_prim_path"]
+        )
+        sensor_rigid_body_path = _absolute_prim_path(
+            sensor["sensor_rigid_body_prim_path"]
+        )
+        report_path_values = sensor["contact_report_api_prim_paths"]
+        if (
+            not isinstance(report_path_values, list)
+            or len(report_path_values) != len(set(report_path_values))
+        ):
+            raise ValueError("Contact Report API path inventory is invalid")
+        report_paths = {
+            _absolute_prim_path(value)
+            for value in report_path_values
+        }
+    except (TypeError, ValueError) as exc:
+        raise ContactProvenanceError(
+            "CONTACT_SENSOR_PRIM_INVALID",
+            "Contact sensor authority paths are invalid",
+        ) from exc
+    if (
+        sensor_prim_path == sensor_rigid_body_path
+        or sensor["sensor_prim_type"] != "IsaacContactSensor"
+        or sensor["sensor_rigid_body_source"]
+        != "nearest_ancestor_with_usdphysics_rigid_body_api"
+        or sensor["sensor_prim_authority_source"]
+        != (
+            "usd_stage_after_contact_sensor_authoring_before_evidence_read"
+        )
+        or sensor["rigid_body_authority_source"]
+        != "usd_stage_before_evidence_read"
+        or sensor["contact_report_api_verified"] is not True
+        or sensor["contact_report_api_authority_source"]
+        != "usd_stage_before_evidence_read"
+        or sensor_rigid_body_path not in report_paths
+    ):
+        raise ContactProvenanceError(
+            "CONTACT_SENSOR_PRIM_INVALID",
+            "Contact sensor authority fields are invalid",
+        )
     freshness = _require_keys(
         root["freshness"],
         {
@@ -737,6 +939,52 @@ def classify_g1_contact_provenance(
         {"valid", "blockers"},
         "Contact provenance validity",
     )
+    previous_sensor_time = freshness["previous_sensor_time_s"]
+    sensor_time = float(reading["sensor_time_s"])
+    previous_sensor_time_valid = (
+        previous_sensor_time is None
+        or (
+            isinstance(previous_sensor_time, (int, float))
+            and not isinstance(previous_sensor_time, bool)
+            and math.isfinite(float(previous_sensor_time))
+            and float(previous_sensor_time) >= 0.0
+        )
+    )
+    expected_monotonic = (
+        previous_sensor_time_valid
+        and (
+            previous_sensor_time is None
+            or sensor_time > float(previous_sensor_time)
+        )
+    )
+    previous_physics_step = freshness[
+        "previous_observed_physics_step"
+    ]
+    observed_delta = (
+        reading["observed_physics_step"] - previous_physics_step
+        if type(previous_physics_step) is int
+        and previous_physics_step >= 0
+        else None
+    )
+    if (
+        type(freshness["valid"]) is not bool
+        or type(freshness["sensor_time_monotonic"]) is not bool
+        or type(freshness["physics_step_relation_valid"]) is not bool
+        or freshness["expected_read_sequence_index"]
+        != reading["read_sequence_index"]
+        or freshness["sensor_time_monotonic"] is not expected_monotonic
+        or freshness["expected_physics_step_delta"] != 3
+        or freshness["observed_physics_step_delta"] != observed_delta
+        or freshness["physics_step_relation_valid"]
+        is not (observed_delta == 3)
+        or not isinstance(freshness["blockers"], list)
+        or type(provenance["valid"]) is not bool
+        or not isinstance(provenance["blockers"], list)
+    ):
+        raise ContactProvenanceError(
+            "CONTACT_RECORD_STRUCTURE_INVALID",
+            "Contact freshness/provenance fields are inconsistent",
+        )
     if (
         sensor["sensor_prim_type"] != "IsaacContactSensor"
         or sensor["contact_report_api_verified"] is not True
@@ -754,8 +1002,28 @@ def classify_g1_contact_provenance(
     ):
         raise ContactProvenanceError(
             "CONTACT_RECORD_STRUCTURE_INVALID",
-            "Contact no-contact provenance is invalid",
+            "Contact provenance is invalid",
         )
+    _validate_classified_raw_contacts(
+        raw_contacts,
+        sensor_time_s=sensor_time,
+        report_paths=report_paths,
+    )
+    if (
+        reading["in_contact"] is not True
+        and reading["in_contact"] is not False
+    ):
+        raise ContactProvenanceError(
+            "CONTACT_READING_INVALID",
+            "Contact in_contact value is not an exact boolean",
+        )
+    if reading["in_contact"] is True and root["raw_contact_count"] <= 0:
+        raise ContactProvenanceError(
+            "CONTACT_RAW_ATTRIBUTION_UNAVAILABLE",
+            "Contact-positive reading has no raw attribution",
+        )
+    if reading["in_contact"] is True or root["raw_contact_count"] > 0:
+        return "contact"
     return "no_contact"
 
 
@@ -918,6 +1186,20 @@ def normalize_press_button_contact_record(
         sensor_time_s = float(sample.time)
     else:
         errors.append("CONTACT_SENSOR_TIME_INVALID")
+    if sensor_time_s is not None and any(
+        not isinstance(raw, Mapping)
+        or not isinstance(raw.get("time"), (int, float))
+        or isinstance(raw.get("time"), bool)
+        or not math.isfinite(float(raw["time"]))
+        or not math.isclose(
+            float(raw["time"]),
+            sensor_time_s,
+            rel_tol=0.0,
+            abs_tol=1.0e-9,
+        )
+        for raw in raw_contacts
+    ):
+        errors.append("CONTACT_RAW_SENSOR_TIME_INVALID")
 
     force_magnitude_n: float | None = None
     if (
@@ -988,6 +1270,81 @@ def validate_press_button_contact_record(record: Any) -> dict[str, Any]:
             "PressButton Contact record does not contain the exact required keys",
         )
     raw_contacts = record["raw_contacts"]
+    sensor_time_s = record["sensor_time_s"]
+    force_magnitude_n = record["force_magnitude_n"]
+    errors = record["errors"]
+    sensor_time_valid = (
+        isinstance(sensor_time_s, (int, float))
+        and not isinstance(sensor_time_s, bool)
+        and math.isfinite(float(sensor_time_s))
+        and float(sensor_time_s) >= 0.0
+    )
+    force_magnitude_valid = (
+        isinstance(force_magnitude_n, (int, float))
+        and not isinstance(force_magnitude_n, bool)
+        and math.isfinite(float(force_magnitude_n))
+        and float(force_magnitude_n) >= 0.0
+    )
+    raw_records_valid = all(
+        isinstance(raw, Mapping)
+        and set(raw) == G1_CONTACT_RAW_SOURCE_KEYS
+        and (
+            (
+                type(raw["body0"]) is int
+                and raw["body0"] >= 0
+            )
+            or (
+                isinstance(raw["body0"], str)
+                and raw["body0"].startswith("/")
+            )
+        )
+        and (
+            (
+                type(raw["body1"]) is int
+                and raw["body1"] >= 0
+            )
+            or (
+                isinstance(raw["body1"], str)
+                and raw["body1"].startswith("/")
+            )
+        )
+        and all(
+            isinstance(raw[field], (list, tuple))
+            and len(raw[field]) == 3
+            and all(
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(float(value))
+                for value in raw[field]
+            )
+            for field in ("position", "normal", "impulse")
+        )
+        and isinstance(raw["time"], (int, float))
+        and not isinstance(raw["time"], bool)
+        and math.isfinite(float(raw["time"]))
+        and float(raw["time"]) >= 0.0
+        and isinstance(raw["dt"], (int, float))
+        and not isinstance(raw["dt"], bool)
+        and math.isfinite(float(raw["dt"]))
+        and float(raw["dt"]) > 0.0
+        for raw in raw_contacts
+    )
+    raw_times_match_sensor = (
+        not raw_contacts
+        or (
+            sensor_time_valid
+            and raw_records_valid
+            and all(
+                math.isclose(
+                    float(raw["time"]),
+                    float(sensor_time_s),
+                    rel_tol=0.0,
+                    abs_tol=1.0e-9,
+                )
+                for raw in raw_contacts
+            )
+        )
+    )
     valid = (
         record["schema_version"] == PRESS_BUTTON_CONTACT_SCHEMA_VERSION
         and all(
@@ -1003,20 +1360,84 @@ def validate_press_button_contact_record(record: Any) -> dict[str, Any]:
         and isinstance(raw_contacts, list)
         and type(record["raw_contact_count"]) is int
         and record["raw_contact_count"] == len(raw_contacts)
+        and (
+            raw_records_valid
+            or (
+                record["usable"] is False
+                and "CONTACT_RAW_RECORD_INVALID" in errors
+            )
+        )
+        and (
+            raw_times_match_sensor
+            or (
+                record["usable"] is False
+                and "CONTACT_RAW_SENSOR_TIME_INVALID" in errors
+            )
+        )
         and record["force_vector_valid"] is False
         and record["wrench_valid"] is False
         and record["raw_impulse_used_as_force"] is False
         and record["sample_retained"] is True
         and type(record["usable"]) is bool
-        and isinstance(record["errors"], list)
-        and all(isinstance(item, str) and item for item in record["errors"])
-        and record["usable"] is (not record["errors"])
+        and isinstance(errors, list)
+        and all(isinstance(item, str) and item for item in errors)
+        and record["usable"] is (not errors)
         and (
-            record["force_magnitude_n"] is None
+            sensor_time_valid
             or (
-                isinstance(record["force_magnitude_n"], (int, float))
-                and not isinstance(record["force_magnitude_n"], bool)
-                and math.isfinite(float(record["force_magnitude_n"]))
+                sensor_time_s is None
+                and record["usable"] is False
+                and "CONTACT_SENSOR_TIME_INVALID" in errors
+            )
+        )
+        and (
+            force_magnitude_valid
+            or (
+                force_magnitude_n is None
+                and record["usable"] is False
+                and "CONTACT_READING_INVALID" in errors
+            )
+        )
+        and (
+            record["contact_valid"] is True
+            or (
+                record["usable"] is False
+                and "CONTACT_READING_INVALID" in errors
+            )
+        )
+        and (
+            record["contact"] is False
+            or record["raw_contact_count"] > 0
+            or (
+                record["usable"] is False
+                and "CONTACT_RAW_ATTRIBUTION_UNAVAILABLE" in errors
+            )
+        )
+        and (
+            record["contact"] is True
+            or not force_magnitude_valid
+            or float(force_magnitude_n) <= 1.0e-4
+            or (
+                record["usable"] is False
+                and "NO_CONTACT_FORCE_NONZERO" in errors
+            )
+        )
+        and (
+            record["usable"] is False
+            or (
+                sensor_time_valid
+                and force_magnitude_valid
+                and record["contact_valid"] is True
+                and (
+                    record["contact"] is False
+                    or record["raw_contact_count"] > 0
+                )
+                and raw_records_valid
+                and raw_times_match_sensor
+                and (
+                    record["contact"] is True
+                    or float(force_magnitude_n) <= 1.0e-4
+                )
             )
         )
     )
@@ -1026,6 +1447,111 @@ def validate_press_button_contact_record(record: Any) -> dict[str, Any]:
             "PressButton Contact record is invalid",
         )
     return json.loads(json.dumps(record, allow_nan=False, sort_keys=True))
+
+
+def validate_press_button_contact_trace(
+    records: Iterable[Mapping[str, Any]],
+    *,
+    required_samples: int,
+    expected_physics_stride: int = 3,
+    expected_sensor_period_s: float = 1.0 / 20.0,
+) -> dict[str, Any]:
+    """Validate complete Contact cardinality and cross-sample freshness."""
+
+    if type(required_samples) is not int or required_samples <= 0:
+        raise ValueError("required_samples must be a positive integer")
+    if (
+        type(expected_physics_stride) is not int
+        or expected_physics_stride <= 0
+    ):
+        raise ValueError(
+            "expected_physics_stride must be a positive integer"
+        )
+    if (
+        not isinstance(expected_sensor_period_s, (int, float))
+        or isinstance(expected_sensor_period_s, bool)
+        or not math.isfinite(float(expected_sensor_period_s))
+        or float(expected_sensor_period_s) <= 0.0
+    ):
+        raise ValueError(
+            "expected_sensor_period_s must be finite and positive"
+        )
+    trace = list(records)
+    errors: list[str] = []
+    normalized: list[dict[str, Any]] = []
+    for record in trace:
+        try:
+            normalized.append(
+                validate_press_button_contact_record(record)
+            )
+        except ContactProvenanceError:
+            if "CONTACT_RECORD_INVALID" not in errors:
+                errors.append("CONTACT_RECORD_INVALID")
+    if len(trace) != required_samples:
+        errors.append("CONTACT_SAMPLE_COUNT")
+    if len(normalized) == len(trace):
+        if any(record["usable"] is not True for record in normalized):
+            errors.append("CONTACT_SAMPLE_UNUSABLE")
+        sample_indices = [record["sample_index"] for record in normalized]
+        read_indices = [
+            record["read_sequence_index"] for record in normalized
+        ]
+        physics_steps = [
+            record["observed_physics_step"] for record in normalized
+        ]
+        sensor_times = [
+            (
+                float(record["sensor_time_s"])
+                if isinstance(
+                    record["sensor_time_s"],
+                    (int, float),
+                )
+                and not isinstance(record["sensor_time_s"], bool)
+                else math.nan
+            )
+            for record in normalized
+        ]
+        if any(
+            current != previous + 1
+            for previous, current in zip(
+                sample_indices,
+                sample_indices[1:],
+            )
+        ) or sample_indices != read_indices:
+            errors.append("CONTACT_READ_SEQUENCE_INVALID")
+        if any(
+            current != previous + expected_physics_stride
+            for previous, current in zip(
+                physics_steps,
+                physics_steps[1:],
+            )
+        ):
+            errors.append("CONTACT_PHYSICS_STEP_INVALID")
+        tolerance = max(
+            1.0e-9,
+            float(expected_sensor_period_s) * 1.0e-6,
+        )
+        if any(
+            not math.isclose(
+                current - previous,
+                float(expected_sensor_period_s),
+                rel_tol=0.0,
+                abs_tol=tolerance,
+            )
+            for previous, current in zip(
+                sensor_times,
+                sensor_times[1:],
+            )
+        ):
+            errors.append("CONTACT_SENSOR_TIME_INVALID")
+    return {
+        "ok": not errors,
+        "errors": list(dict.fromkeys(errors)),
+        "sample_count": len(trace),
+        "required_samples": required_samples,
+        "expected_physics_stride": expected_physics_stride,
+        "expected_sensor_period_s": float(expected_sensor_period_s),
+    }
 
 
 class IsaacSim6ContactSensor:
@@ -1080,5 +1606,6 @@ __all__ = [
     "normalize_press_button_contact_record",
     "normalize_g1_contact_provenance",
     "validate_press_button_contact_record",
+    "validate_press_button_contact_trace",
     "validate_contact_physics_policy",
 ]

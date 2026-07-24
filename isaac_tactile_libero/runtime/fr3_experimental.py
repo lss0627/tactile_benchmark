@@ -23,6 +23,22 @@ EXPECTED_FR3_DOFS = (
 )
 
 
+class FR3PlannedTargetRejected(RuntimeError):
+    """A planned joint target failed the pre-send safety boundary."""
+
+    code = "FR3_PLANNED_JOINT_TARGET_REJECTED"
+
+    def __init__(self, planned_joint_target: np.ndarray) -> None:
+        self.planned_joint_target = (
+            np.asarray(planned_joint_target, dtype=np.float64)
+            .reshape(-1)
+            .tolist()
+        )
+        super().__init__(
+            "FR3 planned joint target was rejected before send"
+        )
+
+
 def _to_numpy(value: Any) -> np.ndarray:
     if isinstance(value, np.ndarray):
         return value
@@ -55,6 +71,7 @@ class IsaacSim6FR3Controller:
         max_joint_delta_rad: float = 0.02,
         max_gripper_width_m: float = 0.04,
         articulation_factory: Callable[[str], Any] | None = None,
+        target_validator: Callable[[np.ndarray], bool] | None = None,
     ) -> None:
         self.prim_path = str(prim_path)
         self.ee_link_name = str(ee_link_name)
@@ -62,6 +79,7 @@ class IsaacSim6FR3Controller:
         self.max_joint_delta_rad = float(max_joint_delta_rad)
         self.max_gripper_width_m = float(max_gripper_width_m)
         self._articulation_factory = articulation_factory
+        self._target_validator = target_validator
         self.articulation: Any | None = None
         self.dof_names: tuple[str, ...] = ()
         self.link_names: tuple[str, ...] = ()
@@ -187,6 +205,16 @@ class IsaacSim6FR3Controller:
         if not np.all(np.isfinite(target)):
             raise RuntimeError("FR3 target contains NaN/Inf")
         target_array = target.astype(np.float32).reshape(1, -1)
+        planned_joint_target_validated = False
+        if self._target_validator is not None:
+            planned_joint_target_validated = (
+                self._target_validator(target_array.reshape(-1).copy())
+                is True
+            )
+            if not planned_joint_target_validated:
+                raise FR3PlannedTargetRejected(
+                    target_array.reshape(-1)
+                )
         send_result = self.articulation.set_dof_position_targets(target_array)
         command_sent = send_result is not False
         if not zero_action and command_sent:
@@ -205,6 +233,10 @@ class IsaacSim6FR3Controller:
             "controller_method": "experimental_jacobian_dls",
             "action_shape": list(bounded.shape),
             "bounded_action": bounded.tolist(),
+            "planned_joint_target": target_array.reshape(-1).tolist(),
+            "planned_joint_target_validated": (
+                planned_joint_target_validated
+            ),
             "zero_action": zero_action,
             "max_abs_joint_delta": float(np.max(np.abs(dq))) if dq.size else 0.0,
             "force_vector_valid": False,

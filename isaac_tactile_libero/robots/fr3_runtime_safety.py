@@ -20,8 +20,10 @@ class FR3SafetyLimits:
     required_direction: tuple[float, float, float]
     min_direction_alignment: float
     max_penetration_m: float
+    persistent_penetration_threshold_m: float
     max_persistent_penetration_steps: int
     max_step_motion_m: float
+    max_rotation_per_step_rad: float
     max_cumulative_drift_m: float
     joint_position_tolerance_rad: float = 0.0
 
@@ -58,7 +60,15 @@ class FR3SafetyLimits:
             raise ValueError("required_direction must be a unit vector")
         if not -1.0 <= self.min_direction_alignment <= 1.0:
             raise ValueError("min_direction_alignment must be in [-1, 1]")
-        if self.max_penetration_m < 0.0 or self.max_step_motion_m <= 0.0 or self.max_cumulative_drift_m <= 0.0:
+        if (
+            self.max_penetration_m < 0.0
+            or self.persistent_penetration_threshold_m < 0.0
+            or self.persistent_penetration_threshold_m
+            > self.max_penetration_m
+            or self.max_step_motion_m <= 0.0
+            or self.max_rotation_per_step_rad <= 0.0
+            or self.max_cumulative_drift_m <= 0.0
+        ):
             raise ValueError("motion/penetration limits are invalid")
         if self.max_persistent_penetration_steps < 0:
             raise ValueError("max_persistent_penetration_steps must be non-negative")
@@ -83,8 +93,14 @@ class FR3SafetyLimits:
             required_direction=tuple(float(item) for item in direction["press_axis"]),
             min_direction_alignment=float(direction["minimum_alignment"]),
             max_penetration_m=float(collision["penetration_absolute_limit_m"]),
+            persistent_penetration_threshold_m=float(
+                collision["penetration_persistent_threshold_m"]
+            ),
             max_persistent_penetration_steps=int(collision["penetration_max_persistent_steps"]),
             max_step_motion_m=float(motion["max_translation_per_step_m"]),
+            max_rotation_per_step_rad=float(
+                motion["max_rotation_per_step_rad"]
+            ),
             max_cumulative_drift_m=float(motion["max_cumulative_tcp_drift_m"]),
             joint_position_tolerance_rad=float(joints.get("comparison_tolerance_rad", 0.0)),
         )
@@ -103,6 +119,11 @@ class FR3SafetySample:
     penetration_m: float
     stop_requested: bool
     phase: str = ""
+    requested_rotation_delta: tuple[float, float, float] = (
+        0.0,
+        0.0,
+        0.0,
+    )
 
 
 @dataclass(frozen=True)
@@ -168,6 +189,7 @@ class FR3RuntimeSafety:
             sample.joint_positions,
             sample.joint_velocities,
             sample.requested_delta,
+            sample.requested_rotation_delta,
             sample.observed_delta,
         )
         if any(not np.all(np.isfinite(np.asarray(value, dtype=float))) for value in vectors) or not np.isfinite(
@@ -219,6 +241,32 @@ class FR3RuntimeSafety:
 
         requested = np.asarray(sample.requested_delta, dtype=float)
         requested_norm = float(np.linalg.norm(requested))
+        if requested_norm > self.limits.max_step_motion_m + 1.0e-12:
+            return self._abort(
+                SafetyViolation(
+                    "REQUESTED_STEP_MOTION_LIMIT",
+                    requested_norm,
+                    self.limits.max_step_motion_m,
+                    sample.phase,
+                )
+            )
+        requested_rotation = np.asarray(
+            sample.requested_rotation_delta,
+            dtype=float,
+        )
+        requested_rotation_norm = float(np.linalg.norm(requested_rotation))
+        if (
+            requested_rotation_norm
+            > self.limits.max_rotation_per_step_rad + 1.0e-12
+        ):
+            return self._abort(
+                SafetyViolation(
+                    "REQUESTED_ROTATION_LIMIT",
+                    requested_rotation_norm,
+                    self.limits.max_rotation_per_step_rad,
+                    sample.phase,
+                )
+            )
         enforce_direction = sample.phase in {"", "PRESS"}
         if enforce_direction and requested_norm > 1.0e-12:
             alignment = float(np.dot(requested / requested_norm, np.asarray(self.limits.required_direction)))
@@ -244,7 +292,12 @@ class FR3RuntimeSafety:
                     "PENETRATION_LIMIT", penetration, self.limits.max_penetration_m, sample.phase
                 )
             )
-        self._persistent_penetration_steps = self._persistent_penetration_steps + 1 if penetration > 0.0 else 0
+        self._persistent_penetration_steps = (
+            self._persistent_penetration_steps + 1
+            if penetration
+            > self.limits.persistent_penetration_threshold_m
+            else 0
+        )
         if self._persistent_penetration_steps > self.limits.max_persistent_penetration_steps:
             return self._abort(
                 SafetyViolation(

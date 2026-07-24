@@ -37,10 +37,28 @@ class FakeController:
         self.initialize_count += 1
 
     def read_joint_state(self):
-        return np.zeros(9, dtype=np.float32), np.zeros(9, dtype=np.float32)
+        return (
+            np.array(
+                [0.0, 0.0, 0.0, -1.5, 0.0, 2.0, 0.0, 0.02, 0.02],
+                dtype=np.float32,
+            ),
+            np.zeros(9, dtype=np.float32),
+        )
+
+    def read_ee_pose(self):
+        return np.array(
+            [0.55, 0.0, 0.50, 0.0, 0.0, 0.0, 1.0],
+            dtype=np.float32,
+        )
 
     def apply_action(self, action):
-        return {"command_sent": True, "bounded_action": list(action), "controller_method": "fake_dls"}
+        return {
+            "command_sent": True,
+            "bounded_action": list(action),
+            "controller_method": "fake_dls",
+            "planned_joint_target_validated": True,
+            "benchmark_cap_eligible": True,
+        }
 
     def close(self):
         self.closed = True
@@ -54,25 +72,75 @@ class FakeContact:
         pass
 
     def read(self, physics_step):
-        return ContactSample(True, physics_step > 0, 1.25 if physics_step > 0 else 0.0, 0.05, physics_step)
+        in_contact = physics_step > 0
+        raw_contacts = (
+            {
+                "body0": "/World/FR3/fr3_hand",
+                "body1": "/World/PressButton/Button",
+                "position": [0.55, 0.0, 0.47],
+                "normal": [0.0, 0.0, 1.0],
+                "impulse": [0.0, 0.0, 0.0],
+                "time": physics_step / 60.0,
+                "dt": 1.0 / 60.0,
+            },
+        ) if in_contact else ()
+        return ContactSample(
+            True,
+            in_contact,
+            1.25 if in_contact else 0.0,
+            physics_step / 60.0,
+            physics_step,
+            raw_contacts,
+        )
 
 
 class FakeCamera:
+    def __init__(self):
+        self.source_frame_id = 0
+
     def initialize(self):
         pass
 
     def reset(self):
-        pass
+        self.source_frame_id = 0
 
     def read(self, *, camera_tick, physics_step, timestamp):
         rgb = np.zeros((64, 64, 3), dtype=np.uint8)
         rgb[..., 0] = camera_tick + 1
         rgb[:, 32:, 1] = 100
-        return CameraFrame(rgb, np.ones((64, 64), dtype=np.float32), camera_tick, physics_step, timestamp)
+        frame = CameraFrame(
+            rgb,
+            np.ones((64, 64), dtype=np.float32),
+            camera_tick,
+            physics_step,
+            timestamp,
+            source_frame_id=self.source_frame_id,
+            source_timestamp=self.source_frame_id / 20.0,
+            metadata_source="sensor",
+        )
+        self.source_frame_id += 1
+        return frame
+
+
+class FakeCollisionMonitor:
+    def read(self):
+        return {
+            "valid": True,
+            "unsafe_collision": False,
+            "unsafe_pairs": [],
+            "max_penetration_m": 0.0,
+            "contact_count": 0,
+            "error": "",
+        }
 
 
 def _components(_env):
-    return FakeController(), FakeContact(), FakeCamera()
+    return (
+        FakeController(),
+        FakeContact(),
+        FakeCamera(),
+        FakeCollisionMonitor(),
+    )
 
 
 def test_make_env_dispatches_real_fr3_isaacsim6_backend_without_strong_import() -> None:
@@ -109,6 +177,8 @@ def test_real_fr3_end_to_end_contract_with_injected_runtime() -> None:
         reset_obs = env.build().reset(seed=4)
         obs, reward, terminated, truncated, info = env.step(np.zeros(7, dtype=np.float32))
         assert reset_obs["task_name"] == "PressButton"
+        assert "seed" not in reset_obs
+        assert "reset" not in reset_obs
         assert obs["rgb"]["front"].dtype == np.uint8
         assert obs["runtime"]["real_fr3_articulation"] is True
         assert obs["runtime"]["real_fr3_control"] is True
@@ -179,7 +249,12 @@ def test_real_fr3_environment_forwards_compatibility_only_controller_metadata() 
             }
 
     def components(_env):
-        return MetadataController(), FakeContact(), FakeCamera()
+        return (
+            MetadataController(),
+            FakeContact(),
+            FakeCamera(),
+            FakeCollisionMonitor(),
+        )
 
     env = IsaacSimFR3PressButtonEnv(
         enable_runtime=True,

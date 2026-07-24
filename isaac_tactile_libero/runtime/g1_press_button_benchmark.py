@@ -3,8 +3,17 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
+import math
+from pathlib import Path
+import string
 from typing import Any, Mapping, Sequence
 
+import yaml
+
+from isaac_tactile_libero.runtime.g1_reset_provenance import (
+    reset_record_signature_valid,
+)
 from isaac_tactile_libero.sensors.isaacsim6_contact import (
     ContactProvenanceError,
     validate_press_button_contact_record,
@@ -15,7 +24,9 @@ from isaac_tactile_libero.tasks.press_button import (
     SUCCESS_SOURCE,
 )
 from isaac_tactile_libero.tasks.press_button_mechanism import (
+    PressButtonMechanism,
     PressButtonMechanismState,
+    load_press_button_mechanism_config,
 )
 from isaac_tactile_libero.tasks.press_button_runtime import (
     PressButtonRuntimeState,
@@ -26,6 +37,15 @@ from isaac_tactile_libero.tasks.press_button_runtime import (
 RESET_CYCLES_REQUIRED = 100
 ROLLOUT_STEPS_REQUIRED = 500
 FORMAL_EPISODES_REQUIRED = 10
+G1_PRESSED_THRESHOLD_M = 0.009
+G1_RELEASE_THRESHOLD_M = 0.001
+G1_RESET_TOLERANCE_M = 0.0005
+G1_TRAVEL_LIMIT_M = 0.012
+G1_REQUIRED_HOLD_STEPS = 3
+DEFAULT_TASK_CONFIG_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "configs/tasks/press_button_physical.yaml"
+)
 FORMAL_PHASE_SEQUENCE = (
     "APPROACH",
     "PRESS",
@@ -36,16 +56,47 @@ FORMAL_PHASE_SEQUENCE = (
 )
 
 
+def _is_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in string.hexdigits for character in value)
+    )
+
+
 def validate_reset_records(
     records: Sequence[Mapping[str, Any]],
     *,
     required_cycles: int = RESET_CYCLES_REQUIRED,
+    task_config_path: str | Path = DEFAULT_TASK_CONFIG_PATH,
 ) -> dict[str, Any]:
     """Validate exact reset cardinality while retaining every failed cycle."""
 
     if type(required_cycles) is not int or required_cycles <= 0:
         raise ValueError("required_cycles must be a positive integer")
     observed = [deepcopy(dict(record)) for record in records]
+    authoritative_path = Path(task_config_path).resolve()
+    authoritative_digest = hashlib.sha256(
+        authoritative_path.read_bytes()
+    ).hexdigest()
+    authoritative_mechanism = PressButtonMechanism(
+        load_press_button_mechanism_config(authoritative_path)
+    )
+    authoritative_payload = yaml.safe_load(
+        authoritative_path.read_text(encoding="utf-8")
+    )
+    try:
+        authoritative_seed = authoritative_payload["runtime"][
+            "deterministic_reset_seed"
+        ]
+    except (KeyError, TypeError) as exc:
+        raise ValueError(
+            "task config must declare runtime.deterministic_reset_seed"
+        ) from exc
+    if type(authoritative_seed) is not int:
+        raise ValueError(
+            "runtime.deterministic_reset_seed must be an integer"
+        )
     errors: list[str] = []
     failed = [
         int(record.get("cycle_index", index))
@@ -59,18 +110,82 @@ def validate_reset_records(
         for index, record in enumerate(observed)
     ):
         errors.append("G1_RESET_SEQUENCE_INVALID")
-    if any(
-        type(record.get("seed")) is not int
-        or not isinstance(record.get("signature_sha256"), str)
-        or len(record["signature_sha256"]) != 64
+    seed_values = [record.get("seed") for record in observed]
+    seed_sequence_valid = bool(seed_values) and all(
+        type(seed) is int for seed in seed_values
+    )
+    if seed_sequence_valid:
+        first_seed = seed_values[0]
+        seed_sequence_valid = all(
+            seed == first_seed + index
+            for index, seed in enumerate(seed_values)
+        )
+        seed_sequence_valid = (
+            seed_sequence_valid and first_seed == authoritative_seed
+        )
+    if not seed_sequence_valid or any(
+        not _is_sha256(record.get("signature_sha256"))
         for record in observed
     ):
         errors.append("G1_RESET_SEED_PROVENANCE_INVALID")
+    mechanism_config = authoritative_mechanism.config
     if any(
-        record.get("sensor_ready") is not True
+        not reset_record_signature_valid(
+            record,
+            rest_position_m=mechanism_config.rest_position_m,
+            lower_limit_m=mechanism_config.lower_limit_m,
+            travel_limit_m=mechanism_config.travel_limit_m,
+            pressed_threshold_m=mechanism_config.pressed_threshold_m,
+            release_threshold_m=mechanism_config.release_threshold_m,
+            reset_tolerance_m=mechanism_config.reset_tolerance_m,
+        )
+        for record in observed
+    ):
+        errors.append("G1_RESET_SIGNATURE_INVALID")
+    if any(
+        record.get("task") != "PressButton"
+        or record.get("task_config_sha256") != authoritative_digest
+        or record.get("mechanism_version")
+        != authoritative_mechanism.config.mechanism_version
+        or record.get("joint_name")
+        != authoritative_mechanism.config.joint_name
+        or not isinstance(
+            record.get("reset_tolerance_m"),
+            (int, float),
+        )
+        or isinstance(record.get("reset_tolerance_m"), bool)
+        or not math.isclose(
+            float(record.get("reset_tolerance_m", math.nan)),
+            authoritative_mechanism.config.reset_tolerance_m,
+            rel_tol=0.0,
+            abs_tol=1.0e-12,
+        )
+        or type(record.get("seed")) is not int
+        or not isinstance(
+            record.get("requested_reset_position_m"),
+            (int, float),
+        )
+        or isinstance(record.get("requested_reset_position_m"), bool)
+        or not math.isclose(
+            float(record.get("requested_reset_position_m", math.nan)),
+            authoritative_mechanism.sample_reset_position(
+                seed=record["seed"]
+            )
+            if type(record.get("seed")) is int
+            else math.nan,
+            rel_tol=0.0,
+            abs_tol=1.0e-12,
+        )
+        for record in observed
+    ):
+        errors.append("G1_RESET_DECLARATION_INVALID")
+    if any(
+        record.get("failure_code") is not None
+        or record.get("sensor_ready") is not True
         or record.get("camera_ready") is not True
         or record.get("task_ready") is not True
         or not isinstance(record.get("observed_task_state"), Mapping)
+        or record["observed_task_state"].get("source") != SUCCESS_SOURCE
         or record["observed_task_state"].get("reset") is not True
         for record in observed
         if record.get("status") == "completed"
@@ -174,6 +289,11 @@ class G1PressButtonEpisodeRuntime:
             )
         except (ContactProvenanceError, TypeError, ValueError) as exc:
             # Preserve the exact caller sample before failing closed.
+            retained_contact = (
+                deepcopy(dict(contact_record))
+                if isinstance(contact_record, Mapping)
+                else {"invalid_type": type(contact_record).__name__}
+            )
             self.retained_samples.append(
                 {
                     "sample_index": len(self.retained_samples),
@@ -184,8 +304,12 @@ class G1PressButtonEpisodeRuntime:
                         else {"invalid_type": type(mechanism_state).__name__}
                     ),
                     "task_outcome": None,
-                    "contact": deepcopy(dict(contact_record)),
-                    "safety_allowed": bool(safety_allowed),
+                    "contact": retained_contact,
+                    "safety_allowed": (
+                        safety_allowed
+                        if type(safety_allowed) is bool
+                        else None
+                    ),
                 }
             )
             code = getattr(exc, "code", "TASK_STATE_INVALID")
@@ -202,7 +326,9 @@ class G1PressButtonEpisodeRuntime:
                     outcome.as_dict() if outcome is not None else None
                 ),
                 "contact": normalized_contact,
-                "safety_allowed": bool(safety_allowed),
+                "safety_allowed": (
+                    safety_allowed if type(safety_allowed) is bool else None
+                ),
             }
         )
         if len(self.retained_samples) > self.max_retained_samples:
@@ -218,6 +344,12 @@ class G1PressButtonEpisodeRuntime:
                 else "CONTACT_READING_INVALID"
             )
             self._abort(code, "Contact sample was retained but is not usable")
+            return False
+        if type(safety_allowed) is not bool:
+            self._abort(
+                "RUNTIME_SAFETY_SIGNAL_INVALID",
+                "runtime safety signal must be an exact boolean",
+            )
             return False
         if not safety_allowed:
             self._abort(
@@ -406,6 +538,184 @@ class G1PressButtonEpisodeRuntime:
         }
 
 
+def _valid_retained_sample(sample: Any, index: int) -> bool:
+    if not isinstance(sample, Mapping):
+        return False
+    mechanism = sample.get("mechanism_state")
+    task_outcome = sample.get("task_outcome")
+    if not isinstance(mechanism, Mapping) or not isinstance(
+        task_outcome,
+        Mapping,
+    ):
+        return False
+    joint_position = mechanism.get("joint_position_m")
+    travel = mechanism.get("travel_m")
+    mechanism_valid = (
+        mechanism.get("source") == SUCCESS_SOURCE
+        and isinstance(joint_position, (int, float))
+        and not isinstance(joint_position, bool)
+        and math.isfinite(float(joint_position))
+        and isinstance(travel, (int, float))
+        and not isinstance(travel, bool)
+        and math.isfinite(float(travel))
+        and float(travel) >= 0.0
+        and float(travel) <= G1_TRAVEL_LIMIT_M
+        and math.isclose(
+            float(joint_position),
+            float(travel),
+            rel_tol=0.0,
+            abs_tol=1.0e-9,
+        )
+        and all(
+            type(mechanism.get(field)) is bool
+            for field in ("at_rest", "pressed", "released", "reset")
+        )
+        and mechanism.get("at_rest")
+        is math.isclose(
+            float(travel),
+            0.0,
+            rel_tol=0.0,
+            abs_tol=1.0e-9,
+        )
+        and mechanism.get("pressed")
+        is (float(travel) >= G1_PRESSED_THRESHOLD_M)
+        and mechanism.get("released")
+        is (float(travel) <= G1_RELEASE_THRESHOLD_M)
+        and mechanism.get("reset")
+        is (float(travel) <= G1_RESET_TOLERANCE_M)
+    )
+    try:
+        contact = validate_press_button_contact_record(sample.get("contact"))
+    except ContactProvenanceError:
+        return False
+    phase = sample.get("phase")
+    task_fields_valid = (
+        isinstance(task_outcome.get("observed_travel_m"), (int, float))
+        and not isinstance(task_outcome.get("observed_travel_m"), bool)
+        and math.isclose(
+            float(task_outcome["observed_travel_m"]),
+            float(travel),
+            rel_tol=0.0,
+            abs_tol=1.0e-9,
+        )
+        and task_outcome.get("pressed") is mechanism.get("pressed")
+        and task_outcome.get("released") is mechanism.get("released")
+        and task_outcome.get("reset") is mechanism.get("reset")
+        and type(task_outcome.get("success")) is bool
+        and type(task_outcome.get("pressed_hold_steps")) is int
+        and task_outcome["pressed_hold_steps"] >= 0
+        and type(task_outcome.get("required_hold_steps")) is int
+        and task_outcome["required_hold_steps"]
+        == G1_REQUIRED_HOLD_STEPS
+    )
+    phase_state_valid = (
+        (
+            phase == "APPROACH"
+            and mechanism.get("pressed") is False
+            and mechanism.get("reset") is True
+        )
+        or (
+            phase in {"PRESS", "HOLD"}
+            and mechanism.get("pressed") is True
+        )
+        or (
+            phase == "RELEASE"
+            and mechanism.get("released") is True
+        )
+        or (
+            phase == "RETRACT"
+            and mechanism.get("released") is True
+            and mechanism.get("reset") is True
+        )
+    )
+    return (
+        sample.get("sample_index") == index
+        and phase
+        in {"APPROACH", "PRESS", "HOLD", "RELEASE", "RETRACT"}
+        and mechanism_valid
+        and task_fields_valid
+        and phase_state_valid
+        and task_outcome.get("success_source") == SUCCESS_SOURCE
+        and contact.get("sample_index") == index
+        and contact.get("read_sequence_index") == index
+        and contact.get("usable") is True
+        and sample.get("safety_allowed") is True
+    )
+
+
+def _retained_samples_semantically_valid(samples: Any) -> bool:
+    if not isinstance(samples, list) or not samples:
+        return False
+    previous_physics_step: int | None = None
+    previous_sensor_time: float | None = None
+    required_hold_steps: int | None = None
+    expected_hold_steps = 0
+    success_latched = False
+    previous_phase_rank = -1
+    phase_ranks = {
+        "APPROACH": 0,
+        "PRESS": 1,
+        "HOLD": 2,
+        "RELEASE": 3,
+        "RETRACT": 4,
+    }
+    for index, sample in enumerate(samples):
+        if not _valid_retained_sample(sample, index):
+            return False
+        phase_rank = phase_ranks[sample["phase"]]
+        if phase_rank < previous_phase_rank:
+            return False
+        previous_phase_rank = phase_rank
+        mechanism = sample["mechanism_state"]
+        outcome = sample["task_outcome"]
+        contact = sample["contact"]
+        observed_physics_step = contact["observed_physics_step"]
+        sensor_time = float(contact["sensor_time_s"])
+        if previous_physics_step is not None and (
+            observed_physics_step - previous_physics_step != 3
+        ):
+            return False
+        if previous_sensor_time is not None and not math.isclose(
+            sensor_time - previous_sensor_time,
+            1.0 / 20.0,
+            rel_tol=0.0,
+            abs_tol=1.0e-9,
+        ):
+            return False
+        previous_physics_step = observed_physics_step
+        previous_sensor_time = sensor_time
+        if any(
+            not math.isclose(
+                float(raw.get("time", math.nan)),
+                sensor_time,
+                rel_tol=0.0,
+                abs_tol=1.0e-9,
+            )
+            for raw in contact["raw_contacts"]
+        ):
+            return False
+
+        observed_required = outcome["required_hold_steps"]
+        if required_hold_steps is None:
+            required_hold_steps = observed_required
+        elif observed_required != required_hold_steps:
+            return False
+        expected_hold_steps = (
+            expected_hold_steps + 1
+            if mechanism["pressed"]
+            else 0
+        )
+        if outcome["pressed_hold_steps"] != expected_hold_steps:
+            return False
+        success_latched = bool(
+            success_latched
+            or expected_hold_steps >= observed_required
+        )
+        if outcome["success"] is not success_latched:
+            return False
+    return success_latched
+
+
 def validate_consecutive_episode_records(
     records: Sequence[Mapping[str, Any]],
     *,
@@ -420,9 +730,33 @@ def validate_consecutive_episode_records(
     failed: list[int] = []
     if len(episodes) != required_episodes:
         errors.append("G1_FORMAL_EPISODE_COUNT")
+    seed_values = [episode.get("seed") for episode in episodes]
+    seed_sequence_valid = bool(seed_values) and all(
+        type(seed) is int for seed in seed_values
+    )
+    if seed_sequence_valid:
+        first_seed = seed_values[0]
+        seed_sequence_valid = all(
+            seed == first_seed + index
+            for index, seed in enumerate(seed_values)
+        )
     for index, episode in enumerate(episodes):
+        retained_samples = episode.get("retained_samples")
+        sample_records_valid = (
+            _retained_samples_semantically_valid(retained_samples)
+            and list(
+                dict.fromkeys(
+                    sample.get("phase")
+                    for sample in retained_samples
+                    if isinstance(sample, Mapping)
+                )
+            )
+            == ["APPROACH", "PRESS", "HOLD", "RELEASE", "RETRACT"]
+        )
         valid = (
             episode.get("episode_index") == index
+            and episode.get("episode_id") == f"g1-press-button-{index:04d}"
+            and seed_sequence_valid
             and episode.get("success") is True
             and episode.get("failure_code") is None
             and episode.get("task_success") is True
@@ -434,9 +768,10 @@ def validate_consecutive_episode_records(
             and episode.get("phase_sequence") == list(FORMAL_PHASE_SEQUENCE)
             and type(episode.get("retained_sample_count")) is int
             and episode["retained_sample_count"] > 0
-            and isinstance(episode.get("retained_samples"), list)
+            and sample_records_valid
+            and retained_samples[-1]["task_outcome"]["success"] is True
             and episode["retained_sample_count"]
-            == len(episode["retained_samples"])
+            == len(retained_samples)
             and episode.get("post_abort_actuation_count") == 0
             and episode.get("force_vector_valid") is False
             and episode.get("wrench_valid") is False

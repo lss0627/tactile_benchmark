@@ -228,12 +228,43 @@ def _g1_simulation_app_config(*, headless: bool) -> dict[str, Any]:
 def _finalize_g1_physical_run(*, emit: Any, runtime: Any, simulation_app: Any) -> dict[str, Any]:
     """Persist/flush evidence before Isaac's process-terminating fast shutdown."""
 
-    summary = emit()
-    print(json.dumps(summary, indent=2, sort_keys=True), flush=True)
-    runtime.close()
-    exit_code = 0 if summary.get("status") in {"PASS_SMOKE", "PASS_BENCHMARK"} else 1
-    simulation_app.close(exit_code=exit_code)
-    return summary
+    exit_code = 1
+    try:
+        summary = emit()
+        print(json.dumps(summary, indent=2, sort_keys=True), flush=True)
+        exit_code = (
+            0
+            if summary.get("status")
+            in {"PASS_SMOKE", "PASS_BENCHMARK"}
+            else 1
+        )
+        return summary
+    finally:
+        try:
+            runtime.close()
+        finally:
+            simulation_app.close(exit_code=exit_code)
+
+
+def _construct_g1_physical_runtime(
+    *,
+    simulation_app_factory: Any,
+    runtime_factory: Any,
+    app_config: Mapping[str, Any],
+    runtime_kwargs: Mapping[str, Any],
+) -> tuple[Any, Any]:
+    """Close an already-created app if runtime construction cannot complete."""
+
+    simulation_app = simulation_app_factory(dict(app_config))
+    try:
+        runtime = runtime_factory(
+            simulation_app=simulation_app,
+            **dict(runtime_kwargs),
+        )
+    except BaseException:
+        simulation_app.close(exit_code=1)
+        raise
+    return simulation_app, runtime
 
 
 def _repository_identity() -> dict[str, Any]:
@@ -313,17 +344,121 @@ def _g1_dry_episode(episode_index: int, seed: int) -> dict[str, Any]:
     }
 
 
+_G1_PHYSICAL_EPISODE_SCHEMA = "g1.physical_episode.v2"
+_G1_COMPLETE_TRANSITIONS = [
+    {"from": "APPROACH", "to": "PRESS"},
+    {"from": "PRESS", "to": "HOLD"},
+    {"from": "HOLD", "to": "RELEASE"},
+    {"from": "RELEASE", "to": "RETRACT"},
+    {"from": "RETRACT", "to": "COMPLETE"},
+]
+
+
+def _seal_g1_episode_record(
+    episode: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a physical episode record with a recomputable canonical digest."""
+
+    sealed = dict(episode)
+    sealed.pop("record_sha256", None)
+    payload = json.dumps(
+        sealed,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    sealed["record_sha256"] = hashlib.sha256(payload).hexdigest()
+    return sealed
+
+
+def _g1_episode_record_valid(
+    episode: Mapping[str, Any],
+    *,
+    expected_index: int,
+) -> bool:
+    if not isinstance(episode, Mapping):
+        return False
+    try:
+        expected_digest = _seal_g1_episode_record(episode)[
+            "record_sha256"
+        ]
+    except (TypeError, ValueError):
+        return False
+    state_machine = episode.get("state_machine")
+    contact_lifecycle = episode.get("contact_lifecycle")
+    counts = (
+        episode.get("steps_executed"),
+        episode.get("requested_action_count"),
+        episode.get("executed_action_count"),
+        episode.get("task_state_sample_count"),
+    )
+    return (
+        episode.get("record_schema_version")
+        == _G1_PHYSICAL_EPISODE_SCHEMA
+        and episode.get("record_sha256") == expected_digest
+        and episode.get("episode_id")
+        == f"g1-physical-{expected_index:04d}"
+        and episode.get("episode_index") == expected_index
+        and type(episode.get("seed")) is int
+        and episode.get("physical_execution") is True
+        and episode.get("final_state") == "COMPLETE"
+        and isinstance(state_machine, Mapping)
+        and state_machine.get("state") == "COMPLETE"
+        and state_machine.get("can_actuate") is False
+        and state_machine.get("abort") is None
+        and state_machine.get("transitions")
+        == _G1_COMPLETE_TRANSITIONS
+        and all(type(value) is int and value > 0 for value in counts)
+        and len(set(counts)) == 1
+        and isinstance(contact_lifecycle, Mapping)
+        and contact_lifecycle.get("ok") is True
+        and contact_lifecycle.get("errors") == []
+        and type(episode.get("raw_contact_samples")) is int
+        and episode["raw_contact_samples"] > 0
+        and isinstance(
+            episode.get("maximum_button_travel_m"),
+            (int, float),
+        )
+        and not isinstance(episode["maximum_button_travel_m"], bool)
+        and np.isfinite(float(episode["maximum_button_travel_m"]))
+        and float(episode["maximum_button_travel_m"]) > 0.0
+        and isclose(
+            float(episode.get("control_frequency_hz", 0.0)),
+            20.0,
+            rel_tol=0.0,
+            abs_tol=1.0e-12,
+        )
+        and isclose(
+            float(episode.get("physics_dt_s", 0.0)),
+            1.0 / 60.0,
+            rel_tol=0.0,
+            abs_tol=1.0e-12,
+        )
+        and episode.get("physics_substeps_per_action") == 3
+    )
+
+
 def _g1_gate_decision(
     episodes: Sequence[dict[str, Any]],
     *,
     required_episodes: int,
     driver_validation: str,
+    phase3_contract_required: bool = True,
 ) -> tuple[str, list[str]]:
     blockers: list[str] = []
+    if phase3_contract_required:
+        blockers.append(
+            "G1_LEGACY_EVIDENCE_NOT_PHASE3_VALIDATED"
+        )
     if len(episodes) != int(required_episodes):
         blockers.append("G1_REQUIRES_10_CONSECUTIVE_EPISODES")
     for index, episode in enumerate(episodes):
         prefix = f"G1_EPISODE_{index}"
+        if not _g1_episode_record_valid(
+            episode,
+            expected_index=index,
+        ):
+            blockers.append(f"{prefix}_EPISODE_RECORD_INVALID")
         if not episode.get("physical_execution"):
             blockers.append(f"{prefix}_NOT_PHYSICAL")
         if not episode.get("observed_button_press") or not episode.get("success"):
@@ -556,6 +691,81 @@ def _state_step_budget_event(
     }
 
 
+def _retain_g1_executed_send(
+    executed_actions: list[dict[str, Any]],
+    *,
+    episode_id: str,
+    step: int,
+    phase: str,
+    requested_action: Sequence[float],
+    send_record: Mapping[str, Any],
+    physics_substeps: int,
+) -> dict[str, Any]:
+    """Retain the sent target before any post-actuation observation can fail."""
+
+    record = {
+        "episode_id": str(episode_id),
+        "step": int(step),
+        "runtime_state": str(phase),
+        "requested_action": [
+            float(item) for item in requested_action
+        ],
+        "requested_action_7d": send_record.get(
+            "requested_action_7d"
+        ),
+        "governed_target": send_record.get("governed_target"),
+        "executed_joint_target": send_record.get(
+            "executed_joint_target"
+        ),
+        "joint_position_targets": [
+            float(item)
+            for item in send_record.get("executed_joint_target", ())
+        ],
+        "command_sent": send_record.get("send_result") is True,
+        "observation_status": "pending",
+        "button_travel_m": None,
+        "task_success": None,
+        "physics_substeps": int(physics_substeps),
+    }
+    executed_actions.append(record)
+    return record
+
+
+def _send_and_retain_g1_hold(
+    *,
+    executed_actions: list[dict[str, Any]],
+    send_target: Any,
+    joint_position_target: Sequence[float],
+    episode_id: str,
+    step: int,
+    physics_substeps: int,
+) -> dict[str, Any]:
+    """Send a HOLD target and retain it before post-send observation."""
+
+    target = [float(item) for item in joint_position_target]
+    send_result = send_target(target)
+    if send_result is not True:
+        return {
+            "command_sent": False,
+            "send_result": send_result,
+            "observation_status": "not_started",
+        }
+    return _retain_g1_executed_send(
+        executed_actions,
+        episode_id=episode_id,
+        step=step,
+        phase="HOLD",
+        requested_action=[0.0] * 7,
+        send_record={
+            "send_result": True,
+            "requested_action_7d": [0.0] * 7,
+            "governed_target": target,
+            "executed_joint_target": target,
+        },
+        physics_substeps=physics_substeps,
+    )
+
+
 def _g1_execute_episode(
     *,
     episode_index: int,
@@ -568,6 +778,7 @@ def _g1_execute_episode(
     simulation_app: Any,
     initial_contact: Any,
     collision_monitor: PhysXCollisionMonitor,
+    evidence_sink: dict[str, Any] | None = None,
 ) -> tuple[
     dict[str, Any],
     list[dict[str, Any]],
@@ -615,6 +826,18 @@ def _g1_execute_episode(
     step_index = 0
     press_observation_index: int | None = None
     release_observation_index: int | None = None
+    if evidence_sink is not None:
+        evidence_sink.clear()
+        evidence_sink.update(
+            {
+                "requested_actions": requested_actions,
+                "executed_actions": executed_actions,
+                "task_states": task_states,
+                "events": events,
+                "contact_trace": contact_trace,
+                "media": media,
+            }
+        )
     reset_tcp = np.asarray(runtime.read_current_ee_transform().position, dtype=float)
     previous_tcp = reset_tcp.copy()
     previous_accepted_target = np.asarray(
@@ -686,6 +909,34 @@ def _g1_execute_episode(
         available = bool(collision_report["valid"])
         penetration_samples_available = penetration_samples_available or available
         collision_samples_valid += int(available)
+        if not available:
+            _abort_machine(
+                machine,
+                code="COLLISION_MONITOR_INVALID",
+                detail=str(
+                    collision_report.get("error")
+                    or "collision monitor did not return a valid sample"
+                ),
+                events=events,
+                event={
+                    "code": "COLLISION_MONITOR_INVALID",
+                    "phase": phase,
+                    "step": step_index,
+                    "collision": dict(collision_report),
+                },
+            )
+        if contact.is_valid is not True:
+            _abort_machine(
+                machine,
+                code="CONTACT_READING_INVALID",
+                detail="Contact sample was invalid and retained",
+                events=events,
+                event={
+                    "code": "CONTACT_READING_INVALID",
+                    "phase": phase,
+                    "step": step_index,
+                },
+            )
         sample = FR3SafetySample(
             tcp_position=tuple(float(item) for item in tcp),
             previous_tcp_position=tuple(float(item) for item in before_tcp),
@@ -917,27 +1168,40 @@ def _g1_execute_episode(
                 return False
             target_joints = np.asarray(send_record["executed_joint_target"], dtype=float)
             previous_accepted_target = target_joints.copy()
-            budget.finish_step()
-            button, outcome, _contact = observe_and_record(
-                phase,
-                delta,
-                before_tcp,
-                target,
-                state_step + 1,
+            retained_send = _retain_g1_executed_send(
+                executed_actions,
+                episode_id=episode_id,
+                step=step_index + 1,
+                phase=phase,
+                requested_action=action,
+                send_record=send_record,
+                physics_substeps=physics_substeps,
             )
-            executed_actions.append(
+            budget.finish_step()
+            try:
+                button, outcome, _contact = observe_and_record(
+                    phase,
+                    delta,
+                    before_tcp,
+                    target,
+                    state_step + 1,
+                )
+            except Exception as exc:
+                retained_send.update(
+                    {
+                        "observation_status": "failed",
+                        "observation_error": (
+                            f"{type(exc).__name__}: {exc}"
+                        ),
+                    }
+                )
+                raise
+            retained_send.update(
                 {
-                    "episode_id": episode_id,
                     "step": step_index,
-                    "runtime_state": phase,
-                    "requested_action": action,
-                    "requested_action_7d": send_record.get("requested_action_7d"),
-                    "governed_target": send_record.get("governed_target"),
-                    "executed_joint_target": send_record.get("executed_joint_target"),
-                    "joint_position_targets": [float(item) for item in target_joints],
+                    "observation_status": "completed",
                     "button_travel_m": button.travel_m,
                     "task_success": outcome.success,
-                    "physics_substeps": physics_substeps,
                 }
             )
             if not machine.can_actuate:
@@ -1012,7 +1276,15 @@ def _g1_execute_episode(
                 }
             )
             before_tcp = np.asarray(runtime.read_current_ee_transform().position, dtype=float)
-            if not runtime.send_joint_position_targets(joint.joint_positions):
+            retained_hold = _send_and_retain_g1_hold(
+                executed_actions=executed_actions,
+                send_target=runtime.send_joint_position_targets,
+                joint_position_target=joint.joint_positions,
+                episode_id=episode_id,
+                step=step_index + 1,
+                physics_substeps=physics_substeps,
+            )
+            if retained_hold.get("command_sent") is not True:
                 _abort_machine(
                     machine,
                     code="CONTROLLER_ACTUATION_FAILED",
@@ -1024,23 +1296,30 @@ def _g1_execute_episode(
                 joint.joint_positions, dtype=float
             ).copy()
             budget.finish_step()
-            button, outcome, _contact = observe_and_record(
-                "HOLD",
-                np.zeros(3),
-                before_tcp,
-                before_tcp,
-                hold_step + 1,
-            )
-            executed_actions.append(
+            try:
+                button, outcome, _contact = observe_and_record(
+                    "HOLD",
+                    np.zeros(3),
+                    before_tcp,
+                    before_tcp,
+                    hold_step + 1,
+                )
+            except Exception as exc:
+                retained_hold.update(
+                    {
+                        "observation_status": "failed",
+                        "observation_error": (
+                            f"{type(exc).__name__}: {exc}"
+                        ),
+                    }
+                )
+                raise
+            retained_hold.update(
                 {
-                    "episode_id": episode_id,
                     "step": step_index,
-                    "runtime_state": "HOLD",
-                    "requested_action": [0.0] * 7,
-                    "joint_position_targets": list(joint.joint_positions),
+                    "observation_status": "completed",
                     "button_travel_m": button.travel_m,
                     "task_success": outcome.success,
-                    "physics_substeps": physics_substeps,
                 }
             )
         if machine.can_actuate and oracle._success:
@@ -1121,6 +1400,7 @@ def _g1_execute_episode(
         )
 
     episode = {
+        "record_schema_version": _G1_PHYSICAL_EPISODE_SCHEMA,
         "episode_id": episode_id,
         "episode_index": episode_index,
         "seed": seed,
@@ -1138,6 +1418,9 @@ def _g1_execute_episode(
         "step_budget_exceeded": any(item["code"] == "STEP_BUDGET_EXCEEDED" for item in events),
         "wall_time_budget_exceeded": any(item["code"] == "WALL_TIME_BUDGET_EXCEEDED" for item in events),
         "steps_executed": budget.steps_executed,
+        "requested_action_count": len(requested_actions),
+        "executed_action_count": len(executed_actions),
+        "task_state_sample_count": len(task_states),
         "control_frequency_hz": control_frequency_hz,
         "physics_dt_s": physics_dt_s,
         "physics_substeps_per_action": physics_substeps,
@@ -1146,12 +1429,16 @@ def _g1_execute_episode(
         "force_magnitude_valid": any(item.is_valid and item.in_contact for item in contact_trace),
         "raw_contact_samples": raw_contact_samples,
         "penetration_samples_available": penetration_samples_available,
-        "collision_monitor_valid": collision_samples_valid > 0,
+        "collision_monitor_valid": (
+            bool(task_states)
+            and collision_samples_valid == len(task_states)
+        ),
         "maximum_button_travel_m": max(
             [float(record["button"]["travel_m"]) for record in task_states] or [final_button.travel_m]
         ),
         "contact_lifecycle": contact_result,
     }
+    episode = _seal_g1_episode_record(episode)
     return episode, requested_actions, executed_actions, task_states, events, contact_trace, media
 
 
@@ -1192,13 +1479,18 @@ def _run_g1_physical(
                 PhysxSchema.PhysxContactReportAPI.Apply(prim).CreateThresholdAttr().Set(0.0)
 
     SimulationApp = import_simulation_app()
-    simulation_app = SimulationApp(_g1_simulation_app_config(headless=bool(args.headless)))
-    runtime = FR3DifferentialIKRuntime(
-        simulation_app=simulation_app,
-        fr3_usd_path=str(fr3_asset),
-        ee_frame=f"/World/FR3/{robot.frames.ee_frame}",
-        articulation_root_path="/World/FR3",
-        stage_builder=stage_builder,
+    simulation_app, runtime = _construct_g1_physical_runtime(
+        simulation_app_factory=SimulationApp,
+        runtime_factory=FR3DifferentialIKRuntime,
+        app_config=_g1_simulation_app_config(
+            headless=bool(args.headless)
+        ),
+        runtime_kwargs={
+            "fr3_usd_path": str(fr3_asset),
+            "ee_frame": f"/World/FR3/{robot.frames.ee_frame}",
+            "articulation_root_path": "/World/FR3",
+            "stage_builder": stage_builder,
+        },
     )
     args._g1_simulation_app = simulation_app
     args._g1_runtime = runtime
@@ -1261,18 +1553,154 @@ def _run_g1_physical(
 
         base_seed = int(config["runtime"]["deterministic_reset_seed"])
         for episode_index in range(int(args.episodes)):
-            result = _g1_execute_episode(
-                episode_index=episode_index,
-                seed=base_seed + episode_index,
-                runtime=runtime,
-                mechanism=mechanism,
-                contact_sensor=contact_sensor,
-                config=config,
-                media_dir=media_dir,
-                simulation_app=simulation_app,
-                initial_contact=initial_contact,
-                collision_monitor=collision_monitor,
-            )
+            episode_sink: dict[str, Any] = {}
+            try:
+                result = _g1_execute_episode(
+                    episode_index=episode_index,
+                    seed=base_seed + episode_index,
+                    runtime=runtime,
+                    mechanism=mechanism,
+                    contact_sensor=contact_sensor,
+                    config=config,
+                    media_dir=media_dir,
+                    simulation_app=simulation_app,
+                    initial_contact=initial_contact,
+                    collision_monitor=collision_monitor,
+                    evidence_sink=episode_sink,
+                )
+            except Exception as exc:
+                code = "G1_EPISODE_RUNTIME_EXCEPTION"
+                partial_requested = list(
+                    episode_sink.get("requested_actions", ())
+                )
+                partial_executed = list(
+                    episode_sink.get("executed_actions", ())
+                )
+                partial_states = list(
+                    episode_sink.get("task_states", ())
+                )
+                partial_events = list(
+                    episode_sink.get("events", ())
+                )
+                partial_contacts = list(
+                    episode_sink.get("contact_trace", ())
+                )
+                partial_media = list(episode_sink.get("media", ()))
+                requested_actions.extend(partial_requested)
+                executed_actions.extend(partial_executed)
+                task_states.extend(partial_states)
+                all_contacts.extend(partial_contacts)
+                media.extend(partial_media)
+                failure = _seal_g1_episode_record(
+                    {
+                        "record_schema_version": (
+                            _G1_PHYSICAL_EPISODE_SCHEMA
+                        ),
+                        "episode_id": (
+                            f"g1-physical-{episode_index:04d}"
+                        ),
+                        "episode_index": episode_index,
+                        "seed": base_seed + episode_index,
+                        "physical_execution": True,
+                        "success": False,
+                        "observed_button_press": False,
+                        "button_released": False,
+                        "button_reset": False,
+                        "safe_retract": False,
+                        "safety_events": [
+                            {
+                                "code": code,
+                                "detail": (
+                                    f"{type(exc).__name__}: {exc}"
+                                ),
+                            }
+                        ],
+                        "post_abort_actuation_count": 0,
+                        "step_budget_exceeded": False,
+                        "wall_time_budget_exceeded": False,
+                        "force_vector_valid": False,
+                        "wrench_valid": False,
+                        "collision_monitor_valid": False,
+                        "penetration_samples_available": False,
+                        "termination_reason": code,
+                        "final_state": "ABORTED",
+                        "state_machine": {
+                            "state": "ABORTED",
+                            "can_actuate": False,
+                            "transitions": [],
+                            "abort": {
+                                "code": code,
+                                "detail": str(exc),
+                            },
+                        },
+                        "steps_executed": len(partial_states),
+                        "requested_action_count": len(
+                            partial_requested
+                        ),
+                        "executed_action_count": len(
+                            partial_executed
+                        ),
+                        "task_state_sample_count": len(
+                            partial_states
+                        ),
+                        "control_frequency_hz": float(
+                            config["runtime"]["control_frequency_hz"]
+                        ),
+                        "physics_dt_s": float(
+                            config["runtime"]["physics_dt_s"]
+                        ),
+                        "physics_substeps_per_action": (
+                            _g1_physics_substeps_per_action(config)
+                        ),
+                        "raw_contact_samples": sum(
+                            bool(
+                                getattr(
+                                    contact,
+                                    "raw_contacts",
+                                    (),
+                                )
+                            )
+                            for contact in partial_contacts
+                        ),
+                        "maximum_button_travel_m": max(
+                            [
+                                float(state["button"]["travel_m"])
+                                for state in partial_states
+                                if isinstance(state, Mapping)
+                                and isinstance(
+                                    state.get("button"),
+                                    Mapping,
+                                )
+                                and isinstance(
+                                    state["button"].get("travel_m"),
+                                    (int, float),
+                                )
+                            ]
+                            or [0.0]
+                        ),
+                        "contact_lifecycle": {
+                            "ok": False,
+                            "errors": [code],
+                        },
+                        "partial_trace_retained": True,
+                    }
+                )
+                episodes.append(failure)
+                safety_events.extend(
+                    {
+                        "episode_id": failure["episode_id"],
+                        **dict(event),
+                    }
+                    for event in partial_events
+                )
+                safety_events.append(
+                    {
+                        "episode_id": failure["episode_id"],
+                        "code": code,
+                        "detail": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+                break
             episode, requested, executed, states, events, contacts, episode_media = result
             episodes.append(episode)
             requested_actions.extend(requested)
@@ -1566,6 +1994,7 @@ def run_g1_evidence(args: argparse.Namespace) -> dict[str, Any]:
             physical["episodes"],
             required_episodes=int(config["evidence"]["minimum_episodes"]),
             driver_validation=str(config["evidence"]["driver_validation"]),
+            phase3_contract_required=True,
         )
         blockers = list(dict.fromkeys([*setup_blockers, *gate_blockers]))
         if setup_blockers:
