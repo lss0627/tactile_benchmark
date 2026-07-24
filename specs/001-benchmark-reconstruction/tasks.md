@@ -17,18 +17,18 @@
 
 ## Phase 2 — Foundational contracts and repository integrity
 
-- [ ] T009 Add RED tests for paper-v1 suite/protocol/task-count constants in `tests/test_benchmark_generalization_spec.py`
-- [ ] T010 [P] Add RED tests for task family/instance/variant/suite schemas in `tests/test_task_registry_contract.py`
-- [ ] T011 [P] Add RED tests for sensor/expert/modality/plugin registries in `tests/test_plugin_registry_contract.py`
-- [ ] T012 [P] Add RED tests for collection job, episode, and progress schemas in `tests/test_collection_contract.py`
-- [ ] T013 [P] Add RED tests for dataset/split/replay schemas in `tests/test_dataset_contract.py`
-- [ ] T014 [P] Add RED tests for training config/run/checkpoint schemas in `tests/test_training_contract.py`
-- [ ] T015 [P] Add RED tests for protocol/leakage/metric/result/submission schemas in `tests/test_evaluation_contract.py`
-- [ ] T016 Implement versioned schema definitions in `isaac_tactile_libero/schemas/`
-- [ ] T017 Implement shared manifest/digest/version validation in `isaac_tactile_libero/registry/contracts.py`
-- [ ] T018 Update Gate/claim tests for the new G2–G6 interpretation in `tests/test_gate_status.py`
-- [ ] T019 Run no-simulator tests, schema validation, import scan, and clean-checkout checks with logs under `outputs/evidence/G0/`
-- [ ] T020 Produce and review a fresh rebaseline-bound G0 manifest under `outputs/evidence/G0/tactilibero-generalization-<commit>/`
+- [x] T009 Add RED tests for paper-v1 suite/protocol/task-count constants in `tests/test_benchmark_generalization_spec.py`
+- [x] T010 [P] Add RED tests for task family/instance/variant/suite schemas in `tests/test_task_registry_contract.py`
+- [x] T011 [P] Add RED tests for sensor/expert/modality/plugin registries in `tests/test_plugin_registry_contract.py`
+- [x] T012 [P] Add RED tests for collection job, episode, and progress schemas in `tests/test_collection_contract.py`
+- [x] T013 [P] Add RED tests for dataset/split/replay schemas in `tests/test_dataset_contract.py`
+- [x] T014 [P] Add RED tests for training config/run/checkpoint schemas in `tests/test_training_contract.py`
+- [x] T015 [P] Add RED tests for protocol/leakage/metric/result/submission schemas in `tests/test_evaluation_contract.py`
+- [x] T016 Implement versioned schema definitions in `isaac_tactile_libero/schemas/`
+- [x] T017 Implement shared manifest/digest/version validation in `isaac_tactile_libero/registry/contracts.py`
+- [x] T018 Update Gate/claim tests for the new G2–G6 interpretation in `tests/test_gate_status.py`
+- [x] T019 Run no-simulator tests, schema validation, import scan, and clean-checkout checks with logs under `outputs/evidence/G0/`
+- [x] T020 Produce and review a fresh rebaseline-bound G0 manifest under `outputs/evidence/G0/tactilibero-generalization-<commit>/`
 
 ## Phase 3 — User Story 1: Accepted reference environment
 
