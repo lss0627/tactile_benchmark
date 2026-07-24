@@ -4039,6 +4039,74 @@ def test_c2a_runtime_failure_preserves_exact_code_message_writes_before_shutdown
         "record_sha256"
     ]
 
+    valid_bytes = journal.sidecar_path.read_bytes()
+    valid_snapshot = journal.snapshot()
+    invalid_blocked = json.loads(json.dumps(work_record))
+    invalid_blocked.update(
+        status="BLOCKED",
+        failure_code=None,
+        failure_message=None,
+    )
+    invalid_blocked["record_sha256"] = sweep_work.canonical_sha256(
+        invalid_blocked, exclude_fields=("record_sha256",)
+    )
+    with pytest.raises(Exception) as invalid_append:
+        journal.append(
+            event="ROUTE_COMPLETED",
+            scene_id="progress-scene",
+            trial_id="progress-trial",
+            class_id="C1_CONTINUOUS_APPROACH_LEG_V1",
+            command_decimal="0.00025",
+            action_index=255,
+            work_record=invalid_blocked,
+        )
+    assert getattr(invalid_append.value, "code", "") == (
+        "G1_C2A_EVIDENCE_WRITE_FAILED"
+    )
+    assert journal.sidecar_path.read_bytes() == valid_bytes
+    assert journal.snapshot() == valid_snapshot
+    assert journal.last_validated_snapshot() == valid_snapshot
+
+    leaf_failure_builder = getattr(
+        sweep_work, "build_sweep_leaf_failure_record", None
+    )
+    validate_leaf_failure = getattr(
+        sweep_work, "validate_sweep_leaf_failure_record", None
+    )
+    assert callable(leaf_failure_builder), "missing exact leaf failure retention"
+    assert callable(validate_leaf_failure), "missing leaf failure validator"
+    leaf_failure = leaf_failure_builder(
+        code="G1_FULL_ROBOT_ROUTE_BLOCK_UNRESOLVED",
+        message="exact leaf remained unresolved",
+        class_id="C1_CONTINUOUS_APPROACH_LEG_V1",
+        command_decimal="0.00025",
+        action_index=196,
+        subject_collider_prim_path="/World/FR3/fr3_rightfinger",
+        obstacle_collider_prim_path="/World/PressButton/Button",
+        segment_kind="stopping_reach",
+        classification="CONTINUOUS_INTERVAL_UNRESOLVED",
+        solid_lower_bound_m=None,
+        effective_lower_bound_m=None,
+        exact_leaf_receipt=None,
+        source_exception_type="G1FullRobotClearanceError",
+    )
+    assert validate_leaf_failure(leaf_failure) == leaf_failure
+    assert leaf_failure["selected_command_cap_m"] is None
+    assert leaf_failure["post_abort_actuation_count"] == 0
+
+    phase_ledger_type = getattr(sweep_work, "SweepPerformancePhaseLedger", None)
+    assert isinstance(phase_ledger_type, type), "missing monotonic phase ledger"
+    clock_values = iter((100, 160, 200, 260))
+    phase_ledger = phase_ledger_type(monotonic_ns=lambda: next(clock_values))
+    with phase_ledger.measure("route_microsegment_materialization_ns"):
+        pass
+    first_phase_snapshot = phase_ledger.snapshot()
+    assert first_phase_snapshot[
+        "route_microsegment_materialization_ns"
+    ] == 60
+    assert first_phase_snapshot["record_sha256"]
+    assert "record_sha256" not in phase_ledger.cache_key_projection()
+
     interval_progress: list[dict[str, Any]] = []
     interval_ledger = sweep_work.SweepWorkLedger(
         limits=sweep_work.SweepWorkLimits(),

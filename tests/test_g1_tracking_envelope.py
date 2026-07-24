@@ -839,6 +839,13 @@ def _assert_hierarchical_route_segment_contracts(
     hierarchical_coverage = getattr(
         module, "certify_hierarchical_pair_coverage", None
     )
+    build_motion_path = getattr(module, "build_motion_path_record", None)
+    build_semantic_binding = getattr(
+        module, "build_route_semantic_binding", None
+    )
+    validate_semantic_binding = getattr(
+        module, "validate_route_semantic_binding", None
+    )
     assert callable(materialize), "missing hierarchical route materialization"
     assert callable(build_equivalence), "missing geometry-equivalence authority"
     assert callable(certify_route), "missing hierarchical route certification"
@@ -847,6 +854,11 @@ def _assert_hierarchical_route_segment_contracts(
     assert callable(aabb_bounds), "missing conservative AABB lower bound"
     assert isinstance(cache_type, type), "missing digest-bound route proof cache"
     assert callable(hierarchical_coverage), "missing hierarchical coverage core"
+    assert callable(build_motion_path), "missing exact motion-path authority"
+    assert callable(build_semantic_binding), "missing semantic route binding"
+    assert callable(validate_semantic_binding), (
+        "missing semantic route-binding validator"
+    )
     assert "phase_policy" in inspect.signature(build_equivalence).parameters
     assert "phase_policy" in inspect.signature(validate_proof).parameters
 
@@ -871,6 +883,68 @@ def _assert_hierarchical_route_segment_contracts(
         == module.canonical_sha256(item, exclude_fields=("record_sha256",))
         for item in segments
     )
+
+    geometry_identity = "9" * 64
+    motion_path = build_motion_path(
+        request,
+        geometry_equivalence_sha256=geometry_identity,
+        phase_policy="c2a_no_contact",
+    )
+    assert motion_path["schema_version"] == "g1.full_robot.motion_path.v1"
+    assert motion_path["micro_segment_count"] == 512
+    assert motion_path["geometry_equivalence_sha256"] == geometry_identity
+    assert motion_path["motion_path_sha256"] == module.canonical_sha256(
+        motion_path, exclude_fields=("motion_path_sha256",)
+    )
+    assert "class_id" not in motion_path
+    assert "scene_id" not in motion_path
+    assert "lifecycle_record_sha256" not in motion_path
+
+    semantic_request = json.loads(json.dumps(request))
+    semantic_request["class_id"] = "C1_LOCAL_PRESS_AXIS_RT_V1"
+    semantic_request["command_decimal"] = "0"
+    semantic_request["source_motif_sha256"] = "a" * 64
+    semantic_request["shared_kernel_provenance_sha256"] = "b" * 64
+    semantic_request["request_sha256"] = module.canonical_sha256(
+        semantic_request, exclude_fields=("request_sha256",)
+    )
+    semantic_motion_path = build_motion_path(
+        semantic_request,
+        geometry_equivalence_sha256=geometry_identity,
+        phase_policy="c2a_no_contact",
+    )
+    assert semantic_motion_path["motion_path_sha256"] == motion_path[
+        "motion_path_sha256"
+    ], "class provenance prevented exact zero-motion proof reuse"
+
+    for mutation in ("q_bit", "stopping_target", "physics", "geometry"):
+        changed = json.loads(json.dumps(request))
+        changed_geometry = geometry_identity
+        if mutation == "q_bit":
+            changed["actions"][0]["observed_q"][0] = float(
+                np.nextafter(changed["actions"][0]["observed_q"][0], math.inf)
+            )
+        elif mutation == "stopping_target":
+            changed["actions"][0]["observed_qd"][0] = float(
+                np.nextafter(0.0, math.inf)
+            )
+        elif mutation == "physics":
+            changed["physics_dt_s"] = float(
+                np.nextafter(changed["physics_dt_s"], math.inf)
+            )
+        else:
+            changed_geometry = "8" * 64
+        changed["request_sha256"] = module.canonical_sha256(
+            changed, exclude_fields=("request_sha256",)
+        )
+        changed_motion = build_motion_path(
+            changed,
+            geometry_equivalence_sha256=changed_geometry,
+            phase_policy="c2a_no_contact",
+        )
+        assert changed_motion["motion_path_sha256"] != motion_path[
+            "motion_path_sha256"
+        ], f"{mutation} incorrectly reused an exact motion proof"
 
     for mutation in ("missing", "duplicate", "reordered", "no_stopping"):
         changed = json.loads(json.dumps(request))
