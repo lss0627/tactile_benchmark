@@ -853,6 +853,181 @@ def evaluate_contact_lifecycle(
     }
 
 
+PRESS_BUTTON_CONTACT_SCHEMA_VERSION = "g1.press_button.contact.v1"
+
+
+def _contact_json_value(value: Any) -> Any:
+    """Convert raw adapter values without assigning them a new physical meaning."""
+
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("raw Contact contains NaN/Inf")
+        return value
+    if isinstance(value, Mapping):
+        return {
+            str(key): _contact_json_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return [_contact_json_value(item) for item in value]
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist):
+        return _contact_json_value(tolist())
+    item = getattr(value, "item", None)
+    if callable(item):
+        return _contact_json_value(item())
+    xyz = [getattr(value, axis, None) for axis in ("x", "y", "z")]
+    if all(component is not None for component in xyz):
+        return [_finite_float(component) for component in xyz]
+    raise ValueError(f"unsupported raw Contact value: {type(value).__name__}")
+
+
+def normalize_press_button_contact_record(
+    sample: ContactSample,
+    *,
+    sample_index: int,
+    observed_physics_step: int,
+) -> dict[str, Any]:
+    """Normalize one retained PressButton sample with conservative validity masks."""
+
+    if not isinstance(sample, ContactSample):
+        raise TypeError("sample must be a ContactSample")
+    if (
+        type(sample_index) is not int
+        or sample_index < 0
+        or type(observed_physics_step) is not int
+        or observed_physics_step < 0
+        or type(sample.read_sequence_index) is not int
+        or sample.read_sequence_index < 0
+    ):
+        raise ValueError("Contact sample/physics indices must be non-negative integers")
+
+    errors: list[str] = []
+    raw_contacts: list[Any] = []
+    for raw in sample.raw_contacts:
+        try:
+            raw_contacts.append(_contact_json_value(raw))
+        except (TypeError, ValueError):
+            errors.append("CONTACT_RAW_RECORD_INVALID")
+            raw_contacts.append({"retained_unparsed_type": type(raw).__name__})
+
+    sensor_time_s: float | None = None
+    if math.isfinite(float(sample.time)) and float(sample.time) >= 0.0:
+        sensor_time_s = float(sample.time)
+    else:
+        errors.append("CONTACT_SENSOR_TIME_INVALID")
+
+    force_magnitude_n: float | None = None
+    if (
+        sample.is_valid
+        and math.isfinite(float(sample.force_magnitude))
+        and float(sample.force_magnitude) >= 0.0
+    ):
+        force_magnitude_n = float(sample.force_magnitude)
+    elif sample.is_valid:
+        errors.append("CONTACT_READING_INVALID")
+    if not sample.is_valid:
+        errors.append("CONTACT_READING_INVALID")
+    if sample.in_contact and not raw_contacts:
+        errors.append("CONTACT_RAW_ATTRIBUTION_UNAVAILABLE")
+    if (
+        sample.is_valid
+        and not sample.in_contact
+        and abs(float(sample.force_magnitude)) > 1.0e-4
+    ):
+        errors.append("NO_CONTACT_FORCE_NONZERO")
+
+    record = {
+        "schema_version": PRESS_BUTTON_CONTACT_SCHEMA_VERSION,
+        "sample_index": sample_index,
+        "read_sequence_index": int(sample.read_sequence_index),
+        "observed_physics_step": observed_physics_step,
+        "sensor_time_s": sensor_time_s,
+        "contact_valid": bool(sample.is_valid),
+        "contact": bool(sample.in_contact),
+        "force_magnitude_n": force_magnitude_n,
+        "raw_contact_count": len(raw_contacts),
+        "raw_contacts": raw_contacts,
+        "force_vector_valid": False,
+        "wrench_valid": False,
+        "raw_impulse_used_as_force": False,
+        "sample_retained": True,
+        "usable": not errors,
+        "errors": list(dict.fromkeys(errors)),
+    }
+    # This also rejects values that the evidence writer could not serialize.
+    return json.loads(json.dumps(record, allow_nan=False, sort_keys=True))
+
+
+def validate_press_button_contact_record(record: Any) -> dict[str, Any]:
+    """Fail closed on mask promotion, loss of raw samples, or malformed indices."""
+
+    required = {
+        "schema_version",
+        "sample_index",
+        "read_sequence_index",
+        "observed_physics_step",
+        "sensor_time_s",
+        "contact_valid",
+        "contact",
+        "force_magnitude_n",
+        "raw_contact_count",
+        "raw_contacts",
+        "force_vector_valid",
+        "wrench_valid",
+        "raw_impulse_used_as_force",
+        "sample_retained",
+        "usable",
+        "errors",
+    }
+    if not isinstance(record, Mapping) or set(record) != required:
+        raise ContactProvenanceError(
+            "CONTACT_RECORD_STRUCTURE_INVALID",
+            "PressButton Contact record does not contain the exact required keys",
+        )
+    raw_contacts = record["raw_contacts"]
+    valid = (
+        record["schema_version"] == PRESS_BUTTON_CONTACT_SCHEMA_VERSION
+        and all(
+            type(record[field]) is int and record[field] >= 0
+            for field in (
+                "sample_index",
+                "read_sequence_index",
+                "observed_physics_step",
+            )
+        )
+        and type(record["contact_valid"]) is bool
+        and type(record["contact"]) is bool
+        and isinstance(raw_contacts, list)
+        and type(record["raw_contact_count"]) is int
+        and record["raw_contact_count"] == len(raw_contacts)
+        and record["force_vector_valid"] is False
+        and record["wrench_valid"] is False
+        and record["raw_impulse_used_as_force"] is False
+        and record["sample_retained"] is True
+        and type(record["usable"]) is bool
+        and isinstance(record["errors"], list)
+        and all(isinstance(item, str) and item for item in record["errors"])
+        and record["usable"] is (not record["errors"])
+        and (
+            record["force_magnitude_n"] is None
+            or (
+                isinstance(record["force_magnitude_n"], (int, float))
+                and not isinstance(record["force_magnitude_n"], bool)
+                and math.isfinite(float(record["force_magnitude_n"]))
+            )
+        )
+    )
+    if not valid:
+        raise ContactProvenanceError(
+            "CONTACT_RECORD_STRUCTURE_INVALID",
+            "PressButton Contact record is invalid",
+        )
+    return json.loads(json.dumps(record, allow_nan=False, sort_keys=True))
+
+
 class IsaacSim6ContactSensor:
     """Thin runtime wrapper that exposes scalar force and raw contacts only."""
 
@@ -898,9 +1073,12 @@ __all__ = [
     "G1_CONTACT_RAW_SOURCE_KEYS",
     "G1_CONTACT_RAW_SOURCE_SCHEMA",
     "IsaacSim6ContactSensor",
+    "PRESS_BUTTON_CONTACT_SCHEMA_VERSION",
     "classify_g1_contact_provenance",
     "evaluate_contact_lifecycle",
     "inspect_g1_contact_stage_authority",
+    "normalize_press_button_contact_record",
     "normalize_g1_contact_provenance",
+    "validate_press_button_contact_record",
     "validate_contact_physics_policy",
 ]

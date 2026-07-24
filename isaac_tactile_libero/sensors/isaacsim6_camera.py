@@ -97,6 +97,64 @@ def evaluate_camera_frames(
     }
 
 
+def evaluate_rendered_rollout(
+    frames: Iterable[CameraFrame],
+    *,
+    required_steps: int = 500,
+    expected_tick_stride: int = 1,
+    config: CameraAcceptanceConfig | None = None,
+) -> dict[str, Any]:
+    """Validate the exact rendered-step cardinality and temporal ordering."""
+
+    if type(required_steps) is not int or required_steps <= 0:
+        raise ValueError("required_steps must be a positive integer")
+    if type(expected_tick_stride) is not int or expected_tick_stride <= 0:
+        raise ValueError("expected_tick_stride must be a positive integer")
+    trace = list(frames)
+    report = evaluate_camera_frames(trace, config=config)
+    errors = list(report["errors"])
+    if len(trace) != required_steps:
+        _append_once(errors, "ROLLOUT_STEP_COUNT")
+
+    camera_ticks = [int(frame.camera_tick) for frame in trace]
+    physics_steps = [int(frame.physics_step) for frame in trace]
+    timestamps = [float(frame.capture_timestamp) for frame in trace]
+    camera_ticks_consecutive = all(
+        current == previous + expected_tick_stride
+        for previous, current in zip(camera_ticks, camera_ticks[1:])
+    )
+    physics_steps_consecutive = all(
+        current == previous + expected_tick_stride
+        for previous, current in zip(physics_steps, physics_steps[1:])
+    )
+    timestamps_finite = all(np.isfinite(value) for value in timestamps)
+    timestamps_strictly_increasing = timestamps_finite and all(
+        current > previous
+        for previous, current in zip(timestamps, timestamps[1:])
+    )
+    if trace and not camera_ticks_consecutive:
+        _append_once(errors, "CAMERA_TICK_SEQUENCE")
+    if trace and not physics_steps_consecutive:
+        _append_once(errors, "PHYSICS_STEP_SEQUENCE")
+    if trace and not timestamps_strictly_increasing:
+        _append_once(errors, "CAMERA_TIMESTAMP_SEQUENCE")
+
+    report.update(
+        {
+            "ok": not errors,
+            "errors": errors,
+            "required_steps": required_steps,
+            "expected_tick_stride": expected_tick_stride,
+            "camera_ticks_consecutive": camera_ticks_consecutive,
+            "physics_steps_strictly_increasing": physics_steps_consecutive,
+            "physics_steps_consecutive": physics_steps_consecutive,
+            "timestamps_finite": timestamps_finite,
+            "timestamps_strictly_increasing": timestamps_strictly_increasing,
+        }
+    )
+    return report
+
+
 def _to_numpy(value: Any) -> np.ndarray:
     if isinstance(value, np.ndarray):
         return value

@@ -274,7 +274,7 @@ def _repository_identity() -> dict[str, Any]:
 
 def _g1_semantic_inputs(config_path: str | Path, config: dict[str, Any]) -> dict[str, Path]:
     robot_config = Path(config["runtime"]["robot_config_path"])
-    return {
+    inputs = {
         "controller": ROOT / "isaac_tactile_libero/robots/fr3_ee_runtime_controller.py",
         "safety": ROOT / "isaac_tactile_libero/robots/fr3_runtime_safety.py",
         "budget": ROOT / "isaac_tactile_libero/robots/runtime_budget.py",
@@ -285,6 +285,10 @@ def _g1_semantic_inputs(config_path: str | Path, config: dict[str, Any]) -> dict
         "sensor": ROOT / "isaac_tactile_libero/sensors/runtime_tactile_adapter.py",
         "config": Path(config_path).resolve(),
     }
+    benchmark_runner = config.get("_benchmark_runner_path")
+    if benchmark_runner:
+        inputs["benchmark_runner"] = Path(str(benchmark_runner)).resolve()
+    return inputs
 
 
 def _g1_dry_episode(episode_index: int, seed: int) -> dict[str, Any]:
@@ -1366,7 +1370,9 @@ def _emit_g1_evidence(
     media_records: list[dict[str, Any]] = []
     media_names: list[str] = []
     if media:
-        media_dir = output / "artifacts"
+        media_dir = output / str(
+            getattr(args, "_g1_media_directory_name", "artifacts")
+        )
         media_dir.mkdir()
         for item in media:
             record = dict(item)
@@ -1469,6 +1475,11 @@ def run_g1_evidence(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("--episodes must be positive")
     config = _load_g1_config(args.config)
     config["_config_path"] = str(Path(args.config).resolve())
+    benchmark_runner = getattr(args, "_benchmark_runner_path", None)
+    if benchmark_runner:
+        config["_benchmark_runner_path"] = str(
+            Path(benchmark_runner).resolve()
+        )
     started_at = _utc_now()
     if args.dry_run:
         seed = int(config["runtime"]["deterministic_reset_seed"])

@@ -6,8 +6,10 @@ path, not benchmark evidence, and never fabricates force vectors or wrenches.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import numpy as np
 
@@ -25,8 +27,15 @@ from isaac_tactile_libero.sensors.isaacsim6_camera import CameraFrame, IsaacSim6
 from isaac_tactile_libero.sensors.isaacsim6_contact import (
     ContactSample,
     IsaacSim6ContactSensor,
+    normalize_press_button_contact_record,
     validate_contact_physics_policy,
 )
+from isaac_tactile_libero.tasks.press_button import PressButtonStateOracle
+
+if TYPE_CHECKING:
+    from isaac_tactile_libero.tasks.press_button_mechanism import (
+        PressButtonMechanismState,
+    )
 
 
 TASK_NAME = "PressButton"
@@ -58,6 +67,28 @@ class IsaacSimFR3PressButtonEnv:
         self.robot_config_path = str(
             self.cfg.get("robot_config_path", "configs/robots/fr3_real_articulation.yaml")
         )
+        task_config_path = Path(
+            str(
+                self.cfg.get(
+                    "task_config_path",
+                    "configs/tasks/press_button_physical.yaml",
+                )
+            )
+        ).resolve()
+        self.task_config_path = str(task_config_path)
+        self.task_config_sha256 = hashlib.sha256(
+            task_config_path.read_bytes()
+        ).hexdigest()
+        from isaac_tactile_libero.tasks.press_button_mechanism import (
+            PressButtonMechanism,
+            load_press_button_mechanism_config,
+        )
+
+        mechanism_config = load_press_button_mechanism_config(self.task_config_path)
+        self.mechanism = PressButtonMechanism(mechanism_config)
+        self.task_oracle = PressButtonStateOracle.from_task_config(
+            self.task_config_path
+        )
         self._lifecycle_factory = lifecycle_factory or IsaacSim6Lifecycle
         self._component_builder = component_builder or self._build_runtime_components
         self.lifecycle: Any | None = None
@@ -67,6 +98,17 @@ class IsaacSimFR3PressButtonEnv:
         self.last_contact = ContactSample(False, False, 0.0, 0.0, 0)
         self.last_camera: CameraFrame | None = None
         self.last_action_result: dict[str, Any] = {}
+        self.current_button_state = self.mechanism.observe_joint_position(
+            self.mechanism.config.rest_position_m
+        )
+        self.last_task_outcome = self.task_oracle.update_mechanism_state(
+            self.current_button_state
+        )
+        self.reset_records: list[dict[str, Any]] = []
+        self.sensor_ready = False
+        self.camera_ready = False
+        self.task_ready = False
+        self._stage: Any | None = None
         self.seed = 0
         self.timestep = 0
         self.built = False
@@ -92,12 +134,12 @@ class IsaacSimFR3PressButtonEnv:
         return self
 
     def _build_runtime_components(self, _env: "IsaacSimFR3PressButtonEnv") -> tuple[Any, Any, Any]:
-        from isaacsim.core.experimental.objects import Cube, GroundPlane, SphereLight  # type: ignore
-        from isaacsim.core.experimental.prims import GeomPrim, RigidPrim  # type: ignore
+        from isaacsim.core.experimental.objects import GroundPlane, SphereLight  # type: ignore
         import isaacsim.core.experimental.utils.stage as stage_utils  # type: ignore
         from isaacsim.core.rendering_manager import ViewportManager  # type: ignore
         from isaacsim.core.simulation_manager import SimulationManager  # type: ignore
         from isaacsim.sensors.experimental.physics import Contact  # type: ignore
+        import omni.usd  # type: ignore
 
         robot = load_fr3_articulation_config(self.robot_config_path)
         if not robot.assets.fr3_usd_path or not Path(robot.assets.fr3_usd_path).exists():
@@ -107,17 +149,13 @@ class IsaacSimFR3PressButtonEnv:
         GroundPlane("/World/GroundPlane", sizes=10.0)
         SphereLight("/World/KeyLight", positions=[1.0, -1.0, 2.0]).set_intensities([80000.0])
         stage_utils.add_reference_to_stage(usd_path=robot.assets.fr3_usd_path, path="/World/FR3")
-
-        Cube(
-            "/World/PressButton",
-            sizes=0.08,
-            positions=[0.55, 0.0, 0.04],
-            colors=[0.8, 0.05, 0.05],
-        )
-        GeomPrim("/World/PressButton", apply_collision_apis=True)
-        RigidPrim("/World/PressButton", masses=[0.1])
+        stage = omni.usd.get_context().get_stage()
+        if stage is None:
+            raise RuntimeError("Isaac Sim did not provide a PressButton stage")
+        self._stage = stage
+        self.mechanism.build_stage(stage)
         Contact.create(
-            "/World/PressButton/contact_sensor",
+            self.mechanism.config.contact_sensor_prim_path,
             min_threshold=0.0,
             max_threshold=10000000.0,
             radius=-1.0,
@@ -128,7 +166,9 @@ class IsaacSimFR3PressButtonEnv:
 
         controller = IsaacSim6FR3Controller()
         controller.initialize()
-        contact = IsaacSim6ContactSensor("/World/PressButton/contact_sensor")
+        contact = IsaacSim6ContactSensor(
+            self.mechanism.config.contact_sensor_prim_path
+        )
         contact.initialize()
         camera = IsaacSim6CameraSensor(
             "/World/PressButtonCamera",
@@ -144,40 +184,126 @@ class IsaacSimFR3PressButtonEnv:
         self.lifecycle.step(10)
         return controller, contact, camera
 
+    def _reset_signature(self, requested_position_m: float) -> str:
+        declared = {
+            "task": TASK_NAME,
+            "task_config_sha256": self.task_config_sha256,
+            "mechanism_version": self.mechanism.config.mechanism_version,
+            "joint_name": self.mechanism.config.joint_name,
+            "seed": self.seed,
+            "requested_reset_position_m": float(requested_position_m),
+        }
+        payload = json.dumps(
+            declared,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    def _append_reset_record(
+        self,
+        *,
+        requested_position_m: float,
+        status: str,
+        failure_code: str | None,
+    ) -> dict[str, Any]:
+        record = {
+            "cycle_index": len(self.reset_records),
+            "seed": self.seed,
+            "status": str(status),
+            "failure_code": failure_code,
+            "requested_reset_position_m": float(requested_position_m),
+            "observed_task_state": self.current_button_state.as_dict(),
+            "sensor_ready": bool(self.sensor_ready),
+            "camera_ready": bool(self.camera_ready),
+            "task_ready": bool(self.task_ready),
+            "signature_sha256": self._reset_signature(requested_position_m),
+        }
+        self.reset_records.append(record)
+        return record
+
+    def _read_authoritative_button_state(self) -> PressButtonMechanismState:
+        if self.enable_runtime and self._stage is not None:
+            return self.mechanism.read_stage(self._stage)
+        return self.current_button_state
+
     def reset(self, seed: int | None = None) -> dict[str, Any]:
         self._raise_if_closed()
         if not self.built:
             raise RuntimeError("Call build() before reset().")
-        self.seed = int(seed or 0)
+        self.seed = 0 if seed is None else int(seed)
         self.timestep = 0
         self.last_action_result = {}
         self.last_contact = ContactSample(False, False, 0.0, 0.0, 0)
         self.last_camera = None
-        if self.enable_runtime:
-            assert self.lifecycle is not None
-            self.lifecycle.reset()
-            if self.contact_sensor is not None:
+        self.task_oracle.reset()
+        requested_position = self.mechanism.sample_reset_position(seed=self.seed)
+        self.current_button_state = self.mechanism.observe_joint_position(
+            requested_position
+        )
+        self.last_task_outcome = self.task_oracle.update_mechanism_state(
+            self.current_button_state
+        )
+        self.sensor_ready = False
+        self.camera_ready = False
+        self.task_ready = bool(self.current_button_state.reset)
+        try:
+            if self.enable_runtime:
+                assert self.lifecycle is not None
+                self.lifecycle.reset()
+                if self.contact_sensor is None or self.camera_sensor is None:
+                    raise RuntimeError("SENSOR_COMPONENTS_UNAVAILABLE")
                 self.contact_sensor.reset()
                 self.contact_sensor.initialize()
-            for _ in range(int(self.cfg.get("sensor_ready_timeout_steps", 5)) + 1):
-                self.lifecycle.step(1)
-                self.last_contact = self.contact_sensor.read(self.lifecycle.physics_steps)
-                if self.last_contact.is_valid:
-                    break
-            self._capture_camera()
-            # Contact becomes live lazily after Play and can rebuild physics
-            # information. Create the tensor articulation view only after that
-            # ready window so reset never returns a stale controller handle.
-            if self.controller is not None:
-                try:
-                    self.controller.initialize(
-                        step_callback=self.lifecycle.step,
-                        timeout_steps=int(self.cfg.get("sensor_ready_timeout_steps", 5)),
+                timeout = int(self.cfg.get("sensor_ready_timeout_steps", 5))
+                for _ in range(timeout + 1):
+                    self.lifecycle.step(1)
+                    self.last_contact = self.contact_sensor.read(
+                        self.lifecycle.physics_steps
                     )
-                except TypeError:
-                    # Small injected test doubles intentionally expose only
-                    # initialize(); production controllers use the window.
-                    self.controller.initialize()
+                    if self.last_contact.is_valid:
+                        self.sensor_ready = True
+                        break
+                if not self.sensor_ready:
+                    raise RuntimeError("SENSOR_READY_TIMEOUT")
+                self._capture_camera()
+                self.camera_ready = self.last_camera is not None
+                if not self.camera_ready:
+                    raise RuntimeError("CAMERA_READY_TIMEOUT")
+                self.current_button_state = (
+                    self._read_authoritative_button_state()
+                )
+                self.task_ready = bool(self.current_button_state.reset)
+                if not self.task_ready:
+                    raise RuntimeError("TASK_READY_RESET_FAILED")
+                # Contact can rebuild physics information after Play. Create
+                # the tensor view only after the ready window.
+                if self.controller is not None:
+                    try:
+                        self.controller.initialize(
+                            step_callback=self.lifecycle.step,
+                            timeout_steps=timeout,
+                        )
+                    except TypeError:
+                        self.controller.initialize()
+            self._append_reset_record(
+                requested_position_m=requested_position,
+                status="completed",
+                failure_code=None,
+            )
+        except Exception as exc:
+            code = (
+                str(exc)
+                if isinstance(exc, RuntimeError) and str(exc).isupper()
+                else "RESET_RUNTIME_ERROR"
+            )
+            self._append_reset_record(
+                requested_position_m=requested_position,
+                status="failed",
+                failure_code=code,
+            )
+            raise
         return self.read_observation()
 
     def step(self, action: Any) -> tuple[dict[str, Any], float, bool, bool, dict[str, Any]]:
@@ -193,17 +319,41 @@ class IsaacSimFR3PressButtonEnv:
             self.lifecycle.step(substeps)
             self.last_contact = self.contact_sensor.read(self.lifecycle.physics_steps)
             self._capture_camera()
+            self.current_button_state = self._read_authoritative_button_state()
+        self.last_task_outcome = self.task_oracle.update_mechanism_state(
+            self.current_button_state,
+            elapsed_steps=self.timestep,
+            contact=self.last_contact.in_contact,
+            force_magnitude=self.last_contact.force_magnitude,
+        )
         obs = self.read_observation()
+        physics_step = (
+            int(self.lifecycle.physics_steps)
+            if self.lifecycle is not None
+            else self.timestep
+        )
+        normalized_contact = normalize_press_button_contact_record(
+            self.last_contact,
+            sample_index=self.timestep,
+            observed_physics_step=physics_step,
+        )
         contact = {
-            "contact_valid": bool(self.last_contact.is_valid),
-            "in_contact": bool(self.last_contact.in_contact),
-            "force_magnitude": float(self.last_contact.force_magnitude),
-            "force_magnitude_valid": bool(self.last_contact.is_valid and self.last_contact.in_contact),
+            "contact_valid": normalized_contact["contact_valid"],
+            "in_contact": normalized_contact["contact"],
+            "force_magnitude": normalized_contact["force_magnitude_n"],
+            "force_magnitude_valid": bool(
+                normalized_contact["contact_valid"]
+                and normalized_contact["contact"]
+                and normalized_contact["force_magnitude_n"] is not None
+            ),
             "force_vector_valid": False,
             "wrench_valid": False,
-            "raw_contact_valid": bool(self.last_contact.raw_contacts),
+            "raw_contact_valid": bool(
+                normalized_contact["raw_contact_count"]
+            ),
             "public_force_vector_mask": False,
             "public_wrench_mask": False,
+            "record": normalized_contact,
         }
         info = {
             "task_name": TASK_NAME,
@@ -213,6 +363,8 @@ class IsaacSimFR3PressButtonEnv:
             "real_fr3_control": bool(self.enable_runtime),
             "contact": contact,
             "camera_valid": self.last_camera is not None,
+            "task_state": self.current_button_state.as_dict(),
+            "task_outcome": self.last_task_outcome.as_dict(),
             "action_result": dict(self.last_action_result),
         }
         for field in (
@@ -227,10 +379,11 @@ class IsaacSimFR3PressButtonEnv:
     def _capture_camera(self) -> None:
         if self.camera_sensor is None or self.lifecycle is None:
             return
+        observed_physics_step = int(self.lifecycle.physics_steps)
         frame = self.camera_sensor.read(
-            camera_tick=self.timestep,
-            physics_step=self.timestep,
-            timestamp=self.timestep / DEFAULT_ACTION_SCHEMA.control_frequency_hz,
+            camera_tick=observed_physics_step,
+            physics_step=observed_physics_step,
+            timestamp=observed_physics_step * self.physics_dt,
         )
         if frame is not None:
             self.last_camera = frame
@@ -295,6 +448,23 @@ class IsaacSimFR3PressButtonEnv:
         obs["task_name"] = TASK_NAME
         obs["seed"] = self.seed
         obs["timestep"] = self.timestep
+        obs["task_state"] = self.current_button_state.as_dict()
+        obs["task_outcome"] = self.last_task_outcome.as_dict()
+        if self.reset_records:
+            latest_reset = self.reset_records[-1]
+            obs["reset"] = {
+                "cycle_index": latest_reset["cycle_index"],
+                "seed": latest_reset["seed"],
+                "signature_sha256": latest_reset["signature_sha256"],
+                "status": latest_reset["status"],
+            }
+        else:
+            obs["reset"] = {
+                "cycle_index": None,
+                "seed": self.seed,
+                "signature_sha256": None,
+                "status": "not_started",
+            }
         obs["runtime"] = {
             "simulator": "6.0.1",
             "python": "3.12",
@@ -309,6 +479,9 @@ class IsaacSimFR3PressButtonEnv:
             "force_magnitude": float(self.last_contact.force_magnitude),
             "force_vector_valid": False,
             "wrench_valid": False,
+            "sensor_ready": bool(self.sensor_ready),
+            "camera_ready": bool(self.camera_ready),
+            "task_ready": bool(self.task_ready),
             "camera_depth": self.last_camera.depth.copy() if self.last_camera is not None else None,
             "claim_class": "runtime_smoke",
             "benchmark_result": False,

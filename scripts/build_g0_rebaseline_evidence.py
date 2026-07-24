@@ -85,16 +85,16 @@ CONFIGURATION_INPUTS = (
 )
 DEPENDENCY_LOCK = "requirements/candidates/lock-py312-isaacsim-6.0.1.txt"
 EXPECTED_TEST_INVENTORY = {
-    "total_collected": 1131,
-    "current_green_count": 1006,
-    "portable_green_count": 1005,
+    "total_collected": 1151,
+    "current_green_count": 1026,
+    "portable_green_count": 1025,
     "external_evidence_count": 1,
     "intentional_future_red_count": 125,
     "collection_order_digest": (
-        "81f3775aa7f436e091ca5a5d3ed0552cdb8304146ac08ff8bbbf5c85755aec10"
+        "13b9077715a1150f2a87561e5d8702d659a748a094f7bb1f0f444f6006472057"
     ),
     "sorted_digest": (
-        "adc2478567818fd12ebd674df556ad96c963c739ead43e1539b88ba35d9f7c60"
+        "d41cf8b44eae78aa2ec5061e235bff02abf44b729331ab6ec67c2a56ce2c638e"
     ),
     "future_red_manifest_sha256": (
         "1fa55636bb69fe4c2618844a080543eb2f639894c12a40350db2ce28c468d6b7"
