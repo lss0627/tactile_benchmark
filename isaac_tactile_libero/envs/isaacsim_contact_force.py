@@ -40,11 +40,10 @@ def _vector3(value: Any) -> list[float] | None:
     try:
         components = [float(component) for component in value]
     except Exception:
-        norm = _vector_norm(value)
-        if norm is None:
-            return None
-        return [float(norm), 0.0, 0.0]
+        return None
     if len(components) != 3:
+        return None
+    if not all(math.isfinite(component) for component in components):
         return None
     return components
 
@@ -98,7 +97,7 @@ class ContactForceReport:
     ) -> "ContactForceReport":
         vector = _vector3(force_vector)
         if vector is None:
-            raise ValueError("Available contact-force reports require a 3D force vector or scalar force.")
+            raise ValueError("Available contact-force reports require a finite validated 3D force vector.")
         norm = float(_vector_norm(vector) or 0.0)
         return cls(
             method=str(method),
@@ -385,12 +384,12 @@ class ContactForceBackend:
         if isinstance(record, dict):
             candidates = [
                 record.get(name)
-                for name in ("force", "normal_force", "normalForce", "impulse", "normal_impulse", "normalImpulse")
+                for name in ("force_vector", "force", "normal_force_vector", "normalForceVector")
             ]
         else:
             candidates = [
                 getattr(record, name, None)
-                for name in ("force", "normal_force", "normalForce", "impulse", "normal_impulse", "normalImpulse")
+                for name in ("force_vector", "force", "normal_force_vector", "normalForceVector")
             ]
         for candidate in candidates:
             vector = _vector3(candidate)

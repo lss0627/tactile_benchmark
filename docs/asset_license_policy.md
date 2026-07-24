@@ -38,6 +38,11 @@ the intended use and when attribution is preserved.
 
 ## Release Boundary
 
-If a future dataset, project page, or asset bundle is released, it must include
-third-party asset statements and provenance metadata. Bundles must not include
-assets whose redistribution status is unknown or disallowed.
+The paper-v1 official dataset, task suite, project page, and any asset bundle
+must include third-party asset statements and provenance metadata. All 16 task
+cards bind their asset-manifest entries. Bundles must not include assets whose
+redistribution status is unknown or disallowed.
+
+Community task, robot, sensor, and expert plugins retain their own license
+metadata and cannot be promoted as benchmark-compatible until registry and
+redistribution checks pass.

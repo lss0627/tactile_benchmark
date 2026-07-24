@@ -1,5 +1,11 @@
 # Baseline Framework Skeleton
 
+> **Legacy implementation note**: this file documents the current mock BC
+> skeletons. It does not define paper-v1 baseline scope. The authoritative
+> target is [Baseline Protocol](baseline_protocol.md): BC, ACT, Diffusion
+> Policy, Transformer, and UniVTAC-compatible adapters under one trainer with
+> vision-only, tactile-only, and fusion configurations.
+
 This phase adds baseline policy interfaces only. No model is trained, no
 checkpoint is learned, and no result from these BC skeletons is a benchmark or
 paper performance number.
@@ -71,6 +77,7 @@ The fair non-oracle comparison set excludes `oracle_state_bc`. It may be used
 only as a privileged upper-bound sanity line. Mock BC evaluation is an interface
 sanity check and must not be presented as paper experimental evidence.
 
-Future real training should reuse these policy names, modality declarations,
-observation filters, batch-builder contract, and evaluate entry points while
-replacing the zero-action stub with actual small baseline models.
+Paper-v1 implementation may migrate these names through an explicit schema
+mapping. It must not retain the zero-action stub as a learned result or bypass
+the unified data, normalization, checkpoint-selection, and evaluation
+contracts.

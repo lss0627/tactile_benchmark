@@ -1,0 +1,139 @@
+schema_version: "1.0.0"
+task_id: PressButton
+task_version: "1.0.2"
+instruction: press the red button
+claim_class: physical_runtime
+
+runtime:
+  simulator: "6.0.1"
+  python: "3.12"
+  physics_device: cpu
+  rendering_device: cuda:0
+  gpu_contact_blocker: GPU_CONTACT_NATIVE_INSTABILITY
+  robot_config_path: configs/robots/fr3_press_button_safe.yaml
+  dependency_lock_path: requirements/lock-py312.txt
+  deterministic_reset_seed: 1701
+  episodes: 10
+  control_frequency_hz: 20.0
+  physics_dt_s: 0.016666666666666666
+
+mechanism:
+  mechanism_version: "1.1.0"
+  root_prim_path: /World/PressButton
+  housing_prim_path: /World/PressButton/Housing
+  button_prim_path: /World/PressButton/Button
+  joint_prim_path: /World/PressButton/ButtonJoint
+  contact_sensor_prim_path: /World/PressButton/Button/contact_sensor
+  joint_name: button_joint
+  joint_type: prismatic
+  joint_axis: [0.0, 0.0, -1.0]
+  base_position_m: [0.55, 0.0, 0.47]
+  base_orientation_xyzw: [0.0, 0.0, 0.0, 1.0]
+  geometry:
+    frame: mechanism_root
+    units: m
+    button:
+      primitive: capped_cylinder
+      center_local_m: [0.0, 0.0, 0.0]
+      axis_token: Z
+      radius_m: 0.035
+      half_height_m: 0.009
+    housing:
+      primitive: oriented_box
+      center_local_m: [0.0, 0.0, -0.025]
+      half_extents_m: [0.045, 0.045, 0.010]
+  contact_exclusion:
+    schema_version: "1.0.0"
+    subject: fr3_hand_tcp_point
+    obstacle_ids:
+      - button
+      - housing
+    required_clearance_m: 0.005
+    distance_metric: conservative_closed_solid_clearance_v1
+    route_validation: continuous_line_segment
+    boundary_policy: equality_allowed
+  option_d_full_robot_clearance:
+    schema_version: "g1.option_d.full_robot_clearance.v1"
+    subject_root: /World/FR3
+    obstacle_roots:
+      - /World/PressButton/Button
+      - /World/PressButton/Housing
+    phase_policy: c2a_c1_no_contact
+    collision_snapshot_schema: g1.full_robot.collision_snapshot.v1
+    swept_clearance_schema: g1.full_robot.swept_clearance.v1
+    collision_offset_authority_schema: g1.physx.collision_offset_authority.v1
+    lifecycle_schema: g1.scene.lifecycle.v1
+    command_bound_routes_schema: g1.pose_conditioned.command_bound_routes.v2
+    c2a_evidence_schema: g1.c2a.static.v3
+    c1_evidence_schema: g1.pose_conditioned.tracking_evidence.v3
+    offset_authority: physx_property_query_path_plus_rigid_body_tensor_slot
+    runtime_contact_remains_independent_truth: true
+    tcp_declared_solid_proof_remains_prerequisite_only: true
+  rest_position_m: 0.0
+  lower_limit_m: 0.0
+  travel_limit_m: 0.012
+  pressed_threshold_m: 0.009
+  release_threshold_m: 0.001
+  reset_tolerance_m: 0.0005
+  reset_noise_m: 0.0002
+  required_hold_steps: 3
+  collision_enabled: true
+  button_mass_kg: 0.05
+  return_stiffness_n_per_m: 120.0
+  return_damping_n_s_per_m: 2.0
+  # 0.60 N exceeds the 0.4905 N gravity load along the downward travel axis.
+  return_preload_n: 0.60
+
+task_truth:
+  success_source: observed_button_joint_travel
+  success_requires_consecutive_steps: 3
+  completion_requires_release: true
+  completion_requires_reset: true
+  completion_requires_safe_retract: true
+  forbidden_success_sources: [tcp_pose, commanded_depth, elapsed_steps, contact, force]
+
+motion:
+  approach_offset_m: 0.03
+  press_axis: [0.0, 0.0, -1.0]
+  retract_offset_m: 0.04
+  max_translation_per_step_m: 0.0005
+  max_rotation_per_step_rad: 0.02
+  max_cumulative_tcp_drift_m: 0.40
+
+budgets:
+  total_step_limit: 2500
+  wall_time_limit_s: 180.0
+  state_step_limits:
+    APPROACH: 1200
+    PRESS: 100
+    HOLD: 10
+    RELEASE: 100
+    RETRACT: 1200
+
+stop_conditions:
+  - operator_abort
+  - nonfinite_state
+  - workspace_violation
+  - joint_position_violation
+  - joint_velocity_violation
+  - direction_violation
+  - unsafe_collision
+  - penetration_violation
+  - per_step_motion_violation
+  - cumulative_drift_violation
+  - step_budget
+  - wall_time_budget
+  - sensor_invalid
+  - controller_failure
+  - release_or_reset_failure
+
+evidence:
+  gate_id: G1
+  minimum_episodes: 10
+  retain_failed_episodes: true
+  required_media: screenshots_or_video_index
+  observed_driver: "550.144.03"
+  reference_driver: "595.58.03"
+  driver_validation: UNVALIDATED
+  maximum_local_status: PASS_SMOKE
+  release_blocker: REFERENCE_DRIVER_REVALIDATION_REQUIRED

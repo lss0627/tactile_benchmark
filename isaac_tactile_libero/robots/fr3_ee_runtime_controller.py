@@ -223,6 +223,7 @@ class FR3EERuntimeController:
         fr3_usd_path: str,
         ee_frame: str = DEFAULT_EE_FRAME,
         articulation_root_path: str = FR3_PRIM_PATH,
+        stage_builder: Any | None = None,
     ):
         self.simulation_app = simulation_app
         self.ee_frame = _full_ee_frame(ee_frame, articulation_root_path)
@@ -231,8 +232,13 @@ class FR3EERuntimeController:
             simulation_app=simulation_app,
             fr3_usd_path=fr3_usd_path,
             articulation_root_path=articulation_root_path,
+            stage_builder=stage_builder,
         )
         self._warnings: list[str] = []
+        self._runtime_budget: Any | None = None
+        self._runtime_safety: Any | None = None
+        self._safety_sample_provider: Any | None = None
+        self._runtime_guard_events: list[dict[str, Any]] = []
 
     @property
     def warnings(self) -> tuple[str, ...]:
@@ -383,6 +389,31 @@ class FR3EERuntimeController:
     def close(self) -> None:
         self.controller.close()
 
+    def attach_runtime_guards(
+        self,
+        *,
+        budget: Any,
+        safety: Any | None = None,
+        safety_sample_provider: Any | None = None,
+    ) -> None:
+        """Attach G1 hard guards at the final actuator-command boundary.
+
+        ``budget.begin_step`` and ``safety.check`` run before the wrapped FR3
+        controller can receive a target. A latched denial therefore makes
+        post-abort actuation structurally impossible through this controller.
+        """
+
+        if safety is not None and not callable(safety_sample_provider):
+            raise ValueError("safety_sample_provider is required when safety is attached")
+        self._runtime_budget = budget
+        self._runtime_safety = safety
+        self._safety_sample_provider = safety_sample_provider
+        self._runtime_guard_events = []
+
+    @property
+    def runtime_guard_events(self) -> tuple[dict[str, Any], ...]:
+        return tuple(getattr(self, "_runtime_guard_events", ()))
+
     def _read_ee_transform_dynamic_control(self) -> FR3EEState | None:
         dc = getattr(self.controller, "_dc", None)
         dc_mod = getattr(self.controller, "_dc_mod", None)
@@ -498,7 +529,30 @@ class FR3EERuntimeController:
         }
 
     def _send_joint_position_targets(self, targets: np.ndarray) -> bool:
-        return bool(getattr(self.controller, "_send_joint_position_targets")(targets))
+        budget = getattr(self, "_runtime_budget", None)
+        if budget is not None:
+            budget_decision = budget.begin_step()
+            if not budget_decision.allow_actuation:
+                violation = budget_decision.violation
+                event = violation.as_dict() if violation is not None else {"code": "RUNTIME_BUDGET_ABORT"}
+                event["category"] = "budget"
+                self._runtime_guard_events.append(event)
+                return False
+
+        safety = getattr(self, "_runtime_safety", None)
+        if safety is not None:
+            sample = self._safety_sample_provider()
+            safety_decision = safety.check(sample)
+            if not safety_decision.allow_actuation:
+                event = safety_decision.violations[0].as_dict()
+                event["category"] = "safety"
+                self._runtime_guard_events.append(event)
+                return False
+
+        sent = bool(getattr(self.controller, "_send_joint_position_targets")(targets))
+        if budget is not None:
+            budget.finish_step()
+        return sent
 
     def _step_and_hold(self, targets: np.ndarray, steps: int) -> None:
         for _ in range(int(steps)):

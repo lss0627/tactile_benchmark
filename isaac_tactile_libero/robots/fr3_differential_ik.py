@@ -212,7 +212,26 @@ def compute_damped_least_squares_delta(
     action_name: str = "unnamed",
     commanded_7d_action: Sequence[float] | None = None,
 ) -> DifferentialIKResult:
-    cfg = config or DifferentialIKConfig()
+    cfg = DifferentialIKConfig() if config is None else config
+    supplied_action: np.ndarray | None = None
+    if commanded_7d_action is not None:
+        try:
+            supplied_action = np.asarray(
+                commanded_7d_action,
+                dtype=np.float64,
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "commanded_7d_action must be float64-compatible"
+            ) from error
+        if supplied_action.shape != (7,):
+            raise ValueError(
+                "commanded_7d_action must have exact shape (7,)"
+            )
+        if not np.all(np.isfinite(supplied_action)):
+            raise ValueError(
+                "commanded_7d_action must contain only finite values"
+            )
     j = np.asarray(jacobian, dtype=float)
     dx = np.asarray(cartesian_delta, dtype=float).reshape(-1)
     if dx.size < 3:
@@ -250,9 +269,12 @@ def compute_damped_least_squares_delta(
         warnings.append("raw_dq exceeded max_abs_dq and was clipped")
     max_abs = float(np.max(np.abs(clipped))) if clipped.size else 0.0
     safety_pass = bool(not errors and not nan_detected and max_abs <= cfg.max_abs_dq + 1e-12)
-    action = tuple(float(x) for x in (commanded_7d_action or (*dx.tolist(), 0.0, 0.0, 0.0, 0.0))[:7])
-    if len(action) != 7:
-        action = tuple([*action, *([0.0] * (7 - len(action)))][:7])
+    action_source = (
+        np.asarray((*dx.tolist(), 0.0, 0.0, 0.0, 0.0), dtype=np.float64)
+        if supplied_action is None
+        else supplied_action
+    )
+    action = tuple(float(value) for value in action_source)
     return DifferentialIKResult(
         action_name=action_name,
         commanded_7d_action=action,
@@ -298,12 +320,14 @@ class FR3DifferentialIKRuntime:
         fr3_usd_path: str,
         ee_frame: str = DEFAULT_EE_FRAME,
         articulation_root_path: str = FR3_PRIM_PATH,
+        stage_builder: Any | None = None,
     ):
         self.ik_runtime = FR3IKControllerRuntime(
             simulation_app=simulation_app,
             fr3_usd_path=fr3_usd_path,
             ee_frame=ee_frame,
             articulation_root_path=articulation_root_path,
+            stage_builder=stage_builder,
         )
         self.articulation_root_path = articulation_root_path
         self._warnings: list[str] = []
@@ -399,14 +423,133 @@ class FR3DifferentialIKRuntime:
     ) -> np.ndarray:
         full = np.asarray(joint_state.joint_positions, dtype=float).copy()
         name_to_index = {str(name): index for index, name in enumerate(joint_state.joint_names)}
-        for solver_index, solver_name in enumerate(self.solver_joint_names):
-            if solver_index >= len(solver_delta):
-                continue
-            if solver_name in name_to_index:
-                full[name_to_index[solver_name]] += float(solver_delta[solver_index])
-            elif solver_index < full.size:
-                full[solver_index] += float(solver_delta[solver_index])
+        solver_names = tuple(str(name) for name in self.solver_joint_names)
+        if len(solver_delta) != len(solver_names):
+            raise ValueError("solver delta length does not match solver joint names")
+        missing = [name for name in solver_names if name not in name_to_index]
+        if missing:
+            raise ValueError(f"solver joints are absent from articulation order: {missing}")
+        for solver_index, solver_name in enumerate(solver_names):
+            full[name_to_index[solver_name]] += float(solver_delta[solver_index])
         return full
+
+    def compute_governed_translation_target(
+        self,
+        *,
+        requested_action_7d: Sequence[float],
+        current_observed_q: Sequence[float],
+        current_observed_qd: Sequence[float],
+        previous_accepted_target: Sequence[float],
+        articulation_joint_names: Sequence[str],
+        safety_limits: Any,
+        already_aborted: bool = False,
+        send_result: bool | None = None,
+        governor: Any | None = None,
+        action_name: str = "g1_qualifying_nonzero",
+        config: DifferentialIKConfig | None = None,
+        **context: Any,
+    ) -> dict[str, Any]:
+        """Compute one unsent qualifying target with complete Lula-FD provenance."""
+
+        from isaac_tactile_libero.runtime.g1_nonzero_kernel import (
+            compute_observed_q_target,
+            evaluate_g1_nonzero_governor,
+            jacobian_provenance,
+        )
+
+        action = np.asarray(requested_action_7d, dtype=np.float64)
+        observed_q = np.asarray(current_observed_q, dtype=np.float64)
+        observed_qd = np.asarray(current_observed_qd, dtype=np.float64)
+        names = tuple(str(name) for name in articulation_joint_names)
+        if action.shape != (7,) or observed_q.shape != observed_qd.shape:
+            raise ValueError("qualifying action/q/qd shapes are invalid")
+        if observed_q.shape != (len(names),):
+            raise ValueError("qualifying q/qd must match articulation joint names")
+        joint_state = FR3JointState(
+            joint_names=names,
+            joint_positions=tuple(float(value) for value in observed_q),
+            joint_velocities=tuple(float(value) for value in observed_qd),
+        )
+        cfg = (
+            DifferentialIKConfig(max_abs_dq=0.02)
+            if config is None
+            else config
+        )
+        result, _solver_q, jacobian = self.compute_action_delta(
+            action_name=action_name,
+            action=action,
+            joint_state=joint_state,
+            config=cfg,
+        )
+        validate_differential_ik_result(result)
+        target = compute_observed_q_target(
+            current_observed_q=observed_q,
+            articulation_joint_names=names,
+            solver_joint_names=self.solver_joint_names,
+            clipped_dq=result.clipped_dq,
+            previous_accepted_target=previous_accepted_target,
+        )
+        diagnostics = jacobian_provenance(
+            jacobian,
+            requested_vector_m=action[:3],
+            raw_dq=result.raw_dq,
+            clipped_dq=result.clipped_dq,
+        )
+        base_result = {
+            **context,
+            "action_name": str(action_name),
+            "requested_action_7d": action.copy(),
+            "requested_vector_m": action[:3].copy(),
+            "current_observed_q": observed_q.copy(),
+            "current_observed_qd": observed_qd.copy(),
+            **target,
+            **diagnostics,
+            "governed_target": target["pre_send_target"].copy(),
+            "send_allowed": True,
+            "damping": float(cfg.damping),
+            "finite_difference_epsilon": float(cfg.finite_difference_epsilon),
+        }
+        governor_payload = {
+            "requested_action_7d": action.tolist(),
+            "requested_vector_m": action[:3].tolist(),
+            "current_q": observed_q.tolist(),
+            "current_qd": observed_qd.tolist(),
+            "articulation_joint_names": list(names),
+            "solver_joint_names": list(self.solver_joint_names),
+            "previous_accepted_target": list(previous_accepted_target),
+            "pre_send_target": target["pre_send_target"].tolist(),
+            "raw_dq": list(result.raw_dq),
+            "clipped_dq": list(result.clipped_dq),
+            "joint_lower": list(safety_limits.joint_position_lower),
+            "joint_upper": list(safety_limits.joint_position_upper),
+            "joint_velocity_limits": list(safety_limits.joint_velocity_abs),
+            "max_step_motion_m": float(safety_limits.max_step_motion_m),
+            "max_abs_dq": float(cfg.max_abs_dq),
+            "already_aborted": bool(already_aborted),
+            "send_attempted_after_abort": False,
+            "send_result": send_result,
+            "finite": bool(
+                np.all(np.isfinite(action))
+                and np.all(np.isfinite(observed_q))
+                and np.all(np.isfinite(observed_qd))
+                and np.all(np.isfinite(jacobian))
+                and np.isfinite(diagnostics["condition_number"])
+                and np.isfinite(diagnostics["manipulability"])
+            ),
+        }
+        evaluator = getattr(governor, "evaluate", None)
+        decision = (
+            evaluator(governor_payload)
+            if callable(evaluator)
+            else evaluate_g1_nonzero_governor(governor_payload)
+        )
+        return _jsonable({
+            **base_result,
+            **decision,
+            "governor_state": decision["state"],
+            "governor_code": decision["code"],
+            "governor_message": decision["message"],
+        })
 
     def send_joint_position_targets(self, targets: Sequence[float]) -> bool:
         return bool(getattr(self.ik_runtime, "_send_joint_position_targets")(np.asarray(targets, dtype=np.float32)))
@@ -420,14 +563,13 @@ class FR3DifferentialIKRuntime:
 
 def solver_joint_vector_from_joint_state(joint_state: FR3JointState, solver_names: Sequence[str]) -> np.ndarray:
     name_to_position = {str(name): float(pos) for name, pos in zip(joint_state.joint_names, joint_state.joint_positions)}
-    values: list[float] = []
-    for index, name in enumerate(solver_names):
-        if name in name_to_position:
-            values.append(name_to_position[name])
-        elif index < len(joint_state.joint_positions):
-            values.append(float(joint_state.joint_positions[index]))
-        else:
-            values.append(0.0)
+    names = tuple(str(name) for name in solver_names)
+    if len(set(names)) != len(names):
+        raise ValueError("solver joint names must be unique")
+    missing = [name for name in names if name not in name_to_position]
+    if missing:
+        raise ValueError(f"solver joints are absent from articulation order: {missing}")
+    values = [name_to_position[name] for name in names]
     return np.asarray(values, dtype=float)
 
 

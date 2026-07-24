@@ -7,6 +7,7 @@ from typing import Any, Callable
 import numpy as np
 
 from isaac_tactile_libero.schemas.action import clip_action
+from isaac_tactile_libero.runtime.fr3_target_latch import FR3PositionTargetLatch
 
 
 EXPECTED_FR3_DOFS = (
@@ -20,6 +21,22 @@ EXPECTED_FR3_DOFS = (
     "fr3_finger_joint1",
     "fr3_finger_joint2",
 )
+
+
+class FR3PlannedTargetRejected(RuntimeError):
+    """A planned joint target failed the pre-send safety boundary."""
+
+    code = "FR3_PLANNED_JOINT_TARGET_REJECTED"
+
+    def __init__(self, planned_joint_target: np.ndarray) -> None:
+        self.planned_joint_target = (
+            np.asarray(planned_joint_target, dtype=np.float64)
+            .reshape(-1)
+            .tolist()
+        )
+        super().__init__(
+            "FR3 planned joint target was rejected before send"
+        )
 
 
 def _to_numpy(value: Any) -> np.ndarray:
@@ -38,6 +55,13 @@ def _to_numpy(value: Any) -> np.ndarray:
 class IsaacSim6FR3Controller:
     """Bounded 7D delta-EE controller using experimental articulation Jacobians."""
 
+    target_latch_type = FR3PositionTargetLatch
+    qualification_metadata = {
+        "controller_qualification": "compatibility_smoke",
+        "benchmark_cap_eligible": False,
+        "jacobian_provider": "isaacsim_experimental_articulation",
+    }
+
     def __init__(
         self,
         prim_path: str = "/World/FR3",
@@ -47,6 +71,7 @@ class IsaacSim6FR3Controller:
         max_joint_delta_rad: float = 0.02,
         max_gripper_width_m: float = 0.04,
         articulation_factory: Callable[[str], Any] | None = None,
+        target_validator: Callable[[np.ndarray], bool] | None = None,
     ) -> None:
         self.prim_path = str(prim_path)
         self.ee_link_name = str(ee_link_name)
@@ -54,10 +79,15 @@ class IsaacSim6FR3Controller:
         self.max_joint_delta_rad = float(max_joint_delta_rad)
         self.max_gripper_width_m = float(max_gripper_width_m)
         self._articulation_factory = articulation_factory
+        self._target_validator = target_validator
         self.articulation: Any | None = None
         self.dof_names: tuple[str, ...] = ()
         self.link_names: tuple[str, ...] = ()
         self._ee_jacobian_index: int | None = None
+        self._target_latch: FR3PositionTargetLatch | None = None
+        self._scene_token: str | None = None
+        self._aborted_reason: str | None = None
+        self._closed = False
 
     def initialize(
         self,
@@ -65,6 +95,8 @@ class IsaacSim6FR3Controller:
         step_callback: Callable[[int], None] | None = None,
         timeout_steps: int = 5,
     ) -> None:
+        self.reset_target_latch()
+        self._closed = False
         if self._articulation_factory is None:
             from isaacsim.core.experimental.prims import Articulation  # type: ignore
 
@@ -83,6 +115,27 @@ class IsaacSim6FR3Controller:
             self.link_names = links
             try:
                 self._ee_jacobian_index = self._resolve_jacobian_index()
+                target_reader = getattr(articulation, "get_dof_position_targets", None)
+                if not callable(target_reader):
+                    raise RuntimeError("FR3 position target API is unavailable for target latch")
+                position_targets = target_reader()
+                scene_token = f"{self.prim_path}@{id(articulation)}"
+                latch = self.target_latch_type(
+                    dof_names=names,
+                    scene_token=scene_token,
+                    prim_path=self.prim_path,
+                    articulation_object_id=id(articulation),
+                )
+                latch.seed(
+                    position_targets,
+                    dof_names=names,
+                    scene_token=scene_token,
+                    source="get_dof_position_targets",
+                    prim_path=self.prim_path,
+                    articulation_object_id=id(articulation),
+                )
+                self._target_latch = latch
+                self._scene_token = scene_token
                 return
             except AssertionError as exc:
                 last_error = exc
@@ -120,33 +173,100 @@ class IsaacSim6FR3Controller:
         return q, qd
 
     def apply_action(self, action: Any) -> dict[str, Any]:
+        if self._aborted_reason is not None:
+            raise RuntimeError(f"FR3 controller aborted: {self._aborted_reason}")
         if self.articulation is None or self._ee_jacobian_index is None:
             raise RuntimeError("FR3 controller is not initialized")
+        if self._target_latch is None or self._scene_token is None:
+            raise RuntimeError("FR3 controller target latch is not initialized")
         bounded = clip_action(action)
-        q, _ = self.read_joint_state()
         cartesian_delta = bounded[:6].astype(np.float64)
         zero_action = bool(np.allclose(bounded, 0.0))
-        dq = np.zeros_like(q, dtype=np.float64)
-        if not np.allclose(cartesian_delta, 0.0):
+        if zero_action:
+            dq = np.zeros(len(EXPECTED_FR3_DOFS), dtype=np.float64)
+            target = self._target_latch.resolve_zero_target(
+                observed_joint_positions=None,
+                scene_token=self._scene_token,
+            ).astype(np.float64)
+        else:
+            q, _ = self.read_joint_state()
+            dq = np.zeros_like(q, dtype=np.float64)
+            target = q.astype(np.float64)
+        if not zero_action and not np.allclose(cartesian_delta, 0.0):
             jacobians = _to_numpy(self.articulation.get_jacobian_matrices())
             jacobian = np.asarray(jacobians[0, self._ee_jacobian_index, :, :], dtype=np.float64)
             lhs = jacobian @ jacobian.T + self.damping**2 * np.eye(6, dtype=np.float64)
             dq = jacobian.T @ np.linalg.solve(lhs, cartesian_delta)
             dq = np.clip(dq, -self.max_joint_delta_rad, self.max_joint_delta_rad)
-        target = q.astype(np.float64) + dq
+            target = target + dq
         gripper_width = (float(bounded[6]) + 1.0) * 0.5 * self.max_gripper_width_m
         if not zero_action:
             target[7:9] = gripper_width
         if not np.all(np.isfinite(target)):
             raise RuntimeError("FR3 target contains NaN/Inf")
-        self.articulation.set_dof_position_targets(target.astype(np.float32).reshape(1, -1))
+        target_array = target.astype(np.float32).reshape(1, -1)
+        planned_joint_target_validated = False
+        if self._target_validator is not None:
+            planned_joint_target_validated = (
+                self._target_validator(target_array.reshape(-1).copy())
+                is True
+            )
+            if not planned_joint_target_validated:
+                raise FR3PlannedTargetRejected(
+                    target_array.reshape(-1)
+                )
+        send_result = self.articulation.set_dof_position_targets(target_array)
+        command_sent = send_result is not False
+        if not zero_action and command_sent:
+            self._target_latch.accept_target(
+                target_array,
+                send_succeeded=True,
+                dof_names=self.dof_names,
+                scene_token=self._scene_token,
+                source="accepted_nonzero_action",
+                prim_path=self.prim_path,
+                articulation_object_id=id(self.articulation),
+            )
         return {
-            "command_sent": True,
+            **self.qualification_metadata,
+            "command_sent": command_sent,
             "controller_method": "experimental_jacobian_dls",
             "action_shape": list(bounded.shape),
             "bounded_action": bounded.tolist(),
+            "planned_joint_target": target_array.reshape(-1).tolist(),
+            "planned_joint_target_validated": (
+                planned_joint_target_validated
+            ),
             "zero_action": zero_action,
             "max_abs_joint_delta": float(np.max(np.abs(dq))) if dq.size else 0.0,
             "force_vector_valid": False,
             "wrench_valid": False,
+            "target_latch_provenance": self._target_latch.provenance,
         }
+
+    def reset_target_latch(self) -> None:
+        if self._target_latch is not None:
+            self._target_latch.reset()
+        self._target_latch = None
+        self._scene_token = None
+        self._aborted_reason = None
+        self.articulation = None
+        self.dof_names = ()
+        self.link_names = ()
+        self._ee_jacobian_index = None
+
+    def abort(self, reason: str) -> None:
+        self._aborted_reason = str(reason)
+        if self._target_latch is not None:
+            self._target_latch.abort(self._aborted_reason)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        if self._target_latch is not None:
+            self._target_latch.invalidate("controller closed")
+        self._target_latch = None
+        self._scene_token = None
+        self.articulation = None
+        self._ee_jacobian_index = None
+        self._closed = True

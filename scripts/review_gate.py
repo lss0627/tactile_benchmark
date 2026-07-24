@@ -6,8 +6,9 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import subprocess
 import sys
-from typing import Any
+from typing import Any, Mapping
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -25,6 +26,8 @@ def review_manifest(
     expected_gate: str,
     validate_schema: bool = True,
     validate_freshness: bool = True,
+    current_repository_commit: str | None = None,
+    semantic_inputs: Mapping[str, str | Path] | None = None,
 ) -> dict[str, Any]:
     errors: list[str] = []
     if manifest.get("gate_id") != expected_gate:
@@ -33,7 +36,11 @@ def review_manifest(
         errors.extend(validate_evidence_manifest(manifest))
     freshness = {"fresh": True, "checked": 0, "changed": [], "missing": []}
     if validate_freshness:
-        freshness = validate_manifest_freshness(manifest)
+        freshness = validate_manifest_freshness(
+            manifest,
+            current_repository_commit=current_repository_commit,
+            semantic_inputs=semantic_inputs,
+        )
         if not freshness["fresh"]:
             errors.append("evidence is stale")
     if expected_gate == "G0" and manifest.get("status") != "PASS_BENCHMARK":
@@ -55,7 +62,21 @@ def main() -> int:
     parser.add_argument("--output")
     args = parser.parse_args()
     manifest = json.loads(Path(args.evidence).read_text(encoding="utf-8"))
-    review = review_manifest(manifest, expected_gate=args.gate)
+    current_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    semantic_inputs = {
+        str(reference["name"]): str(reference["uri"])
+        for collection in ("configuration", "assets")
+        for reference in manifest.get(collection, [])
+        if isinstance(reference, dict) and reference.get("name") and reference.get("uri")
+    }
+    review = review_manifest(
+        manifest,
+        expected_gate=args.gate,
+        current_repository_commit=current_commit,
+        semantic_inputs=semantic_inputs,
+    )
     if args.output:
         output = Path(args.output)
         output.parent.mkdir(parents=True, exist_ok=True)

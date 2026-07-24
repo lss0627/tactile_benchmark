@@ -231,6 +231,7 @@ class FR3ControllerRuntime:
         simulation_app: Any,
         fr3_usd_path: str,
         articulation_root_path: str = FR3_PRIM_PATH,
+        stage_builder: Any | None = None,
     ):
         self.simulation_app = simulation_app
         self.fr3_usd_path = str(fr3_usd_path)
@@ -241,6 +242,7 @@ class FR3ControllerRuntime:
         self._experimental_articulation = None
         self._joint_names: list[str] = []
         self._warnings: list[str] = []
+        self._stage_builder = stage_builder
 
     @property
     def warnings(self) -> tuple[str, ...]:
@@ -370,6 +372,8 @@ class FR3ControllerRuntime:
         fr3.GetReferences().AddReference(str(self.fr3_usd_path))
         light = UsdLux.DomeLight.Define(stage, "/World/DomeLight")
         light.CreateIntensityAttr(600.0)
+        if self._stage_builder is not None:
+            self._stage_builder(stage)
         camera = UsdGeom.Camera.Define(stage, "/World/FR3ControllerSmokeCamera")
         camera.AddTranslateOp().Set(Gf.Vec3d(1.6, -1.6, 1.35))
         camera.AddRotateXYZOp().Set(Gf.Vec3f(60.0, 0.0, 45.0))

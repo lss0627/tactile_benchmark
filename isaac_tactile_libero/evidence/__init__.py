@@ -1,6 +1,14 @@
 """Evidence and gate services that never import Isaac Sim."""
 
-from .gates import GateRecord, validate_gate_transition, validate_predecessors
+from .gates import (
+    GATE_DEFINITIONS,
+    GateDefinition,
+    GateRecord,
+    generalization_rebaseline_statuses,
+    validate_gate_claim,
+    validate_gate_transition,
+    validate_predecessors,
+)
 from .manifest import (
     build_evidence_manifest,
     digest_reference,
@@ -9,10 +17,14 @@ from .manifest import (
 )
 
 __all__ = [
+    "GATE_DEFINITIONS",
+    "GateDefinition",
     "GateRecord",
     "build_evidence_manifest",
     "digest_reference",
+    "generalization_rebaseline_statuses",
     "validate_evidence_manifest",
+    "validate_gate_claim",
     "validate_gate_transition",
     "validate_manifest_freshness",
     "validate_predecessors",

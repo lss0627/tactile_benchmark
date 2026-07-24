@@ -1,117 +1,119 @@
-# Quickstart: Isaac Sim 6.0.1 Development Baseline
+# Quickstart
 
-G0 and the Isaac Sim 6.0.1 migration checkpoints are implemented. Commands below reproduce the
-development/runtime-smoke baseline; they do **not** satisfy G1-G6 physical benchmark gates.
+Commands below describe the target public workflow. A command becomes formal only after its Gate tasks are implemented and accepted.
 
-## 1. Select the feature
-
-From the repository root:
+## Repository preflight
 
 ```bash
-export SPECIFY_FEATURE=001-benchmark-reconstruction
-bash .specify/scripts/bash/check-prerequisites.sh --json --require-tasks --include-tasks
-```
-
-Expected: the command resolves `spec.md`, `plan.md`, `tasks.md`, and the available design documents
-under `specs/001-benchmark-reconstruction/`.
-
-## 2. Validate documentation and machine-readable contracts
-
-```bash
-rg -n "NEEDS CLARIFICATION|\[FEATURE\]|\[###-feature|TODO|TBD" \
-  --glob '!quickstart.md' specs/001-benchmark-reconstruction
-git diff --check -- .specify specs/001-benchmark-reconstruction
-python -m json.tool \
-  specs/001-benchmark-reconstruction/contracts/compatibility-report.schema.json >/dev/null
-python -m json.tool \
-  specs/001-benchmark-reconstruction/contracts/evidence-manifest.schema.json >/dev/null
-python -m json.tool \
-  specs/001-benchmark-reconstruction/contracts/gate-status.schema.json >/dev/null
-```
-
-Expected: the placeholder search returns no matches and every other command exits zero.
-
-## 3. Review the implementation handoff
-
-Read in this order:
-
-1. [spec.md](./spec.md) — scope, user stories, FRs, and measurable success.
-2. [research.md](./research.md) — audited deficiencies and chosen design boundaries.
-3. [plan.md](./plan.md) — gate architecture and implementation phases.
-4. [data-model.md](./data-model.md) and [contracts/](./contracts/) — normative state and API rules.
-5. [tasks.md](./tasks.md) — dependency-ordered implementation units.
-6. [implementation.md](./implementation.md) — execution protocol and stop rules.
-7. [acceptance.md](./acceptance.md) — command/evidence matrix and current status.
-
-## 4. Verify the promoted Python 3.12 baseline
-
-```bash
-python -m pip install --extra-index-url https://pypi.nvidia.com \
-  -r requirements/lock-py312.txt
-python -m pip install -e '.[test]'
+conda activate isaac6
+export OMNI_KIT_ACCEPT_EULA=YES
+python --version
 python -m pytest -q
-python scripts/check_isaacsim6_imports.py --deprecated-as-error
+python scripts/check_deprecated_isaac_imports.py
 ```
 
-Set `OMNI_KIT_ACCEPT_EULA=YES` and configure assets as described in `docs/asset_setup.md`.
-The promoted `requirements/lock-py312.txt` must remain content-equivalent to the reviewed candidate
-lock except for documented path/comment normalization; the archived 5.1 files are reference-only.
-
-## 5. Reproduce migration checks
+## List benchmark content
 
 ```bash
-python scripts/check_clean_checkout.py --output outputs/evidence/G0/clean-checkout
-python scripts/review_gate.py --gate G0 \
-  --evidence outputs/evidence/G0/clean-checkout/manifest.json
-python scripts/run_isaacsim6_g1b.py --cycles 100 --steps 500 \
-  --output outputs/evidence/G-1B/repository-integration/report.json
-python scripts/build_isaacsim6_ab_report.py \
-  --output outputs/evidence/G-1B/repository-integration/ab-report.json
+python scripts/list_tasks.py
+python scripts/list_protocols.py
+python scripts/list_policies.py
 ```
 
-The runtime config forces CPU physics for Contact and GPU rendering on `cuda:0`. A request for GPU
-physics fails before native initialization with `GPU_CONTACT_NATIVE_INSTABILITY`.
+Paper-v1 expects four suites and 16 accepted tasks.
 
-Expected G-1B artifacts:
-
-```text
-outputs/evidence/G-1B/repository-integration/
-├── report.json
-├── ab-report.json
-├── nodeid-regression.json
-└── penetration-supplement.json
-```
-
-The P0 and G-1A raw reports remain in the repository-external migration evidence root. Their
-reviewed runtime, asset, Contact, Camera, and stability summaries are referenced by G-1B; they are
-not promoted into formal Gate evidence.
-
-Set the root explicitly when reproducing those checkpoints:
+## Collect official or custom data
 
 ```bash
-export ISAACSIM6_MIGRATION_EVIDENCE_ROOT="$HOME/.local/share/isaac-tactile-libero/isaacsim6-migration"
+python scripts/collect_data.py \
+  --suite precision \
+  --task peg_insert \
+  --num-episodes 1000 \
+  --policy scripted \
+  --num-envs 8 \
+  --resume \
+  --output datasets/runs/precision-peg-scripted
 ```
 
-Normative report locations are
-`$ISAACSIM6_MIGRATION_EVIDENCE_ROOT/P0/environment/report.json` and
-`$ISAACSIM6_MIGRATION_EVIDENCE_ROOT/G-1A/asset-api/report.json`.
+Validate and replay:
 
-## 6. Evidence handling
+```bash
+python scripts/validate_dataset.py \
+  --dataset datasets/runs/precision-peg-scripted
 
-Generated results belong under an immutable run directory such as:
+python scripts/replay_demos.py \
+  --dataset datasets/runs/precision-peg-scripted \
+  --num-episodes 20
+```
+
+## Train offline
+
+```bash
+python scripts/train.py \
+  --algo diffusion_policy \
+  --suite precision \
+  --tasks peg_insert usb_insert key_turn pin_socket \
+  --modalities vision tactile proprio \
+  --dataset configs/datasets/tactilibero_v1.yaml \
+  --seed 1701 \
+  --output outputs/training/dp-precision-s1701
+```
+
+Replace `diffusion_policy` with `bc`, `act`, `transformer`, or `univtac` under the same shared contract.
+
+## Train or collect online
+
+```bash
+python scripts/train.py \
+  --algo act \
+  --data-regime online \
+  --suite articulation \
+  --modalities vision tactile proprio \
+  --environment-steps 100000 \
+  --seed 1701 \
+  --output outputs/training/act-articulation-online-s1701
+```
+
+Online outputs remain a separate evaluation track.
+
+## Evaluate generalization
+
+```bash
+python scripts/evaluate.py \
+  --checkpoint outputs/training/dp-precision-s1701/best.ckpt \
+  --benchmark configs/benchmark/tactilibero_v1.yaml \
+  --protocol GP-01 \
+  --seeds 1701 1702 1703 \
+  --output outputs/evaluation/dp-precision-gp01
+```
+
+Use:
+
+- `GP-01` for object/geometry;
+- `GP-02` for contact/material/physics;
+- `GP-03` for sensor/observation.
+
+## Build leaderboard
+
+```bash
+python scripts/validate_submission.py \
+  --bundle outputs/evaluation/dp-precision-gp01/submission
+
+python scripts/build_leaderboard.py \
+  --submissions outputs/evaluation/*/submission \
+  --output release/leaderboard
+```
+
+Expected outputs include CSV, HTML, radar data, manifest, and checksums.
+
+## Immediate repository milestone
+
+Before formal multi-task collection, complete active G1:
 
 ```text
-outputs/evidence/<gate-id>/<run-id>/
-├── manifest.json
-├── command.log
-├── report.json
-└── artifacts/
+100 PressButton resets
+500 rendered steps
+10 consecutive task-state episodes
 ```
 
-Validate `manifest.json` against `contracts/evidence-manifest.schema.json`, store artifact hashes,
-and update the canonical gate status only after review. Changing semantic code/config/assets makes
-older evidence stale and returns the gate to `IN_PROGRESS`.
-
-Compatibility reports instead validate against `contracts/compatibility-report.schema.json` and
-may only report `PASS_SMOKE` or `BLOCKED` with claim class `runtime_smoke`; they never mutate the
-seven-Gate array.
+See `acceptance.md` and `tasks.md`.

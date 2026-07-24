@@ -1,45 +1,37 @@
-# Specification Quality Checklist: Benchmark Reconstruction Program
+# Specification Quality Checklist
 
-**Purpose**: Validate specification completeness and quality before proceeding to planning
-**Created**: 2026-07-10
+## Product and scope
 
-**Last Revalidated**: 2026-07-11 for the Isaac Sim 6.0.1 baseline synchronization
-**Feature**: [spec.md](../spec.md)
+- [x] Scientific question is generalization, not task-count expansion.
+- [x] Paper-v1 is fixed at four suites, 16 tasks, and three core protocols.
+- [x] Environment, data generation, official dataset, training, evaluation,
+  baselines, and leaderboard are all required.
+- [x] Offline and online benchmark modes are both required.
+- [x] Simulation-only and non-certification scope is explicit.
+- [x] Expansion to 100 tasks, extra protocols, large VLAs, hosted evaluation,
+  and real robots is non-blocking.
 
-## Content Quality
+## Contracts and truth
 
-- [x] No implementation bodies constrain the required outcomes; the simulator, Python, driver,
-  Contact, and Camera versions/limits are intentional external runtime and evidence constraints.
-- [x] Requirements focus on maintainer, engineer, benchmark, reviewer, and release value.
-- [x] The specification is readable without source-code knowledge.
-- [x] All mandatory sections are completed.
+- [x] Isaac Sim 6.0.1/Python 3.12 baseline is explicit.
+- [x] Development/reference-driver distinction is explicit.
+- [x] G1 empirical acceptance is measurable and optional formal diagnostics do
+  not block it.
+- [x] Task-state success rejects geometric fallback.
+- [x] Contact, scalar force, vector force, wrench, and raw impulse are distinct.
+- [x] Task, suite, split, expert, collection, episode, dataset, training,
+  evaluation, result, and leaderboard contracts are covered.
+- [x] Train/validation/test leakage rules are explicit.
+- [x] Public extension registries are specified.
 
-## Requirement Completeness
+## Measurability and consistency
 
-- [x] No clarification markers remain.
-- [x] Requirements are testable and unambiguous.
-- [x] Success criteria are measurable.
-- [x] Success criteria describe outcomes rather than prescribing internal implementations.
-- [x] All user stories contain acceptance scenarios.
-- [x] Edge cases include repository, runtime, tactile, data, evaluation, and documentation failures.
-- [x] Scope and blocked follow-on work are explicit.
-- [x] Dependencies and assumptions are identified.
-
-## Feature Readiness
-
-- [x] Functional requirements have observable acceptance evidence.
-- [x] User scenarios cover layered runtime migration, repository integrity, physical runtime,
-  unified contract, data/evaluation, and release.
-- [x] Measurable outcomes cover each priority level.
-- [x] The specification does not include implementation bodies or complete test code.
-
-## Notes
-
-- Validation iteration 1 passed all items.
-- Validation iteration 2 added the Isaac Sim 6.0.1/Python 3.12 development baseline, archived 5.1
-  boundary, unvalidated-driver policy, CPU Contact truth contract, Camera acceptance, candidate-lock
-  promotion, A/B tolerances, and P0/G-1A/G-1B scenarios without adding a formal Gate or claim class.
-- The specification contains no unresolved clarification or placeholder markers after the 6.0.1
-  synchronization review.
-- The separate acceptance checklist generated after planning validates requirement quality;
-  implementation acceptance commands live in `quickstart.md`, `tasks.md`, and `implementation.md`.
+- [x] Dataset minimum, policy seeds, and evaluation episode minimum are numeric.
+- [x] Generalization gap and tactile-specific metrics are defined.
+- [x] Every functional requirement is testable.
+- [x] Every success criterion is measurable.
+- [x] Gate order and claim limits are explicit.
+- [x] Historical evidence immutability is explicit.
+- [x] No `NEEDS CLARIFICATION`, TODO, TBD, or unresolved placeholder remains.
+- [x] Final documentation links, paths, task traceability, and cross-artifact
+  analysis pass.
