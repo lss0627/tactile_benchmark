@@ -1,117 +1,112 @@
-# Quickstart: Isaac Sim 6.0.1 Development Baseline
+# Quickstart
 
-G0 and the Isaac Sim 6.0.1 migration checkpoints are implemented. Commands below reproduce the
-development/runtime-smoke baseline; they do **not** satisfy G1-G6 physical benchmark gates.
-
-## 1. Select the feature
-
-From the repository root:
+## 1. Select the isolated worktree
 
 ```bash
-export SPECIFY_FEATURE=001-benchmark-reconstruction
-bash .specify/scripts/bash/check-prerequisites.sh --json --require-tasks --include-tasks
+cd /mnt/data/home/lss/.config/superpowers/worktrees/VLA-Adapter-Lightwheel/g1-press-button-safety
+git status --short --branch
 ```
 
-Expected: the command resolves `spec.md`, `plan.md`, `tasks.md`, and the available design documents
-under `specs/001-benchmark-reconstruction/`.
+Preserve unrelated local changes. Evidence-producing runs require a clean committed tree.
 
-## 2. Validate documentation and machine-readable contracts
+## 2. Activate Isaac Sim 6
 
 ```bash
-rg -n "NEEDS CLARIFICATION|\[FEATURE\]|\[###-feature|TODO|TBD" \
-  --glob '!quickstart.md' specs/001-benchmark-reconstruction
-git diff --check -- .specify specs/001-benchmark-reconstruction
-python -m json.tool \
-  specs/001-benchmark-reconstruction/contracts/compatibility-report.schema.json >/dev/null
-python -m json.tool \
-  specs/001-benchmark-reconstruction/contracts/evidence-manifest.schema.json >/dev/null
-python -m json.tool \
-  specs/001-benchmark-reconstruction/contracts/gate-status.schema.json >/dev/null
+conda activate isaac6
+export OMNI_KIT_ACCEPT_EULA=YES
+python --version
 ```
 
-Expected: the placeholder search returns no matches and every other command exits zero.
+Expected Python: `3.12.x`.
 
-## 3. Review the implementation handoff
-
-Read in this order:
-
-1. [spec.md](./spec.md) — scope, user stories, FRs, and measurable success.
-2. [research.md](./research.md) — audited deficiencies and chosen design boundaries.
-3. [plan.md](./plan.md) — gate architecture and implementation phases.
-4. [data-model.md](./data-model.md) and [contracts/](./contracts/) — normative state and API rules.
-5. [tasks.md](./tasks.md) — dependency-ordered implementation units.
-6. [implementation.md](./implementation.md) — execution protocol and stop rules.
-7. [acceptance.md](./acceptance.md) — command/evidence matrix and current status.
-
-## 4. Verify the promoted Python 3.12 baseline
+## 3. Run no-simulator preflight
 
 ```bash
-python -m pip install --extra-index-url https://pypi.nvidia.com \
-  -r requirements/lock-py312.txt
-python -m pip install -e '.[test]'
 python -m pytest -q
-python scripts/check_isaacsim6_imports.py --deprecated-as-error
+python scripts/check_deprecated_isaac_imports.py
+python scripts/check_clean_checkout.py --help
 ```
 
-Set `OMNI_KIT_ACCEPT_EULA=YES` and configure assets as described in `docs/asset_setup.md`.
-The promoted `requirements/lock-py312.txt` must remain content-equivalent to the reviewed candidate
-lock except for documented path/comment normalization; the archived 5.1 files are reference-only.
+The repository intentionally tracks a future-RED inventory; use the repository’s clean-checkout runner for the authoritative classification instead of interpreting raw failure count alone.
 
-## 5. Reproduce migration checks
+## 4. Inspect active acceptance
 
 ```bash
-python scripts/check_clean_checkout.py --output outputs/evidence/G0/clean-checkout
-python scripts/review_gate.py --gate G0 \
-  --evidence outputs/evidence/G0/clean-checkout/manifest.json
-python scripts/run_isaacsim6_g1b.py --cycles 100 --steps 500 \
-  --output outputs/evidence/G-1B/repository-integration/report.json
-python scripts/build_isaacsim6_ab_report.py \
-  --output outputs/evidence/G-1B/repository-integration/ab-report.json
+sed -n '1,260p' specs/001-benchmark-reconstruction/acceptance.md
+sed -n '1,260p' specs/001-benchmark-reconstruction/tasks.md
 ```
 
-The runtime config forces CPU physics for Contact and GPU rendering on `cuda:0`. A request for GPU
-physics fails before native initialization with `GPU_CONTACT_NATIVE_INSTABILITY`.
+Historical `g1-*` investigation files are reference material. The active G1 requirements are in `acceptance.md`.
 
-Expected G-1B artifacts:
+## 5. Run a G1 pilot
 
-```text
-outputs/evidence/G-1B/repository-integration/
-├── report.json
-├── ab-report.json
-├── nodeid-regression.json
-└── penetration-supplement.json
-```
-
-The P0 and G-1A raw reports remain in the repository-external migration evidence root. Their
-reviewed runtime, asset, Contact, Camera, and stability summaries are referenced by G-1B; they are
-not promoted into formal Gate evidence.
-
-Set the root explicitly when reproducing those checkpoints:
+After T016–T031 are GREEN:
 
 ```bash
-export ISAACSIM6_MIGRATION_EVIDENCE_ROOT="$HOME/.local/share/isaac-tactile-libero/isaacsim6-migration"
+python scripts/run_g1_press_button_benchmark.py \
+  --config configs/tasks/press_button_physical.yaml \
+  --robot-config configs/robots/fr3_press_button_safe.yaml \
+  --mode pilot \
+  --episodes 1 \
+  --headless \
+  --output outputs/evidence/G1/press-button-pilot-<commit>
 ```
 
-Normative report locations are
-`$ISAACSIM6_MIGRATION_EVIDENCE_ROOT/P0/environment/report.json` and
-`$ISAACSIM6_MIGRATION_EVIDENCE_ROOT/G-1A/asset-api/report.json`.
+The runner must use CPU physics/MBP and record `driver_validation=UNVALIDATED` on driver 550.144.03.
 
-## 6. Evidence handling
+## 6. Run reset acceptance
 
-Generated results belong under an immutable run directory such as:
-
-```text
-outputs/evidence/<gate-id>/<run-id>/
-├── manifest.json
-├── command.log
-├── report.json
-└── artifacts/
+```bash
+python scripts/run_g1_press_button_benchmark.py \
+  --config configs/tasks/press_button_physical.yaml \
+  --robot-config configs/robots/fr3_press_button_safe.yaml \
+  --mode resets \
+  --reset-cycles 100 \
+  --headless \
+  --output outputs/evidence/G1/press-button-resets-<commit>
 ```
 
-Validate `manifest.json` against `contracts/evidence-manifest.schema.json`, store artifact hashes,
-and update the canonical gate status only after review. Changing semantic code/config/assets makes
-older evidence stale and returns the gate to `IN_PROGRESS`.
+## 7. Run bounded rollout
 
-Compatibility reports instead validate against `contracts/compatibility-report.schema.json` and
-may only report `PASS_SMOKE` or `BLOCKED` with claim class `runtime_smoke`; they never mutate the
-seven-Gate array.
+```bash
+python scripts/run_g1_press_button_benchmark.py \
+  --config configs/tasks/press_button_physical.yaml \
+  --robot-config configs/robots/fr3_press_button_safe.yaml \
+  --mode rollout \
+  --steps 500 \
+  --capture-media \
+  --headless \
+  --output outputs/evidence/G1/press-button-rollout-<commit>
+```
+
+## 8. Run formal G1 episodes
+
+Only after the pilot, reset, and rollout checks pass:
+
+```bash
+python scripts/run_g1_press_button_benchmark.py \
+  --config configs/tasks/press_button_physical.yaml \
+  --robot-config configs/robots/fr3_press_button_safe.yaml \
+  --mode episodes \
+  --episodes 10 \
+  --capture-media \
+  --headless \
+  --output outputs/evidence/G1/press-button-final-<commit>
+```
+
+Do not discard failures or rerun into the same output directory.
+
+## 9. Review evidence
+
+```bash
+sha256sum -c outputs/evidence/G1/press-button-final-<commit>/checksums.sha256
+python scripts/review_gate.py \
+  --gate G1 \
+  --evidence outputs/evidence/G1/press-button-final-<commit>
+```
+
+G1 passes only when all G1-01 through G1-09 in `acceptance.md` pass.
+
+## 10. Optional formal diagnostics
+
+Full-robot sweep/GJK/cooked-shape runners are optional. Run them only with an explicit bounded diagnostic budget and a separate `runtime_smoke` output. Their failure does not block the benchmark runner and their success does not pass G1.

@@ -1,73 +1,59 @@
-# Single Task Real Backend Integration Plan
+# Single-Task Isaac Sim Backend Plan
 
-This document plans the first real-backend smoke path only. It does not connect
-Isaac Sim or Lightwheel in the current repository state.
+“Real backend” in this document means the real Isaac Sim runtime, not real robot hardware.
 
-## First Task Choice
+## Goal
 
-`PressButton` is the default first task for a real backend smoke.
+Accept FR3 PressButton as the first paper-benchmark task.
 
-`PressButton` is a better first smoke than `PegInsert` because it can be
-visualized with a simple table, one robot, one button object, a fixed camera,
-and a binary success condition. It has contact, but the scene can be debugged
-without tight insertion tolerances, precise hole geometry, or multi-stage
-assembly failure modes. This makes it suitable for validating launch,
-rendering, camera placement, robot visibility, object placement, and a minimal
-control loop.
+## Required path
 
-`PegInsert` remains important, but it belongs in the later tactile-assembly
-phase after visual streaming, robot articulation, contact reporting, and
-tactile read paths have been proven on a simpler single-contact task.
+```text
+make_env
+→ reset
+→ observe
+→ bounded 7D actions
+→ task-state press
+→ task-state release
+→ safe retract
+→ close
+```
 
-## Minimal Goal
+## Implementation priorities
 
-The next runtime stage should let a developer open the Isaac Sim WebRTC
-Streaming Client and see a minimal `PressButton` scene with:
+1. One deterministic task-ready reset.
+2. One stable public control path.
+3. Movable button and task-state success.
+4. Contact/raw Contact truth.
+5. RGB/depth evidence.
+6. Failure-sample retention.
+7. Safe retract and zero post-abort actuation.
+8. One evidence writer and review path.
 
-- one FR3-style robot placeholder or configured robot asset;
-- one button object on a stable support surface;
-- a camera view that shows the robot end effector and button;
-- basic lighting;
-- physics enabled only enough to make the button scene coherent;
-- a planned reset position for robot and button;
-- a planned step path that accepts the existing 7D action schema;
-- a planned success metric based on button displacement or activation state.
+## Acceptance runs
 
-This visual smoke is not a benchmark result and must not be reported as a paper
-metric.
+- Pilot: 1 episode, evidence plumbing only.
+- Lifecycle: 100 resets.
+- Stability: 500 rendered steps.
+- Formal: 10 consecutive episodes.
 
-## Scene Components
+## Stop conditions
 
-- Scene: Isaac Sim native stage, table/ground plane, lighting, camera, and
-  optional simple primitive button.
-- Robot: planned `fr3_tactile` robot path. If a repository-local USD is not
-  available, the runtime stage should use a configured local Isaac Sim/Isaac Lab
-  robot asset path rather than vendoring a large asset.
-- Button asset: start with Isaac Sim primitive geometry where possible. If a
-  Lightwheel button asset is used, it must pass `assets/asset_manifest.csv` and
-  provenance-gate checks before runtime use.
-- Camera: a fixed third-person visual-smoke camera is enough for the first
-  stage. Dataset camera schema remains unchanged.
-- Lighting: Isaac Sim native dome or area light.
-- Physics: Isaac Sim native physics only in the runtime stage; current code does
-  not create a `SimulationApp`.
-- Reset: planned robot home pose, button initial pose, and deterministic seed.
-- Step: future adapter accepts 7D action and maps it to the robot control API.
-- Success metric: planned binary button activation, logged separately from mock
-  metric code until validated.
+Stop and fix:
 
-## Asset Sources
+- software/infrastructure exception;
+- missing or malformed evidence;
+- stale handles;
+- NaN/Inf;
+- budget violation;
+- sustained penetration;
+- real unsafe Contact/collision;
+- post-abort actuation;
+- task-state press/release failure;
+- safe-retract failure.
 
-Isaac Sim primitive objects can be recorded as `isaacsim_builtin` provenance.
-Lightwheel / LW-BenchHub assets are optional compatibility targets and must keep
-their upstream license, URL, attribution, modification status, and
-redistribution status. This project is not a Lightwheel fork.
+Do not stop the benchmark because an optional full-sweep/cooked-shape diagnostic is incomplete unless the same issue appears in the executed runtime safety checks.
 
-## Non-Goals
+## Pass result
 
-- no 30-task expansion;
-- no real Lightwheel runtime connection in this phase;
-- no dataset collection from Isaac Sim;
-- no training;
-- no claim of real benchmark performance;
-- no replacement of the stable action, observation, tactile, or dataset schema.
+G1 `PASS_BENCHMARK` supports only one accepted simulated PressButton runtime. It unlocks G2 public contract work.

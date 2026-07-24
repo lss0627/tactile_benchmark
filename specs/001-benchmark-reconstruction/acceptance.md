@@ -1,284 +1,225 @@
-# Acceptance Gates and Evidence Matrix
+# Acceptance Gates
 
-**Feature**: `001-benchmark-reconstruction`
-**Snapshot date**: 2026-07-11
-**Canonical status source**: Validated gate manifests; this file is a human-readable projection.
+This document defines the evidence required to advance the benchmark. It supersedes the previous interpretation that made full-robot continuous-sweep or private PhysX geometry proofs mandatory for G1.
 
-## Current status
+## Global Rules
 
-| Scope | Status | Claim class | Reason |
-|---|---|---|---|
-| Spec Kit documentation package | `PASS_SMOKE` | `dry_run` | 38 FR, 17 SC, 25 scenarios, and 138 tasks pass documentation consistency/format validation; no implementation gate is implied |
-| Isaac Sim 6 P0/G-1A/G-1B migration | `PASS_SMOKE` | `runtime_smoke` | 6.0.1 on Python 3.12; 100 Contact cycles, 100 repository resets, 500-step rollout, RGB/depth and A/B checks passed on unvalidated driver |
-| G0 Repository integrity | `PASS_BENCHMARK` | `benchmark` | Clean revision recorded by the current manifest was exported, wheel-installed, and passed the full no-simulator suite; manifest review/freshness passed |
-| G1 Physical PressButton safety | `BLOCKED` | `physical_runtime` | Fresh runtime run `single-cadence-fix-4151837a15c1` aborted episode 0 after 182 actions on `PER_STEP_MOTION_LIMIT`; 10 consecutive cycles were not started |
-| G2 Unified real backend | `NOT_STARTED` | `physical_runtime` | The 6.0.1 compatibility path exists, but the accepted G1 task/controller/safety path is not yet integrated as G2 evidence |
-| G3 Truthful tactile | `NOT_STARTED` | `physical_runtime` | CPU Contact migration smoke exists; accepted calibrated force-vector/wrench or visuotactile evidence does not |
-| G4 Task/data/replay | `NOT_STARTED` | `dataset` | No accepted physical task/data/replay chain |
-| G5 Evaluation | `NOT_STARTED` | `evaluation` | Depends on G4 |
-| G6 Baselines/release | `NOT_STARTED` | `benchmark`/`release` | Depends on G5 and scope-appropriate accepted data/tasks |
+1. Gate status is one of `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `PASS_SMOKE`, or `PASS_BENCHMARK`.
+2. A Gate may pass only with fresh evidence tied to the evidence-producing commit.
+3. Historical failed evidence remains failed and immutable.
+4. A later Gate cannot repair or imply passage of an earlier Gate.
+5. Development evidence on driver `550.144.03` records `driver_validation=UNVALIDATED`.
+6. Reference-driver revalidation is required at G6, not for G1 development acceptance.
+7. Optional diagnostics cannot elevate a Gate and cannot override runtime Contact/collision facts.
+8. Any unavailable force vector or wrench remains masked false.
 
-Historical mock and FR3 diagnostic artifacts remain `PASS_SMOKE` evidence only. They do not check
-any physical/data/evaluation item below.
+## G0 — Repository Integrity
 
-## Documentation package acceptance
+### PASS_BENCHMARK requirements
 
-- [x] DA-01 `spec.md` defines scope, US0-US5, edge cases, FR-001-FR-038, entities,
-  SC-001-SC-017, assumptions, and claim boundary.
-- [x] DA-02 `research.md` separates audited evidence from missing physical/benchmark proof and records
-  alternatives for every major design decision.
-- [x] DA-03 `plan.md` passes both constitution checks and defines G0-G6 ordering.
-- [x] DA-04 `data-model.md` and `contracts/` define runtime, gate, evidence, and lifecycle semantics.
-- [x] DA-05 `tasks.md` uses dependency-ordered test-first tasks with exact paths and coverage index.
-- [x] DA-06 `implementation.md` defines execution, stop, evidence, and status protocols.
-- [x] DA-07 Spec Kit analysis reports 100% FR/task coverage and zero CRITICAL inconsistency.
-- [x] DA-08 Placeholder, JSON, prerequisite, Markdown diff, and task-format checks all pass.
+- Clean tracked checkout and deterministic source digest.
+- Python 3.12 dependency inputs and Isaac Sim 6.0.1 runtime instructions.
+- Complete current-GREEN, portable-GREEN, external-evidence, and intentional future-RED inventories.
+- Asset/config/source hashes and immutable evidence manifest.
+- No forbidden first-party `omni.isaac.*`, dynamic-control, or deprecated cutover imports.
+- Clean-checkout review with no unexpected test failures.
 
-## P0/G-1A/G-1B — Isaac Sim 6.0.1 compatibility and cutover
+### Current status
 
-**Requirements**: FR-029-FR-038; SC-012-SC-017; AS-US0-1/2/3/4/5
+`PASS_BENCHMARK`. This supports only repository-integrity claims.
 
-**Tasks**: T001-T016, T041-T054
+## G1 — PressButton Benchmark Runtime
 
-- [x] MIG-01 The 5.1/Python 3.11/reference inventory is preserved and driver 550.144.03 is unchanged.
-- [x] MIG-02 P0 starts 6.0.1/Python 3.12 and completes the minimal 100-step check.
-- [x] MIG-03 G-1A resolves required assets and validates FR3 joints, limits, pose, and frames.
-- [x] MIG-04 CPU Contact passes 100 lifecycle cycles with ready/onset/release/debounce truth checks.
-- [x] MIG-05 RTX RGB/depth passes dtype, shape, update, clipping, render-tick, and skew checks.
-- [x] MIG-06 G-1A/G-1B complete bounded 500-step stability without persistent penetration.
-- [x] MIG-07 G-1B passes 100 public repository resets and preserves action/observation contracts.
-- [x] MIG-08 First-party import scan reports zero removed, dynamic-control, or deprecated imports.
-- [x] MIG-09 Candidate lock is promoted only after G0/G-1B; prior 5.1 inputs are archived.
-- [x] MIG-10 Reports remain `PASS_SMOKE/runtime_smoke` on `UNVALIDATED` driver; native GPU Contact
-  and release claims remain blocked pending their required revalidation.
+G1 accepts one physics-backed simulated manipulation task. It is not a formal robot-safety certificate.
 
-**Target commands**:
+### G1-01 Runtime identity
 
-```bash
-python scripts/run_isaacsim6_g1b.py --cycles 100 --steps 500 \
-  --output outputs/evidence/G-1B/repository-integration/report.json
-python scripts/check_isaacsim6_imports.py --deprecated-as-error
+- Isaac Sim `6.0.1`.
+- Python `3.12.x`.
+- CPU physics, MBP broadphase, GPU dynamics disabled.
+- Rendering device and driver recorded.
+- `driver_validation=UNVALIDATED` is permitted for development evidence.
+
+### G1-02 Public path
+
+The following complete without bypassing the public contract:
+
+```text
+make_env
+→ reset
+→ 7D actions
+→ observation/info
+→ press
+→ release
+→ safe retract
+→ close
 ```
 
-**Required evidence**: repository-external P0/G-1A raw reports plus
-`outputs/evidence/G-1B/repository-integration/{report.json,ab-report.json,nodeid-regression.json,penetration-supplement.json}`
-and the promoted/archive dependency inputs.
+### G1-03 Task truth
 
-## G0 — Repository integrity
+- Button is a movable physics mechanism.
+- Press success derives from button travel/state.
+- Release derives from the mechanism state.
+- Geometric proximity, elapsed actions, TCP distance, or controller intent cannot serve as benchmark success.
 
-**Requirements**: FR-001-FR-005, FR-011, FR-026-FR-028; SC-001, SC-002; AS-US1-1/2/3
-**Tasks**: T017-T040
+### G1-04 Runtime guards
 
-- [x] G0-01 `isaac_tactile_libero/datasets/` source and all required configs are tracked and not ignored.
-- [x] G0-02 Generated datasets/outputs remain excluded without hiding code or mandatory runtime inputs.
-- [x] G0-03 No mandatory configuration or command contains a developer-specific absolute path.
-- [x] G0-04 External assets have configurable resolution, version, provenance, license, and diagnostics.
-- [x] G0-05 An isolated checkout builds/installs and passes the complete no-simulator suite.
-- [x] G0-06 Evidence identifies a clean revision, environment lock, command, hashes, and current configs.
-- [x] G0-07 Canonical status and documentation match the reviewed manifest.
+The accepted path enforces:
 
-**Target command**:
+- finite observations, actions, targets, and task state;
+- joint and workspace limits;
+- exact configured per-step motion guard;
+- action/step/wall-time budgets;
+- collision and sustained-penetration monitoring;
+- immediate abort and zero post-abort actuation;
+- safe retract result.
 
-```bash
-python scripts/check_clean_checkout.py --output outputs/evidence/G0/clean-checkout
-python scripts/review_gate.py --gate G0 \
-  --evidence outputs/evidence/G0/clean-checkout/manifest.json
-```
+### G1-05 Contact and force truth
 
-**Required evidence**: `outputs/evidence/G0/clean-checkout/{manifest.json,report.json,command.log,checksums.sha256}`.
+- Contact/raw Contact readings retain validity, freshness, body-pair, count, time, and physics-step provenance when available.
+- A valid raw Contact or collision is not suppressed because scalar `in_contact` is false.
+- Scalar force magnitude remains scalar.
+- `force_vector_valid=false` and `wrench_valid=false` unless separately validated.
+- Raw impulse is not used as force in G1.
 
-## G1 — Safe physical PressButton
+### G1-06 Reset/lifecycle
 
-**Requirements**: FR-006-FR-011, FR-017, FR-028; SC-003, SC-004; AS-US2-1/2/3/4
-**Tasks**: T055-T070
+Run 100 complete stop/reset/play/close or equivalent approved lifecycle cycles:
 
-- [ ] G1-01 Button has physical travel/limits and observable rest, pressed, released, and reset states.
-- [x] G1-02 Success uses observed button state held for the declared duration, never TCP/command/steps alone.
-- [x] G1-03 Approach, press, hold, release, and retract transitions are explicit and bounded.
-- [x] G1-04 Every workspace/joint/velocity/direction/penetration/step/drift/finite rule has pass and abort tests.
-- [x] G1-05 Step and wall-time budgets are hard termination conditions.
-- [x] G1-06 Aborts stop actuation; completion requires safe release/retract and reset evidence.
-- [x] G1-07 Missing force leaves force/wrench invalid; geometry never fabricates tactile values.
-- [ ] G1-08 Ten consecutive physical episodes have 100% release/reset and zero safety violations.
-- [ ] G1-09 Evidence is fresh for current controller, safety config, task, robot, sensor, and asset versions.
-- [ ] G1-10 An analytic-Cylinder representation record retains raw USD/query poses, proves only
-  the exact source/version-bound Z-to-X mapping, reruns the unchanged strict placement comparator
-  after normalization, keeps backend/narrowphase authority false, and never overrides runtime
-  Contact/collision rejection.
+- readiness timeout is bounded;
+- zero invalid-after-ready sensors;
+- zero stale handles;
+- zero unresolved articulation/button state;
+- zero cleanup failures;
+- every reset restores the declared initial task state.
 
-**Target command**:
+### G1-07 Bounded rollout
 
-```bash
-python scripts/run_fr3_press_button_press_smoke.py \
-  --config configs/tasks/press_button_physical.yaml --episodes 10 \
-  --output outputs/evidence/G1/physical-press-button
-```
+Run 500 physics steps through the public environment while rendering required camera frames:
 
-**Required evidence**: manifest, task-state traces, requested/executed actions, safety report, episode
-records, contact/force provenance, command log, and reviewable video/screenshots.
+- within step and wall-time budgets;
+- zero NaN/Inf;
+- zero sustained penetration beyond the configured absolute limit;
+- zero stale sensor handles;
+- zero post-abort actuation;
+- RGB/depth contract and timing pass.
 
-**Current evidence**:
-`outputs/evidence/G1/single-cadence-fix-4151837a15c1/manifest.json` is a fresh
-`BLOCKED/physical_runtime` manifest for its clean evidence-producing runtime commit. Episode 0
-recorded 182 requested/executed actions, button release/reset, CPU PhysX (`MBP`, GPU dynamics
-disabled), false force-vector/wrench validity, and zero post-abort actuation. The structured safety
-event is `PER_STEP_MOTION_LIMIT`, observed `0.0005005338 m` versus limit `0.0005 m`. Blockers are
-`G1_REQUIRES_10_CONSECUTIVE_EPISODES`, `G1_EPISODE_0_OBSERVED_PRESS_FAILED`,
-`G1_EPISODE_0_SAFE_RETRACT_FAILED`, `G1_EPISODE_0_SAFETY_EVENT`,
-`REFERENCE_DRIVER_REVALIDATION_REQUIRED`. G1-01, G1-08, and final-HEAD G1-09 remain unaccepted.
+### G1-08 Consecutive episodes
 
-## G2 — Unified real backend
+Run 10 consecutive episodes from fresh resets:
 
-**Requirements**: FR-012-FR-014, FR-028; SC-005; AS-US3-1/2/3
-**Tasks**: T071-T081, T084-T086
+- 10/10 observed presses;
+- 10/10 releases;
+- 10/10 safe retracts;
+- no discarded failures;
+- no safety-event acceptance;
+- budgets respected;
+- every episode has complete sample and summary records.
 
-- [ ] G2-01 Public factory selects the real FR3 backend explicitly and never silently falls back.
-- [ ] G2-02 Reset/step/close, termination, observation, info, seeding, and clipping follow one contract.
-- [ ] G2-03 Intended joints/limits/default pose and EE/gripper/camera/tactile frames match introspection.
-- [ ] G2-04 All 7D components have declared units/frame/scaling and real or explicitly rejected semantics.
-- [ ] G2-05 Requested and executed actions are distinguishable in episode records.
-- [ ] G2-06 100 resets and one bounded 500-step rollout have no NaN, safety violation, or persistent penetration.
-- [ ] G2-07 Existing mock/pusher/placeholder regression paths still pass and remain correctly labeled.
+### G1-09 Media and evidence
 
-**Target command**:
+Evidence includes:
 
-```bash
-python scripts/check_real_backend_stability.py \
-  --config configs/backend/isaacsim_fr3_press_button.yaml \
-  --resets 100 --steps 500 --output outputs/evidence/G2/stability
-```
+- complete machine-readable artifacts;
+- configuration, task, asset, source, and runtime hashes;
+- reset/rollout/episode counts;
+- Contact and validity-mask summaries;
+- RGB/depth timing;
+- video or frame sequence showing reset, approach, press, release, and retract;
+- checksums and a written review;
+- fresh Gate review against the evidence-producing commit.
 
-**Required evidence**: binding/introspection, contract tests, lifecycle report, reset/rollout JSONL,
-safety report, manifest, logs, and hashes.
+### G1 PASS_BENCHMARK decision
 
-## G3 — Truthful tactile capability
+All G1-01 through G1-09 must pass. The result supports only a single-task simulated benchmark-runtime claim.
 
-**Requirements**: FR-006, FR-015, FR-028; AS-US2-3, AS-US3-4
-**Tasks**: T060, T068, T075, T082-T083, T087
+### Explicit non-requirements
 
-- [ ] G3-01 Stable shapes and capability/validity masks cover absent, delayed, dropped, saturated, and invalid states.
-- [ ] G3-02 Valid force/wrench has an accepted source, units, frame, transform, calibration version, and timestamp.
-- [ ] G3-03 Sensor synchronization/skew and dropout behavior are measured and bounded.
-- [ ] G3-04 No independent probe, displacement, proximity, success, or TCP field is copied into tactile force.
-- [ ] G3-05 Unavailable tactile hardware/runtime produces `BLOCKED` or capability false, never a synthetic pass.
+The following do not block G1:
 
-**Target command**: `python scripts/review_gate.py --gate G3 --evidence outputs/evidence/G3/tactile/manifest.json`
+- complete articulated continuous-sweep certification;
+- exhaustive GJK on every collider pair/action;
+- private PhysX cooked-shape authority;
+- narrow-phase equivalence proofs;
+- a formal safety proof for unexecuted trajectories;
+- native GPU Contact.
 
-**Required evidence**: capability report, calibration/synchronization report, negative no-fake-force
-tests, sampled sensor records, manifest, logs, and hashes.
+These may run as bounded `runtime_smoke` diagnostics. They must fail closed within their own report but cannot block the benchmark path.
 
-## G4 — Accepted task, dataset, and replay
+### Current status
 
-**Requirements**: FR-016-FR-020, FR-028; SC-006, SC-009; AS-US4-1/2/3/5
-**Tasks**: T088-T101 and, for core-suite acceptance, T110-T117
+`BLOCKED`, with active blockers:
 
-- [ ] G4-01 PressButton TaskCard is complete, versioned, and linked to physical task/safety evidence.
-- [ ] G4-02 Formal reward/success/termination use task state/actions, not deterministic step count.
-- [ ] G4-03 Writer rejects duplicate IDs atomically and stores complete metadata/provenance/checksums.
-- [ ] G4-04 Validator checks keys, lengths, shapes, finite values, timestamps/skew, masks, drops, checksums, splits, and task fields.
-- [ ] G4-05 At least 10 physical episodes pass validation with zero integrity errors.
-- [ ] G4-06 Replay restores task/simulator state and re-executes actions through the accepted controller.
-- [ ] G4-07 Physical replay success is at least 90% and state/metric tolerances are reported.
-- [ ] G4-08 Smoke HDF5 stays labeled diagnostic and is never renamed into the formal dataset.
-- [ ] G4-09 Five-task/core and 20-30-task expansion guards enforce the required acceptance order.
+- `G1_RESET_STABILITY_NOT_PROVEN`
+- `G1_BOUNDED_ROLLOUT_NOT_PROVEN`
+- `G1_REQUIRES_10_CONSECUTIVE_EPISODES`
+- `G1_MEDIA_EVIDENCE_NOT_PRODUCED`
 
-**Target commands**:
+Historical continuous-sweep/performance/geometry-authority blockers remain recorded but are not active G1 acceptance blockers.
 
-```bash
-python scripts/validate_dataset.py --manifest outputs/evidence/G4/mini-dataset/manifest.json
-python scripts/replay_dataset.py \
-  --manifest outputs/evidence/G4/mini-dataset/manifest.json \
-  --output outputs/evidence/G4/replay
-```
+## G2 — Unified Environment Contract
 
-**Required evidence**: accepted TaskCard/manifest, HDF5 plus checksum manifest, dataset card,
-validation report, per-episode replay report, task/robot/sensor/config hashes, and split audit.
+### PASS_BENCHMARK requirements
 
-## G5 — Evaluation protocol
+- Public factory selects supported backends by tracked configuration.
+- Reset, step, observation/info, termination, and close contracts are stable.
+- The 7D action has identical meaning across supported paths.
+- Shape, dtype, frame, timestamp, units, and masks are snapshotted.
+- Runtime imports remain lazy for no-simulator use.
+- Seeds reproduce reset distributions and scripted outcomes within declared tolerances.
+- Contract tests run from a clean checkout.
 
-**Requirements**: FR-021, FR-022, FR-028; SC-007; AS-US4-4
-**Tasks**: T102-T109
+## G3 — Tactile Capability
 
-- [ ] G5-01 Config, dataset, task, sensor, policy/checkpoint, seeds, and hashes are frozen.
-- [ ] G5-02 Per-episode JSONL and per-task/per-suite/aggregate/failure artifacts are complete.
-- [ ] G5-03 Suite scores are unweighted across tasks and missing metrics follow declared rules.
-- [ ] G5-04 Seed-level confidence intervals, uncertainty, and robustness splits are reported.
-- [ ] G5-05 Aggregates reproduce exactly from immutable episode records.
-- [ ] G5-06 Logs and optional media remain linked without replacing numeric evidence.
+### PASS_BENCHMARK requirements
 
-**Target commands**:
+- Capability negotiation distinguishes native, derived, unavailable, and mock fields.
+- Tactile observation shape, dtype, frame, units, time, and masks are versioned.
+- Reset lifecycle is validated.
+- Contact/tactile synchronization remains within the declared skew.
+- No scalar or geometric proxy is mislabeled as vector force or wrench.
 
-```bash
-python scripts/evaluate.py --config configs/eval/press_button_physical_mini_v1.yaml \
-  --output outputs/evidence/G5/press-button-mini
-python scripts/recompute_metrics.py \
-  --episodes outputs/evidence/G5/press-button-mini/episodes.jsonl \
-  --output outputs/evidence/G5/press-button-mini/recomputed
-```
+## G4 — Task Suite, Dataset, and Replay
 
-**Required evidence**: frozen config, episode JSONL, task/suite/aggregate/failure outputs,
-recomputed comparison, uncertainty, manifest, logs, hashes, and optional media index.
+### PASS_BENCHMARK requirements
 
-## G6 — Baselines and release
+- Eight task cards pass schema and acceptance checks.
+- Assets, licenses, initial states, language, success, budgets, and sensors are declared.
+- Dataset episodes pass schema, hash, finite-value, mask, and duplicate checks.
+- At least 50 accepted demonstrations per task are collected or a documented G4 review approves a justified alternative.
+- Simulator replay reports outcome agreement and first divergence.
+- Dataset card and provenance are complete.
 
-**Requirements**: FR-023-FR-025, FR-028; SC-010, SC-011; AS-US5-1/2/3/4
-**Tasks**: T118-T131
+## G5 — Evaluation
 
-- [ ] G6-01 Trainable baselines perform real parameter updates for declared modalities.
-- [ ] G6-02 Normalization uses train only; checkpoint selection uses train/validation only.
-- [ ] G6-03 Comparisons share frozen splits, action space, budget, seeds, and declared encoders/fusion.
-- [ ] G6-04 Parameter counts, compute, hashes, and privileged inputs are disclosed.
-- [ ] G6-05 Skeleton/pipeline-smoke outputs are explicitly non-results.
-- [ ] G6-06 License, citation, lock, CI, cards, checksums, provenance, and known issues are complete.
-- [ ] G6-07 An isolated reviewer installs, validates data, replays one episode, evaluates one checkpoint, and regenerates a mini table.
-- [ ] G6-08 Release archive contents and referenced external artifacts match their hashes.
+### PASS_BENCHMARK requirements
 
-**Target commands**:
+- Fixed task/data splits and declared seeds.
+- Per-episode results are complete.
+- Task and aggregate success, runtime validity, tactile/contact validity, and efficiency are reported.
+- Failure taxonomies do not collapse runtime-invalid episodes into task failures or successes.
+- Aggregate statistics include uncertainty.
+- Tables and figures regenerate from machine-readable results.
 
-```bash
-python scripts/audit_release.py --output outputs/evidence/G6/release-review
-python scripts/build_release.py --output outputs/release
-```
+## G6 — Baselines and Release
 
-**Required evidence**: training/fairness manifests, checkpoints, evaluation results, release audit,
-reviewer log, package/archive hashes, cards, environment lock, CI status, and known-issues record.
+### PASS_BENCHMARK requirements
 
-## Identifier traceability index
+- Scripted/oracle reference, visual baseline, and visual-tactile baseline use matched conditions.
+- Three seeds and the declared episode count are complete, or a documented statistical review approves another design.
+- Code, locks, task cards, dataset card, evaluation results, evidence, licenses, and limitations are packaged.
+- Final results are rerun on a current NVIDIA reference/validated driver.
+- If the reference-driver rerun is unavailable, G6 remains blocked and the development results retain an explicit non-reference limitation.
+- Paper claims do not exceed completed Gates.
 
-This compact index makes every normative identifier directly searchable in the acceptance document.
-Detailed task mappings live in `tasks.md`.
+## Optional Diagnostic Policy
 
-| Identifiers | Acceptance gate |
-|---|---|
-| FR-001, FR-002, FR-003, FR-004, FR-005, FR-011, FR-026, FR-027 | G0 |
-| FR-006, FR-007, FR-008, FR-009, FR-010, FR-017 | G1 |
-| FR-012, FR-013, FR-014 | G2 |
-| FR-015 | G3 |
-| FR-016, FR-018, FR-019, FR-020 | G4 |
-| FR-021, FR-022 | G5 |
-| FR-023, FR-024, FR-025 | G6 |
-| FR-028 | G0-G6 predecessor enforcement and Final claim review |
-| FR-029, FR-030, FR-031, FR-032, FR-033, FR-034, FR-035, FR-036, FR-037, FR-038 | P0/G-1A/G-1B compatibility and cutover |
-| SC-001, SC-002 | G0 |
-| SC-003, SC-004 | G1 |
-| SC-005 | G2 |
-| SC-006, SC-009 | G4 and core-suite expansion |
-| SC-007 | G5 |
-| SC-008 | Documentation package and Final claim review |
-| SC-010, SC-011 | G6 and Final claim review |
-| SC-012, SC-013, SC-014, SC-015, SC-016, SC-017 | P0/G-1A/G-1B compatibility and cutover |
-| AS-US0-1, AS-US0-2, AS-US0-3, AS-US0-4, AS-US0-5 | P0/G-1A/G-1B compatibility and cutover |
-| AS-US1-1, AS-US1-2, AS-US1-3 | G0 |
-| AS-US2-1, AS-US2-2, AS-US2-3, AS-US2-4 | G1/G3 |
-| AS-US3-1, AS-US3-2, AS-US3-3, AS-US3-4 | G2/G3 |
-| AS-US4-1, AS-US4-2, AS-US4-3, AS-US4-4, AS-US4-5 | G4/G5 |
-| AS-US5-1, AS-US5-2, AS-US5-3, AS-US5-4 | G6 |
+Optional formal diagnostics:
 
-## Final claim review
-
-- [ ] FC-01 Every checked item resolves to a current, schema-valid, hash-valid manifest.
-- [ ] FC-02 Every FR, SC, and AS identifier maps to task(s), command(s), and artifact(s).
-- [ ] FC-03 No CRITICAL Spec Kit inconsistency or unexplained regression remains.
-- [ ] FC-04 Downstream gates returned to `IN_PROGRESS` after any semantic upstream change.
-- [ ] FC-05 Public status uses the weakest accurate claim class and names every remaining blocker.
-- [ ] FC-06 `PASS_BENCHMARK` is used only for clean-revision evidence satisfying the complete required gate chain.
+- have their own bounded work/time budgets;
+- write progress and failure evidence before shutdown;
+- use `runtime_smoke`;
+- do not alter benchmark action/task thresholds;
+- do not authorize a command cap or task success;
+- do not turn missing evidence into zero;
+- do not enter the required G1→G6 dependency graph unless the specification is explicitly revised.

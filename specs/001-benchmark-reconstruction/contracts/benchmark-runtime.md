@@ -1,87 +1,114 @@
 # Benchmark Runtime Contract
 
-**Contract version**: `0.1.0` (preserved unless implementation proves a breaking change necessary)
+## Public lifecycle
 
-## Development runtime baseline
+```python
+env = make_env(config)
+observation, info = env.reset(seed=seed)
+observation, reward, terminated, truncated, info = env.step(action_7d)
+env.close()
+```
 
-The active development runtime is Isaac Sim 6.0.1 on Python 3.12. Driver 550.144.03 remains
-unchanged and is reported as `UNVALIDATED`; release-level physical/data/replay/evaluation evidence
-must be rerun on a current reference/validated driver. Isaac Sim 5.1/Python 3.11 is archived as a
-reference baseline only.
-
-First-party runtime code MUST NOT import `omni.isaac.*`, `omni.isaac.dynamic_control`, or deprecated
-`isaacsim.core.api`, `isaacsim.core.prims`, and `isaacsim.core.utils` after cutover. Contact uses CPU
-physics while RTX Camera may use GPU rendering. Native GPU-physics Contact fails explicitly with
-`GPU_CONTACT_NATIVE_INSTABILITY`.
-
-## Factory
-
-`make_env(config)` MUST create mock, diagnostic, and accepted real backends through one entry point.
-It MUST reject unknown backends, incompatible task/backend pairs, unresolved assets, and failed
-joint/frame introspection. It MUST NOT silently fall back from real to mock or placeholder.
-
-## Lifecycle
-
-- `reset(seed=...) -> (observation, info)` initializes robot/task/sensors and reports capability.
-- `step(action) -> (observation, reward, terminated, truncated, info)` executes one bounded control
-  interval and reports the executed action, task state, safety state, and termination reason.
-- `close()` is idempotent and leaves no active actuation.
-- Calls after `close()` or `step()` before `reset()` fail explicitly.
+`close()` is safe to call after success, failure, abort, or partial initialization.
 
 ## Action
 
-The public action has seven finite components:
-
 ```text
-[dx, dy, dz, dRx, dRy, dRz, gripper]
+shape: [7]
+dtype: float32 or float64 at input; normalized internally
+fields:
+  0:3 translation delta
+  3:6 rotation delta
+  6   gripper command
 ```
 
-Units, reference frame, rotation representation, scaling, clipping, control interval, and gripper
-semantics MUST be declared by configuration and returned in reset metadata. The environment records
-both requested and executed actions. Unsupported components cause a structured error or require an
-explicit diagnostic capability profile; they are never silently discarded by a benchmark backend.
+Requirements:
+
+- exact length seven;
+- finite;
+- declared frame and units;
+- bounded before execution;
+- requested and executed values retained;
+- invalid input fails before actuation.
 
 ## Observation
 
-All modes return versioned, stable-shape fields for robot state, task state, vision references, and
-tactile modalities. Every optional modality has distinct capability and timestep validity masks.
-Missing, dropped, delayed, saturated, and invalid are separate states.
+Required groups:
 
-Force/wrench values are valid only when metadata declares source, units, coordinate frame,
-calibration version, timestamp/clock, and transformation. TCP pose, distance, displacement, success,
-or commanded motion MUST NOT populate force/wrench fields.
+- robot proprioception;
+- task state;
+- RGB;
+- depth;
+- Contact/raw Contact;
+- optional tactile;
+- timestamps and validity masks.
 
-Contact scalar magnitude and raw position/normal/impulse do not establish a validated
-three-dimensional force or six-dimensional wrench. The sensor may report a valid no-contact sample,
-but `in_contact` must be false, scalar magnitude must be at most `1.0e-4`, and public force/wrench
-masks must remain false. Sensor readiness and release use the windows defined by FR-035.
+Every field has a versioned shape, dtype, units, frame, source, and validity rule.
 
-RGB is `uint8`; depth is `float32` and aligned to RGB. Frames must update on real rendering ticks,
-valid pixels must be finite and inside the clipping range, background behavior must be declared,
-and capture skew must not exceed one camera tick.
+## PressButton success
 
-## Task outcome
+```text
+success = observed_button_press
+       && observed_button_release
+       && safe_retract
+       && runtime_valid
+```
 
-PressButton success is based on observed movable-button travel satisfying the task-card threshold
-for the required duration. Completion also requires safe release/retract and declared reset/release
-state. Elapsed steps may truncate an episode but may not create success.
+No geometric fallback is allowed for benchmark evidence.
 
-## Safety and termination
+## Runtime safety
 
-Every real motion interval checks finite values, workspace, joint position/velocity, direction,
-collision/penetration, per-step and cumulative motion, operator step budget, and wall time. A failed
-check stops actuation and terminates with `safety_abort`. Other canonical reasons are `success`,
-`task_failure`, `step_budget`, `wall_time_budget`, `sensor_invalid`, `controller_failure`, and
-`operator_abort`.
+Mandatory guards:
 
-## Info requirements
+- finite values;
+- joint/workspace limits;
+- configured exact per-step motion limit;
+- collision and sustained-penetration checks;
+- action/step/wall-time budgets;
+- abort latch;
+- zero post-abort actuation;
+- safe retract.
 
-`info` MUST include contract/backend/task/robot/sensor versions, capability, requested/executed
-action, task-state source, success source, safety status/events, claim class, and evidence run ID.
-Diagnostic backends MUST identify why they cannot support a benchmark claim.
+## Contact truth
 
-## Compatibility
+- Raw Contact/collision evidence is authoritative when valid.
+- Scalar force remains scalar.
+- Vector force and wrench remain unavailable unless separately validated.
+- Raw impulse is not force.
+- A failed sample is retained before abort whenever it was observed.
 
-Patch/minor additions preserve readers. Removing fields, changing shape/unit/frame/action semantics,
-or changing task success requires the appropriate schema/task version, migration note, fixtures, and
-contract tests.
+## Reset contract
+
+A ready reset establishes:
+
+- valid articulation and joint order;
+- declared initial task state;
+- live Contact/camera/tactile handles within the readiness window;
+- deterministic seed provenance;
+- no stale handle from the previous lifecycle.
+
+## Evidence contract
+
+The runner records:
+
+- runtime/config/task/asset/source identity;
+- reset, rollout, and episode records;
+- requested/executed actions;
+- observations and masks;
+- task-state success;
+- safety and failure codes;
+- camera timing and media;
+- checksums and freshness.
+
+Evidence is written before the unique simulator shutdown.
+
+## Optional diagnostic contract
+
+Formal motion/geometry diagnostics:
+
+- are opt-in;
+- use bounded time/work;
+- use `runtime_smoke`;
+- cannot alter public action or success;
+- cannot override runtime Contact/collision;
+- cannot pass or block G1 by themselves.

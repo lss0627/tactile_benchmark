@@ -1,181 +1,206 @@
-# Data Model and State Transitions
+# Data Model
 
-**Feature**: `001-benchmark-reconstruction`
-**Schema family**: `benchmark-reconstruction/1.0.0`
+## 1. TaskCard
 
-## 0. CompatibilityCheckpoint and CompatibilityReport
+Required fields:
 
-P0, G-1A, and G-1B are migration checkpoints, not formal Gates. Their normative report shape is
-[`compatibility-report.schema.json`](./contracts/compatibility-report.schema.json).
-
-| Field | Type | Rules |
-|---|---|---|
-| `status` | enum | `PASS_SMOKE` or `BLOCKED` only |
-| `claim_class` | const | `runtime_smoke` |
-| `compatibility_scope` | enum | `ENVIRONMENT`, `ASSET_API`, `REPOSITORY_INTEGRATION` |
-| `runtime_support` | RuntimeSupportRecord | Simulator, Python, observed/reference driver, validation |
-| `compatibility_result` | enum | Pass on validated/unvalidated driver or `FAILED` |
-| `blocker_codes` | list[string] | Non-empty when blocked/failed |
-
-Lifecycle:
-
-```text
-NOT_STARTED -> IN_PROGRESS -> BLOCKED | PASS_SMOKE
+```yaml
+task_id: string
+task_version: semver
+language_instruction: string
+robot: string
+assets:
+  - path: string
+    sha256: string
+    license_id: string
+initial_state_distribution: object
+action_contract_version: string
+observation_contract_version: string
+success_predicate: object
+release_predicate: object | null
+budgets: object
+required_capabilities: [string]
 ```
 
-A compatibility pass cannot satisfy G1-G6. G-1B promotion additionally requires G0
-`PASS_BENCHMARK` and content-equivalent candidate/formal dependency locks.
+Validation:
 
-### RuntimeSupportRecord
+- stable ID/version;
+- assets resolve and hashes match;
+- success is task-state based;
+- budgets are positive and finite;
+- capability requirements are explicit.
 
-| Field | Rule |
-|---|---|
-| `simulator` | Exact runtime version, `6.0.1` for this cutover |
-| `python` | Exact major/minor, `3.12` |
-| `observed_driver` | Actual unchanged development driver |
-| `reference_driver` | Driver used as the declared release reference |
-| `driver_validation` | `UNVALIDATED` or `VALIDATED` without implying a minimum version |
+## 2. RuntimeMetadata
 
-### SensorTruthRecord
-
-Contact separately records sensor readiness, `in_contact`, scalar force magnitude, raw contact
-position/normal/impulse, vector validity, wrench validity, physics step, time, and masks. Camera
-records RGB/depth shape and dtype, valid-depth ratio, clipping/background rule, physics/render tick,
-capture timestamp, frame update, and skew. Unsupported vector/wrench fields remain masked false.
-
-## 1. Gate
-
-Represents one reviewable capability transition.
-
-| Field | Type | Rules |
-|---|---|---|
-| `gate_id` | enum `G0`-`G6` | Stable and unique |
-| `title` | string | Human-readable outcome |
-| `status` | enum | `NOT_STARTED`, `IN_PROGRESS`, `BLOCKED`, `PASS_SMOKE`, `PASS_BENCHMARK` |
-| `claim_class` | enum | `mock`, `dry_run`, `runtime_smoke`, `physical_runtime`, `dataset`, `evaluation`, `benchmark`, `release` |
-| `predecessors` | list[gate_id] | All must satisfy the transition rule |
-| `requirements` | list[FR/SC IDs] | Non-empty for implementation gates |
-| `verification_commands` | list[string] | Exact, non-interactive where possible |
-| `evidence` | list[artifact reference] | Hash-bound manifests only |
-| `blockers` | list[object] | Required when status is `BLOCKED` |
-| `reviewed_at` | timestamp/null | Set only by a review action |
-
-### Gate transition rules
-
-```text
-NOT_STARTED -> IN_PROGRESS
-IN_PROGRESS -> BLOCKED | PASS_SMOKE | PASS_BENCHMARK
-BLOCKED -> IN_PROGRESS
-PASS_SMOKE -> IN_PROGRESS | PASS_BENCHMARK
-PASS_BENCHMARK -> IN_PROGRESS   # semantic input changed; evidence becomes stale
+```yaml
+simulator: "6.0.1"
+python: string
+driver: string
+driver_validation: VALIDATED | UNVALIDATED
+gpu: string
+physics_device: cpu | gpu
+broadphase_type: string
+gpu_dynamics: bool
+native_gpu_contact: bool
+rendering_backend: string
+source_commit: string
+repository_dirty: bool
 ```
 
-`PASS_SMOKE` never satisfies a predecessor that requires physical, dataset, evaluation, benchmark,
-or release evidence. `PASS_BENCHMARK` requires a clean commit and fresh immutable evidence.
+## 3. ActionRecord
 
-## 2. EvidenceManifest
-
-Identity and provenance for one command and its artifacts. The normative shape is
-[evidence-manifest.schema.json](./contracts/evidence-manifest.schema.json).
-
-Core identity is the tuple:
-
-```text
-(repository_commit, dirty_patch_digest, config_digests, asset_digests,
- command, environment_digest, artifact_schema_version)
+```yaml
+requested_7d: [float, float, float, float, float, float, float]
+executed_7d: [float, float, float, float, float, float, float]
+translation_frame: string
+rotation_representation: string
+gripper_semantics: string
+clipped: bool
+accepted: bool
+failure_code: string | null
 ```
 
-An artifact is `STALE` when a semantic input required by its gate differs from this tuple. Dirty
-evidence can support development smoke states but cannot support `PASS_BENCHMARK`.
+Both vectors must be finite and exactly length seven.
 
-## 3. TaskCard
+## 4. ObservationRecord
 
-| Field group | Required content |
-|---|---|
-| Identity | task ID, version, name, language instruction, suite |
-| Scene | assets, licenses, initial-state distribution, randomization, reset oracle |
-| Robot | robot/config version, permitted controller, action semantics, frames |
-| Task truth | observable state variables, success duration/threshold, failure, termination |
-| Safety | workspace, joint, velocity, collision/penetration, budgets, stop conditions |
-| Metrics | units, direction, missing rules, aggregation contribution |
-| Evidence | scripted oracle, physical episodes, replay tolerance/report |
-| Splits | train/validation/test allocation policy and leakage risks |
-| Status | candidate, blocked, accepted, deprecated; acceptance manifest |
-
-Only `accepted` task cards may appear in formal collection/evaluation. Changing success, reset,
-randomization, assets, or action semantics requires a task version change and new evidence.
-
-## 4. RuntimeEpisode
-
-| Field | Type | Validation |
-|---|---|---|
-| `episode_id` | globally unique string | Duplicate write is an error |
-| `task_id`, `task_version` | string | Must resolve to accepted TaskCard for formal data |
-| `backend`, `robot_version`, `sensor_version` | string | Immutable per episode |
-| `seed`, `split` | scalar | Split assignment frozen before evaluation |
-| `initial_state` | structured snapshot | Required for physical replay |
-| `observations` | time-major arrays | Same length or declared alignment rule |
-| `actions` | `[T, 7]` | Finite, clipped/executed action both identifiable |
-| `timestamps` | monotonic arrays | Units and clocks declared; skew bounded |
-| `tactile_masks` | time-major masks | Capability, validity, drop, delay, saturation represented |
-| `task_state` | time-major values | Includes observed button travel/reset/release |
-| `safety_events` | list | Empty for a passing formal episode |
-| `outcome` | structured | Success, failure, termination reason, metrics |
-| `provenance` | manifest reference | Resolves to code/config/assets |
-
-### Runtime state machine
-
-```text
-RESETTING -> READY -> APPROACH -> PRESS -> HOLD -> RELEASE -> RETRACT -> COMPLETE
-     |         |         |         |       |         |          |
-     +---------+---------+---------+-------+---------+----------+-> ABORTED
+```yaml
+episode_id: string
+step_index: integer
+physics_step: integer
+timestamp_s: float
+robot_state: object
+task_state: object
+rgb_ref: string | null
+depth_ref: string | null
+tactile_ref: string | null
+contact: ContactRecord
+validity_masks: object
 ```
 
-Every transition has an operator step and wall-time deadline. `COMPLETE` requires released/reset
-button state and safe robot state; success alone is insufficient.
+Every field declares or inherits shape, dtype, units, frame, and source.
 
-## 5. DatasetRelease
+## 5. ContactRecord
 
-| Field | Rules |
-|---|---|
-| `dataset_id`, `version` | Immutable release identity |
-| `schema_version` | Has reader and migration policy |
-| `episodes` | Unique IDs and content checksums |
-| `splits` | Frozen, disjoint, leakage-audited |
-| `task_cards` | Exact versions embedded or hash-referenced |
-| `validation_report` | Schema, shape, finite, timestamp, masks, checksum results |
-| `replay_report` | Per-episode physical replay results and tolerances |
-| `card` | Collection method, limitations, license, intended use |
-| `claim_class` | `runtime_smoke` or `dataset`; smoke cannot become formal by renaming |
-
-Lifecycle: `DRAFT -> VALIDATED -> REPLAY_ACCEPTED -> FROZEN -> RELEASED`. Any content mutation after
-`FROZEN` creates a new version.
-
-## 6. EvaluationRun
-
-Contains frozen policy/checkpoint, dataset, task/sensor suite, seed set, configuration, hashes,
-per-episode records, derived aggregates, uncertainty, failures, logs, and optional media.
-
-Lifecycle: `PLANNED -> RUNNING -> EPISODES_COMPLETE -> AGGREGATED -> VERIFIED`. Aggregation reads
-immutable episode records; hand-edited summary values are invalid. Missing metrics retain an
-explicit reason and never silently become zero.
-
-## 7. BaselineRun
-
-Contains model/modality contract, train/validation/test split hashes, normalization statistics
-derived from train only, optimizer/budget/seeds, parameter count, encoders/fusion, compute,
-checkpoints, validation-only selection decision, and linked EvaluationRun.
-
-Lifecycle: `CONFIGURED -> TRAINING -> VALIDATED -> CHECKPOINT_SELECTED -> EVALUATED -> REVIEWED`.
-Test data cannot influence any state before `CHECKPOINT_SELECTED`.
-
-## 8. TraceabilityRecord
-
-One row links:
-
-```text
-requirement_id -> user_story -> gate_id -> task_ids -> test_ids/commands -> artifact paths -> status
+```yaml
+reading_valid: bool
+fresh: bool
+in_contact: bool
+force_magnitude: float | null
+force_magnitude_valid: bool
+force_vector: [float, float, float] | null
+force_vector_valid: bool
+wrench: [float, float, float, float, float, float] | null
+wrench_valid: bool
+raw_contact_valid: bool
+raw_contacts:
+  - body0: string
+    body1: string
+    position: [float, float, float] | null
+    normal: [float, float, float] | null
+    impulse: [float, float, float] | null
+    time_s: float | null
+    physics_step: integer | null
+raw_impulse_used_as_force: false
 ```
 
-Each FR, buildable SC, and acceptance scenario requires at least one complete row. A row is complete
-only when the artifact exists, its manifest validates, and its claim class satisfies the gate.
+No invalid field may be populated with a proxy.
+
+## 6. EpisodeRecord
+
+```yaml
+episode_id: string
+task_id: string
+task_version: string
+seed: integer
+reset_record_sha256: string
+runtime_metadata_sha256: string
+steps: [ObservationRecord]
+pressed: bool
+released: bool
+safe_retract: bool
+success: bool
+terminated: bool
+truncated: bool
+failure_codes: [string]
+post_abort_actuation_count: integer
+wall_time_s: float
+source_digests: object
+```
+
+Success requires task-state press, required release, and safe retract.
+
+## 7. ResetCycleRecord
+
+```yaml
+cycle_index: integer
+seed: integer
+ready_within_window: bool
+articulation_valid: bool
+button_reset: bool
+contact_handles_valid: bool
+camera_valid: bool
+stale_handle_count: integer
+cleanup_success: bool
+failure_codes: [string]
+```
+
+## 8. DatasetManifest
+
+```yaml
+dataset_id: string
+dataset_version: string
+task_cards: [string]
+episode_count: integer
+accepted_episode_count: integer
+rejected_episode_count: integer
+duplicate_count: integer
+splits: object
+schema_version: string
+source_digests: object
+license_summary: object
+```
+
+## 9. ReplayRecord
+
+```yaml
+episode_id: string
+outcome_match: bool
+task_state_error: object
+timing_skew: object
+contact_alignment: object
+first_divergence_step: integer | null
+failure_codes: [string]
+```
+
+## 10. EvaluationEpisode
+
+```yaml
+baseline_id: string
+seed: integer
+task_id: string
+episode_id: string
+task_success: bool
+runtime_valid: bool
+safe_retract: bool
+contact_valid_rate: float
+tactile_valid_rate: float | null
+episode_steps: integer
+wall_time_s: float
+failure_codes: [string]
+```
+
+## 11. GateEvidence
+
+The existing manifest/status schemas remain authoritative. A Gate evidence bundle binds:
+
+- Gate/status/claim class;
+- evidence-producing commit;
+- runtime metadata;
+- source/config/task/asset/dataset hashes;
+- artifact checksums;
+- acceptance results;
+- blockers;
+- freshness review.
+
+Optional diagnostic evidence uses `runtime_smoke` and cannot satisfy a required Gate item alone.
