@@ -32,18 +32,18 @@ FUTURE_RED_MANIFEST = Path("configs/repository/intentional-future-red-nodeids.tx
 EXTERNAL_EVIDENCE_MANIFEST = Path("configs/repository/external-evidence-nodeids.txt")
 EXPECTED_FUTURE_RED_COUNT = 125
 EXPECTED_EXTERNAL_EVIDENCE_COUNT = 1
-EXPECTED_FULL_COLLECTION_COUNT = 1091
-EXPECTED_CURRENT_GREEN_COUNT = 966
-EXPECTED_PORTABLE_GREEN_COUNT = 965
+EXPECTED_FULL_COLLECTION_COUNT = 1131
+EXPECTED_CURRENT_GREEN_COUNT = 1006
+EXPECTED_PORTABLE_GREEN_COUNT = 1005
 EXPECTED_EXTERNAL_NODE_ID = (
     "tests/test_g1_pose_conditioned_tracking_cli.py::"
     "test_t152_attempt02_is_historical_and_emits_exact_refresh_blocker_before_close"
 )
 APPROVED_CURRENT_GREEN_COLLECTION_SHA256 = (
-    "1c8e6a8e9b09da6b06435ea6c75191c5fb4b3c3fa7e1b97161951e65249d45ad"
+    "81f3775aa7f436e091ca5a5d3ed0552cdb8304146ac08ff8bbbf5c85755aec10"
 )
 APPROVED_CURRENT_GREEN_SORTED_SHA256 = (
-    "00a6e84c5d2e1f623f2211db8272ca95859e8050417f7c25cbfeef9afd84efc7"
+    "adc2478567818fd12ebd674df556ad96c963c739ead43e1539b88ba35d9f7c60"
 )
 APPROVED_ATTEMPT02_CHECKSUM_SHA256 = (
     "cc53c4b4bc3cefdc7a2363c6446741e3abfc65e768ac0db71123aa593be528ed"
@@ -692,11 +692,17 @@ def validate_test_node_partition(
     current_sorted = sorted(current_collection)
     portable_sorted = sorted(set(current_collection).difference(external_set))
     if len(current_collection) != EXPECTED_CURRENT_GREEN_COUNT:
-        raise ValueError("current-GREEN partition must contain exactly 966 nodes")
+        raise ValueError(
+            "current-GREEN partition must contain exactly "
+            f"{EXPECTED_CURRENT_GREEN_COUNT} nodes"
+        )
     if len(current_sorted) != EXPECTED_CURRENT_GREEN_COUNT:
         raise ValueError("current-GREEN sorted view contains duplicate nodes")
     if len(portable_sorted) != EXPECTED_PORTABLE_GREEN_COUNT:
-        raise ValueError("portable GREEN partition must contain exactly 965 nodes")
+        raise ValueError(
+            "portable GREEN partition must contain exactly "
+            f"{EXPECTED_PORTABLE_GREEN_COUNT} nodes"
+        )
     classified = set(portable_sorted) | external_set | future_set
     if classified != set(collected_ids):
         raise ValueError("full collection contains unclassified or missing partition nodes")
